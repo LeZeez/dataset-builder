@@ -241,6 +241,7 @@ h1, h2, h3 { font-weight: 600; }
     grid-template-columns: 1fr 1fr;
     gap: 0.4rem 0.6rem;
     align-items: center;
+    width: 100%;
 }
 .hotkey-grid label {
     font-size: 0.8rem;
@@ -256,6 +257,8 @@ h1, h2, h3 { font-weight: 600; }
     border: 1px solid var(--border-glass);
     color: var(--text-primary);
     border-radius: 4px;
+    width: 100%;
+    box-sizing: border-box;
 }
 .hotkey-input:focus {
     border-color: var(--accent);
@@ -438,6 +441,12 @@ h1, h2, h3 { font-weight: 600; }
     accent-color: var(--accent);
     width: 16px;
     height: 16px;
+}
+
+.form-group .input,
+.form-group .select {
+    width: 100%;
+    box-sizing: border-box;
 }
 
 /* Prompt Card */
@@ -944,6 +953,7 @@ kbd {
         box-shadow: 4px 0 20px rgba(0,0,0,0.5);
     }
     .sidebar.open { transform: translateX(0); }
+    .main { min-width: 100%; width: 100%; transition: none; }
 }
 
 @media (max-width: 768px) {
@@ -1294,11 +1304,14 @@ kbd {
     gap: 0.5rem;
     align-items: center;
     position: relative;
+    width: 100%;
 }
 
 .input-row .input {
     flex: 1;
     padding-right: 2.5rem;
+    width: 100%;
+    box-sizing: border-box;
 }
 
 .input-row #toggle-key {
