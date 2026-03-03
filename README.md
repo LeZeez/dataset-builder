@@ -24,7 +24,7 @@ pip install -r requirements.txt
 **Option A: Via UI (Recommended)**
 1. Start the server
 2. Open http://localhost:5000
-3. In the right panel under "🔑 API Configuration"
+3. In the left panel under "🔑 API Keys"
 4. Enter your API key and click "Save Key"
 
 **Option B: Via environment variable**
@@ -162,7 +162,7 @@ python scripts/parser.py
 ## Configuration
 
 ### Via UI
-The right panel has settings for:
+The left panel has settings for:
 - **Provider**: OpenAI, Anthropic, or Google
 - **Model**: Model name (auto-updates when provider changes)
 - **Temperature**: 0-2 slider
@@ -206,14 +206,6 @@ You can use alternative endpoints:
 | Local (Ollama) | `http://localhost:11434/v1` |
 | OpenRouter | `https://openrouter.ai/api/v1` |
 | Together AI | `https://api.together.xyz/v1` |
-
-## Tips for Quality Data
-
-1. **Be specific in prompts** - Include example scenarios and expressions
-2. **Use tags** - Tag conversations by topic for balanced datasets
-3. **Rate conversations** - Use ratings to filter high-quality samples later
-4. **Edit before saving** - The edit mode lets you fix issues before saving
-5. **Review rejected** - Sometimes rejected conversations have salvageable parts
 
 ## License
 
