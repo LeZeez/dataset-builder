@@ -1,0 +1,597 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <meta name="theme-color" content="#6366f1">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <title>Synthetic Dataset Builder</title>
+    <link rel="manifest" href="manifest.json">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link
+        href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700&family=Inter:wght@400;500;600&display=swap"
+        rel="stylesheet">
+    <link rel="stylesheet" href="styles.css?v=3.0.0">
+</head>
+
+<body>
+    <div id="app">
+        <!-- Header -->
+        <header class="header">
+            <div class="header-left">
+                <button id="sidebar-toggle" class="icon-btn" aria-label="Toggle sidebar">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <line x1="3" y1="6" x2="21" y2="6"></line>
+                        <line x1="3" y1="12" x2="21" y2="12"></line>
+                        <line x1="3" y1="18" x2="21" y2="18"></line>
+                    </svg>
+                </button>
+                <h1 class="logo">🗂️ <span class="logo-text">Dataset Builder</span></h1>
+            </div>
+            <div class="header-center">
+                <!-- Sync Status Indicator -->
+                <div id="sync-status" class="sync-status" title="Connection status">
+                    <span id="sync-dot" class="sync-dot online"></span>
+                    <span id="sync-label" class="sync-label">Online</span>
+                </div>
+                <!-- Save Indicator -->
+                <div id="save-indicator" class="save-indicator hidden">
+                    <svg class="save-spinner" width="16" height="16" viewBox="0 0 50 50">
+                        <circle cx="25" cy="25" r="20" fill="none" stroke="currentColor" stroke-width="5"></circle>
+                    </svg>
+                    <span id="save-label">Saving...</span>
+                </div>
+            </div>
+            <div class="header-right">
+                <button id="manual-sync-btn" class="btn btn-sm btn-accent" title="Push all local changes to server">
+                    ☁️ Sync
+                </button>
+                <div class="header-stats">
+                    <span class="stat stat-success"><span id="wanted-count">0</span> saved</span>
+                    <span class="stat stat-danger"><span id="rejected-count">0</span> rejected</span>
+                </div>
+            </div>
+        </header>
+
+        <!-- Main Layout -->
+        <div class="layout">
+            <!-- Sidebar Overlay (mobile) -->
+            <div id="sidebar-overlay" class="sidebar-overlay"></div>
+
+            <!-- Sidebar -->
+            <aside id="sidebar" class="sidebar">
+                <!-- Settings Section -->
+                <div class="sidebar-section">
+                    <h3 class="sidebar-title">⚙️ Settings</h3>
+
+                    <div class="form-group">
+                        <label for="provider">Provider</label>
+                        <select id="provider" class="select">
+                            <option value="openai">OpenAI</option>
+                            <option value="anthropic">Anthropic</option>
+                            <option value="google">Google</option>
+                        </select>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="model">Model</label>
+                        <div class="model-select">
+                            <input type="text" id="model-input" class="input" list="model-datalist"
+                                placeholder="Type or select model...">
+                            <datalist id="model-datalist"></datalist>
+                            <select id="model" class="select" style="display:none;">
+                                <option value="gpt-4o">gpt-4o</option>
+                            </select>
+                            <button id="refresh-models" class="icon-btn" title="Refresh models">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                    stroke-width="2">
+                                    <path d="M23 4v6h-6M1 20v-6h6"></path>
+                                    <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15">
+                                    </path>
+                                </svg>
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label for="temperature">Temperature: <span id="temp-value">0.9</span></label>
+                        <input type="range" id="temperature" class="slider" min="0" max="2" step="0.1" value="0.9">
+                    </div>
+                </div>
+
+                <!-- Custom Parameters Section -->
+                <div class="sidebar-section collapsible collapsed">
+                    <button class="sidebar-title collapse-toggle">
+                        ⚙️ Custom Parameters
+                        <svg class="chevron" width="16" height="16" viewBox="0 0 24 24" fill="none"
+                            stroke="currentColor" stroke-width="2">
+                            <polyline points="6 9 12 15 18 9"></polyline>
+                        </svg>
+                    </button>
+                    <div class="collapse-content">
+                        <div id="custom-params-list" class="custom-params-list"></div>
+                        <div class="custom-param-add">
+                            <input type="text" id="new-param-key" class="input input-sm"
+                                placeholder="key (e.g. reasoning_effort)">
+                            <input type="text" id="new-param-value" class="input input-sm"
+                                placeholder="value (e.g. high)">
+                            <button id="add-param-btn" class="icon-btn" title="Add parameter">➕</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- API Keys Section -->
+                <div class="sidebar-section collapsible collapsed">
+                    <button class="sidebar-title collapse-toggle">
+                        🔑 API Keys
+                        <svg class="chevron" width="16" height="16" viewBox="0 0 24 24" fill="none"
+                            stroke="currentColor" stroke-width="2">
+                            <polyline points="6 9 12 15 18 9"></polyline>
+                        </svg>
+                    </button>
+                    <div class="collapse-content">
+                        <div class="form-group">
+                            <label for="api-key">API Key</label>
+                            <div class="input-row">
+                                <input type="password" id="api-key" class="input" placeholder="sk-...">
+                                <button id="toggle-key" class="icon-btn">👁️</button>
+                            </div>
+                            <button id="save-key" class="btn btn-sm btn-accent">Save Key</button>
+                        </div>
+                        <div class="form-group">
+                            <label for="base-url">Base URL</label>
+                            <input type="text" id="base-url" class="input" placeholder="https://api.openai.com/v1">
+                            <button id="save-url" class="btn btn-sm btn-accent">Save URL</button>
+                        </div>
+                        <div id="api-status" class="status-msg"></div>
+                    </div>
+                </div>
+
+                <!-- Auto-Sync Settings -->
+                <div class="sidebar-section collapsible collapsed">
+                    <button class="sidebar-title collapse-toggle">
+                        🔄 Auto-Sync Settings
+                        <svg class="chevron" width="16" height="16" viewBox="0 0 24 24" fill="none"
+                            stroke="currentColor" stroke-width="2">
+                            <polyline points="6 9 12 15 18 9"></polyline>
+                        </svg>
+                    </button>
+                    <div class="collapse-content">
+                        <div class="form-group">
+                            <label class="toggle-label">
+                                <input type="checkbox" id="auto-sync-enabled" checked>
+                                <span>Auto-sync when online</span>
+                            </label>
+                        </div>
+                        <div class="form-group">
+                            <label for="sync-interval">Sync interval (seconds)</label>
+                            <input type="number" id="sync-interval" class="input" value="30" min="5" max="300">
+                        </div>
+                        <div class="form-group">
+                            <label class="toggle-label">
+                                <input type="checkbox" id="auto-save-enabled" checked>
+                                <span>Auto-save drafts locally</span>
+                            </label>
+                        </div>
+                        <div class="form-group">
+                            <label for="save-interval">Save interval (ms)</label>
+                            <input type="number" id="save-interval" class="input" value="2000" min="500" max="10000"
+                                step="500">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Search + Files Section -->
+                <div class="sidebar-section files-section">
+                    <div class="files-header">
+                        <h3 class="sidebar-title">📂 Files</h3>
+                        <button id="search-toggle" class="icon-btn search-toggle-btn"
+                            title="Search conversations">🔍</button>
+                    </div>
+                    <div id="search-box" class="search-box-collapsible">
+                        <input type="text" id="search-input" class="input" placeholder="Search conversations...">
+                    </div>
+                    <div class="file-tabs">
+                        <button class="file-tab active" data-folder="wanted">Wanted</button>
+                        <button class="file-tab" data-folder="rejected">Rejected</button>
+                    </div>
+                    <div id="file-list" class="file-list">
+                        <!-- Files loaded dynamically -->
+                    </div>
+                </div>
+
+                <!-- Export Section -->
+                <div class="sidebar-section">
+                    <h3 class="sidebar-title">📤 Export</h3>
+                    <div class="export-btns">
+                        <button class="btn btn-sm" data-format="sharegpt">ShareGPT</button>
+                        <button class="btn btn-sm" data-format="openai">OpenAI</button>
+                        <button class="btn btn-sm" data-format="alpaca">Alpaca</button>
+                    </div>
+                </div>
+
+                <!-- Keyboard Shortcuts -->
+                <div class="sidebar-section collapsible collapsed">
+                    <button class="sidebar-title collapse-toggle">
+                        ⌨️ Keyboard Shortcuts
+                        <svg class="chevron" width="16" height="16" viewBox="0 0 24 24" fill="none"
+                            stroke="currentColor" stroke-width="2">
+                            <polyline points="6 9 12 15 18 9"></polyline>
+                        </svg>
+                    </button>
+                    <div class="collapse-content">
+                        <div class="hotkey-grid">
+                            <label>Keep (Review)</label>
+                            <input class="input input-sm hotkey-input" data-action="reviewKeep" value="s" readonly>
+                            <label>Reject (Review)</label>
+                            <input class="input input-sm hotkey-input" data-action="reviewReject" value="x" readonly>
+                            <label>Next (Review)</label>
+                            <input class="input input-sm hotkey-input" data-action="reviewNext" value="j" readonly>
+                            <label>Prev (Review)</label>
+                            <input class="input input-sm hotkey-input" data-action="reviewPrev" value="k" readonly>
+                            <label>Generate</label>
+                            <input class="input input-sm hotkey-input" data-action="generate" value="ctrl+g" readonly>
+                            <label>Save</label>
+                            <input class="input input-sm hotkey-input" data-action="save" value="ctrl+Enter" readonly>
+                            <label>Reject</label>
+                            <input class="input input-sm hotkey-input" data-action="reject" value="ctrl+Backspace"
+                                readonly>
+                        </div>
+                        <div class="hotkey-actions">
+                            <button id="save-hotkeys-btn" class="btn btn-sm btn-accent">Save</button>
+                            <button id="reset-hotkeys-btn" class="btn btn-sm">Reset</button>
+                        </div>
+                        <p class="small muted">Click an input, then press your desired key combo.</p>
+                    </div>
+                </div>
+            </aside>
+
+            <!-- Main Content -->
+            <main class="main">
+                <!-- Tab Switcher -->
+                <div class="tabs">
+                    <button class="tab active" data-tab="generate">🎲 Generate</button>
+                    <button class="tab" data-tab="chat">💬 Chat</button>
+                    <button class="tab" data-tab="review">📋 Review <span id="review-badge"
+                            class="tab-badge hidden">0</span></button>
+                </div>
+
+                <!-- Generate Tab -->
+                <div id="generate-tab" class="tab-content active">
+                    <!-- Prompt Section -->
+                    <section class="card prompt-card">
+                        <div class="card-header">
+                            <h2>📝 Prompt Template</h2>
+                            <div class="prompt-controls">
+                                <select id="prompt-select" class="select select-sm">
+                                    <option value="">Select prompt...</option>
+                                </select>
+                                <button id="save-prompt-btn" class="icon-btn" title="Save prompt">💾</button>
+                                <button id="refresh-prompt-btn" class="icon-btn"
+                                    title="Reload prompt from server (if another session changed it)">🔄</button>
+                                <button id="new-prompt-btn" class="icon-btn" title="New prompt">➕</button>
+                                <button id="delete-prompt-btn" class="icon-btn" title="Delete prompt">🗑️</button>
+                            </div>
+                        </div>
+                        <textarea id="system-prompt" class="textarea"
+                            placeholder="Enter your prompt template with {{variables}}..."></textarea>
+
+                        <!-- Dynamic Variables -->
+                        <div id="variables-section" class="variables-section hidden">
+                            <div class="variables-header">
+                                <span>🏷️ Variables</span>
+                                <div class="preset-controls">
+                                    <select id="preset-select" class="select select-sm">
+                                        <option value="">Load preset...</option>
+                                    </select>
+                                    <button id="save-preset" class="icon-btn" title="Save as preset">💾</button>
+                                    <button id="delete-preset" class="icon-btn" title="Delete preset">🗑️</button>
+                                </div>
+                            </div>
+                            <div id="variables-grid" class="variables-grid">
+                                <!-- Variables generated dynamically -->
+                            </div>
+                        </div>
+
+                        <div class="prompt-actions">
+                            <div class="token-info">
+                                <span id="token-count">~0 tokens</span>
+                            </div>
+                            <!-- Bulk Generation Controls -->
+                            <div class="bulk-controls">
+                                <label for="bulk-count" class="bulk-label">Count:</label>
+                                <input type="number" id="bulk-count" class="input input-mini" value="1" min="1"
+                                    max="100">
+                                <button id="generate-btn" class="btn btn-primary btn-lg">
+                                    <span class="btn-text">🎲 Generate</span>
+                                    <span class="btn-loading hidden">
+                                        <svg class="spinner" viewBox="0 0 50 50">
+                                            <circle cx="25" cy="25" r="20" fill="none" stroke-width="5"></circle>
+                                        </svg>
+                                    </span>
+                                </button>
+                            </div>
+                        </div>
+                        <!-- Bulk Progress -->
+                        <div id="bulk-progress" class="bulk-progress hidden">
+                            <div class="progress-bar">
+                                <div id="bulk-progress-fill" class="progress-fill"></div>
+                            </div>
+                            <span id="bulk-progress-text">0/0</span>
+                            <button id="bulk-cancel" class="btn btn-sm btn-danger">Cancel</button>
+                        </div>
+                    </section>
+
+                    <!-- Conversation Preview -->
+                    <section class="card conversation-card">
+                        <div class="card-header">
+                            <h2>💬 Conversation</h2>
+                            <div class="conv-stats">
+                                <span id="turn-count">0 turns</span>
+                                <button id="clear-gen-btn" class="btn btn-sm" title="Clear conversation">🗑️
+                                    Clear</button>
+                                <button id="edit-toggle" class="btn btn-sm">✏️ Edit</button>
+                            </div>
+                        </div>
+
+                        <div id="conversation-view" class="conversation">
+                            <div class="empty-state">
+                                <div class="empty-icon">💭</div>
+                                <p>Click "Generate" to create a conversation</p>
+                            </div>
+                        </div>
+
+                        <textarea id="conversation-edit" class="textarea conversation-edit hidden" placeholder="user: message
+---
+gpt: response"></textarea>
+
+
+                        <!-- Metadata -->
+                        <div class="metadata-row">
+                            <div class="form-group">
+                                <label for="tags">Tags</label>
+                                <input type="text" id="tags" class="input" placeholder="food, casual..."
+                                    list="tag-suggestions">
+                                <datalist id="tag-suggestions"></datalist>
+                            </div>
+                            <div class="form-group">
+                                <label for="rating">Rating</label>
+                                <select id="rating" class="select">
+                                    <option value="">-</option>
+                                    <option value="5">⭐⭐⭐⭐⭐</option>
+                                    <option value="4">⭐⭐⭐⭐</option>
+                                    <option value="3">⭐⭐⭐</option>
+                                    <option value="2">⭐⭐</option>
+                                    <option value="1">⭐</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <!-- Action Buttons -->
+                        <div class="action-bar">
+                            <button id="save-btn" class="btn btn-success" disabled>
+                                ✅ Save
+                            </button>
+                            <button id="reject-btn" class="btn btn-danger" disabled>
+                                ❌ Reject
+                            </button>
+                            <button id="regenerate-btn" class="btn btn-secondary" disabled>
+                                🔄 Redo
+                            </button>
+                        </div>
+                    </section>
+                </div>
+
+                <!-- Chat Tab -->
+                <div id="chat-tab" class="tab-content">
+                    <section class="card chat-card">
+                        <div class="card-header">
+                            <h2>💬 Interactive Chat</h2>
+                            <div class="chat-controls">
+                                <span id="chat-turns">0 turns</span>
+                                <button id="clear-chat" class="btn btn-sm btn-danger">Clear</button>
+                            </div>
+                        </div>
+
+                        <!-- Chat System Prompt with Preset Manager -->
+                        <div class="chat-system-prompt collapsible collapsed">
+                            <button class="collapse-toggle sidebar-title">
+                                📝 System Prompt
+                                <svg class="chevron" width="16" height="16" viewBox="0 0 24 24" fill="none"
+                                    stroke="currentColor" stroke-width="2">
+                                    <polyline points="6 9 12 15 18 9"></polyline>
+                                </svg>
+                            </button>
+                            <div class="collapse-content">
+                                <div class="preset-controls" style="margin-bottom: 0.5rem;">
+                                    <select id="chat-preset-select" class="select select-sm">
+                                        <option value="">Load preset...</option>
+                                    </select>
+                                    <button id="save-chat-preset" class="icon-btn" title="Save as preset">💾</button>
+                                    <button id="delete-chat-preset" class="icon-btn" title="Delete preset">🗑️</button>
+                                </div>
+                                <textarea id="chat-system-prompt" class="textarea" rows="4"
+                                    placeholder="System instructions for the chat...">You are a helpful and friendly conversational assistant. Keep responses natural and engaging.</textarea>
+                            </div>
+                        </div>
+
+                        <div id="chat-messages" class="chat-messages">
+                            <div class="empty-state">
+                                <div class="empty-icon">🗣️</div>
+                                <p>Start a conversation by typing below</p>
+                            </div>
+                        </div>
+
+                        <div class="chat-input-area">
+                            <textarea id="chat-input" class="textarea chat-input" placeholder="Type your message..."
+                                rows="2"></textarea>
+                            <button id="send-btn" class="btn btn-primary">
+                                <svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor">
+                                    <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"></path>
+                                </svg>
+                            </button>
+                        </div>
+
+                        <!-- Chat Actions -->
+                        <div class="action-bar">
+                            <button id="save-chat-btn" class="btn btn-success" disabled>
+                                ✅ Save Chat
+                            </button>
+                            <button id="fork-chat-btn" class="btn btn-secondary" disabled>
+                                🔀 Fork
+                            </button>
+                        </div>
+                    </section>
+                </div>
+
+                <!-- Review Tab -->
+                <div id="review-tab" class="tab-content">
+                    <section class="card review-card">
+                        <div class="card-header">
+                            <h2>📋 Review Queue</h2>
+                            <div class="review-controls">
+                                <span id="review-count">0 items</span>
+                                <button id="keep-all-btn" class="btn btn-sm btn-success">Keep All</button>
+                                <button id="reject-all-btn" class="btn btn-sm btn-danger">Reject All</button>
+                                <button id="clear-queue-btn" class="btn btn-sm btn-secondary">Clear</button>
+                            </div>
+                        </div>
+
+                        <!-- Speed Review Shortcuts Info -->
+                        <div class="shortcuts-info">
+                            <span>⌨️ Shortcuts:</span>
+                            <kbd>S</kbd> Keep &nbsp;
+                            <kbd>X</kbd> Reject &nbsp;
+                            <kbd>J</kbd> Next &nbsp;
+                            <kbd>K</kbd> Prev
+                        </div>
+
+                        <!-- Review Navigation -->
+                        <div class="review-nav">
+                            <button id="review-prev" class="btn btn-sm btn-secondary" disabled>← Prev</button>
+                            <span id="review-position">0/0</span>
+                            <button id="review-next" class="btn btn-sm btn-secondary" disabled>Next →</button>
+                        </div>
+
+                        <!-- Current Review Item -->
+                        <div id="review-conversation" class="conversation">
+                            <div class="empty-state">
+                                <div class="empty-icon">📭</div>
+                                <p>No items in review queue</p>
+                                <p class="small">Generate conversations in bulk to fill the queue</p>
+                            </div>
+                        </div>
+
+                        <!-- Review Actions -->
+                        <div class="action-bar">
+                            <button id="review-keep-btn" class="btn btn-success" disabled>
+                                ✅ Keep (S)
+                            </button>
+                            <button id="review-reject-btn" class="btn btn-danger" disabled>
+                                ❌ Reject (X)
+                            </button>
+                            <button id="review-edit-btn" class="btn btn-secondary" disabled>
+                                ✏️ Edit
+                            </button>
+                        </div>
+                    </section>
+                </div>
+            </main>
+        </div>
+
+        <!-- Reject Modal -->
+        <div id="reject-modal" class="modal hidden">
+            <div class="modal-backdrop"></div>
+            <div class="modal-content">
+                <h3>Why reject?</h3>
+                <div class="reject-reasons">
+                    <button class="reason-btn" data-reason="formal">Too formal</button>
+                    <button class="reason-btn" data-reason="dialect">Wrong dialect</button>
+                    <button class="reason-btn" data-reason="repetitive">Repetitive</button>
+                    <button class="reason-btn" data-reason="short">Too short</button>
+                    <button class="reason-btn" data-reason="off-topic">Off-topic</button>
+                    <button class="reason-btn" data-reason="other">Other</button>
+                </div>
+                <div class="modal-actions">
+                    <button id="cancel-reject" class="btn btn-secondary">Cancel</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Export Modal - Enhanced -->
+        <div id="export-modal" class="modal hidden">
+            <div class="modal-backdrop"></div>
+            <div class="modal-content export-modal-content">
+                <div class="export-header">
+                    <h3>📤 Export Dataset</h3>
+                    <button id="close-export" class="icon-btn" title="Close">✕</button>
+                </div>
+
+                <div class="export-body">
+                    <!-- Left: Settings -->
+                    <div class="export-settings">
+                        <div class="form-group">
+                            <label>Format</label>
+                            <select id="export-format" class="select">
+                                <option value="sharegpt">ShareGPT</option>
+                                <option value="openai">OpenAI</option>
+                                <option value="alpaca">Alpaca</option>
+                            </select>
+                        </div>
+
+                        <div class="form-group">
+                            <label>System Prompt Source</label>
+                            <select id="export-prompt-source" class="select">
+                                <option value="none">None (use original)</option>
+                                <option value="generate">From Generate Tab</option>
+                                <option value="chat">From Chat Tab</option>
+                                <option value="custom">Custom</option>
+                            </select>
+                        </div>
+
+                        <div class="form-group" id="export-custom-prompt-group" style="display: none;">
+                            <label>Custom System Prompt</label>
+                            <textarea id="export-system-prompt" class="textarea" rows="4"
+                                placeholder="Enter system prompt to apply to all exports..."></textarea>
+                            <button id="save-export-prompt" class="btn btn-sm btn-accent" style="margin-top: 0.5rem;">💾
+                                Save Prompt</button>
+                        </div>
+
+                        <div class="export-summary">
+                            <span id="export-file-count">0</span> conversations selected
+                        </div>
+                    </div>
+
+                    <!-- Right: File Selection -->
+                    <div class="export-selection">
+                        <div class="export-selection-header">
+                            <label>Select Conversations</label>
+                            <div class="export-selection-actions">
+                                <button id="export-select-all" class="btn btn-sm">Select All</button>
+                                <button id="export-select-none" class="btn btn-sm">Select None</button>
+                            </div>
+                        </div>
+                        <div id="export-file-list" class="export-file-list">
+                            <!-- Files loaded dynamically -->
+                        </div>
+                    </div>
+                </div>
+
+                <div class="modal-actions">
+                    <button id="cancel-export" class="btn btn-secondary">Cancel</button>
+                    <button id="confirm-export" class="btn btn-primary">Export Selected</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Toast Container -->
+        <div id="toast-container" class="toast-container"></div>
+    </div>
+
+    <script src="app.js?v=3.0.0"></script>
+</body>
+
+</html>

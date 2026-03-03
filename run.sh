@@ -1,0 +1,35 @@
+#!/bin/bash
+
+# Synthetic Dataset Generator - Run Script
+
+# Check for virtual environment
+if [ ! -d "venv" ]; then
+    echo "📦 Creating virtual environment..."
+    python3 -m venv venv
+fi
+
+# Activate virtual environment
+source venv/bin/activate
+
+# Install dependencies if needed
+if [ ! -f "venv/.installed" ]; then
+    echo "📥 Installing dependencies..."
+    pip install -r requirements.txt
+    touch venv/.installed
+fi
+
+# Check for API key
+if [ -z "$OPENAI_API_KEY" ] && [ -z "$ANTHROPIC_API_KEY" ] && [ -z "$GOOGLE_API_KEY" ]; then
+    echo "⚠️  No API key found. Set one of:"
+    echo "   export OPENAI_API_KEY='your-key'"
+    echo "   export ANTHROPIC_API_KEY='your-key'"
+    echo "   export GOOGLE_API_KEY='your-key'"
+    echo ""
+    echo "🔄 Starting in demo mode (generation will use placeholders)..."
+fi
+
+echo ""
+echo "🗂️ Starting Synthetic Dataset Generator..."
+echo ""
+
+python server.py

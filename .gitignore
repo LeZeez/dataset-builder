@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+.env
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Project specific
+exports/**/*.jsonl
+data/wanted/*.json
+data/rejected/*.json
+!data/wanted/.gitkeep
+!data/rejected/.gitkeep
+
+# Config with API keys - use config.example.json as template
+config.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
