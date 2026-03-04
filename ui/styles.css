@@ -51,8 +51,9 @@ h1, h2, h3 { font-weight: 600; }
 #app {
     display: flex;
     flex-direction: column;
-    min-height: 100vh;
-    min-height: 100dvh;
+    height: 100vh;
+    height: 100dvh;
+    overflow: hidden;
 }
 
 /* ============ HEADER ============ */
@@ -960,13 +961,14 @@ kbd {
 
 @media (max-width: 768px) {
     body {
-        overflow-y: auto;
+        overflow-y: hidden;
         overflow-x: hidden;
-        height: auto;
-        min-height: 100vh;
-        min-height: 100dvh;
     }
-    #app { height: auto; min-height: 100vh; min-height: 100dvh; }
+    #app {
+        height: 100vh;
+        height: 100dvh;
+        overflow-y: auto;
+    }
 
     .header {
         flex-wrap: wrap;
