@@ -739,20 +739,21 @@ async function savePrompt() {
 async function newPrompt() {
     const name = prompt('New prompt template name:');
     if (!name) return;
+
+    // 1. Check for duplicates FIRST, before clearing anything
+    if (state.prompts.some(p => p.name === name)) {
+        toast(`A prompt with the name "${name}" already exists. Please use a unique name.`, 'error');
+        return; // Exit immediately
+    }
+
+    // 2. Now it's safe to clear the UI and state for the new prompt
     state.currentPromptName = name;
     els.systemPrompt.value = '';
     state.generate.prompt = '';
     extractVariables();
 
-    // Save it immediately so it persists and appears in dropdown
-    if (state.prompts.some(p => p.name === name)) {
-        toast(`A prompt with the name "${name}" already exists. Please use a unique name.`, 'error');
-        state.currentPromptName = ''; // Reset to avoid side-effects
-        return;
-    }
+    // 3. Save and reload
     await savePrompt();
-
-    // Reload prompts to update the dropdown
     await loadPrompts();
 
     // Select the new prompt
