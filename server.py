@@ -49,8 +49,11 @@ DATA_DIR = Path('data')
 
 def load_config() -> dict:
     if CONFIG_PATH.exists():
-        with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
-            return json.load(f)
+        try:
+            with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except json.JSONDecodeError:
+            return {}
     return {}
 
 
@@ -596,8 +599,11 @@ def list_conversations():
                     'tags': tags,
                     'turns': len([m for m in msgs if m.get('from') in ('human', 'gpt')])
                 })
-        except Exception as e:
+        except json.JSONDecodeError:
             # Skip malformed files
+            continue
+        except Exception:
+            # Skip other processing errors
             continue
     
     return jsonify(conversations)
@@ -612,8 +618,11 @@ def get_conversation(conv_id: str):
     if not filepath.exists():
         return jsonify({'error': 'Conversation not found'}), 404
     
-    with open(filepath, 'r', encoding='utf-8') as f:
-        return jsonify(json.load(f))
+    try:
+        with open(filepath, 'r', encoding='utf-8') as f:
+            return jsonify(json.load(f))
+    except json.JSONDecodeError:
+        return jsonify({'error': 'Invalid conversation file format'}), 400
 
 
 @app.route('/api/conversation/<conv_id>/move', methods=['POST'])
@@ -957,7 +966,7 @@ def load_drafts() -> dict:
         try:
             with open(DRAFTS_PATH, 'r', encoding='utf-8') as f:
                 return json.load(f)
-        except:
+        except json.JSONDecodeError:
             pass
     return {}
 
@@ -1060,7 +1069,9 @@ def get_all_tags():
                     conv = json.load(f)
                     for tag in conv.get('metadata', {}).get('tags', []):
                         tags.add(tag)
-            except:
+            except json.JSONDecodeError:
+                continue
+            except Exception:
                 continue
     
     return jsonify({'tags': sorted(list(tags))})
@@ -1078,7 +1089,7 @@ def load_review_queue() -> list:
         try:
             with open(REVIEW_QUEUE_PATH, 'r', encoding='utf-8') as f:
                 return json.load(f)
-        except:
+        except json.JSONDecodeError:
             pass
     return []
 

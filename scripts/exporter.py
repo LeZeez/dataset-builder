@@ -128,8 +128,12 @@ def export_dataset(
             if selected_ids is not None and json_file.stem not in selected_ids:
                 continue
                 
-            with open(json_file, 'r', encoding='utf-8') as f:
-                conv = json.load(f)
+            try:
+                with open(json_file, 'r', encoding='utf-8') as f:
+                    conv = json.load(f)
+            except json.JSONDecodeError:
+                print(f"Skipping malformed JSON file: {json_file}")
+                continue
             
             # Inject system prompt if provided
             if system_prompt and conv.get('conversations'):
