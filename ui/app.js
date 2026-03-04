@@ -743,7 +743,17 @@ async function newPrompt() {
     els.systemPrompt.value = '';
     state.generate.prompt = '';
     extractVariables();
-    els.promptSelect.value = '';
+
+    // Save it immediately so it persists and appears in dropdown
+    await savePrompt();
+
+    // Reload prompts to update the dropdown
+    await loadPrompts();
+
+    // Select the new prompt
+    if (els.promptSelect) {
+        els.promptSelect.value = name;
+    }
 }
 
 async function deletePrompt() {

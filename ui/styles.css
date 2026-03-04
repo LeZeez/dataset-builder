@@ -51,8 +51,9 @@ h1, h2, h3 { font-weight: 600; }
 #app {
     display: flex;
     flex-direction: column;
-    min-height: 100vh;
-    min-height: 100dvh;
+    height: 100vh;
+    height: 100dvh;
+    overflow: hidden;
 }
 
 /* ============ HEADER ============ */
@@ -281,6 +282,7 @@ h1, h2, h3 { font-weight: 600; }
     overflow: hidden;
     position: relative;
     min-width: 0;
+    width: 100%;
 }
 
 /* ============ TABS ============ */
@@ -346,6 +348,7 @@ h1, h2, h3 { font-weight: 600; }
     flex-direction: column;
     gap: 1rem;
     flex: 1;
+    min-width: 0;
     min-height: 0;
     overflow-y: auto;
 }
@@ -958,13 +961,14 @@ kbd {
 
 @media (max-width: 768px) {
     body {
-        overflow-y: auto;
+        overflow-y: hidden;
         overflow-x: hidden;
-        height: auto;
-        min-height: 100vh;
-        min-height: 100dvh;
     }
-    #app { height: auto; min-height: 100vh; min-height: 100dvh; }
+    #app {
+        height: 100vh;
+        height: 100dvh;
+        overflow-y: auto;
+    }
 
     .header {
         flex-wrap: wrap;
@@ -1103,8 +1107,8 @@ kbd {
 
 /* Desktop improvements */
 @media (min-width: 1200px) {
-    .prompt-card { flex: 0 0 45%; }
-    .conversation-card { flex: 1; }
+    .prompt-card { flex: 0 0 45%; min-width: 0; }
+    .conversation-card { flex: 1; min-width: 0; }
     .prompt-card .textarea { min-height: 300px; }
 }
 
