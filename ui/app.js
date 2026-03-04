@@ -745,6 +745,11 @@ async function newPrompt() {
     extractVariables();
 
     // Save it immediately so it persists and appears in dropdown
+    if (state.prompts.some(p => p.name === name)) {
+        toast(`A prompt with the name "${name}" already exists. Please use a unique name.`, 'error');
+        state.currentPromptName = ''; // Reset to avoid side-effects
+        return;
+    }
     await savePrompt();
 
     // Reload prompts to update the dropdown
