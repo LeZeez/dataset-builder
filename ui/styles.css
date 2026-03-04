@@ -331,7 +331,7 @@ h1, h2, h3 { font-weight: 600; }
     display: none;
     flex-direction: row;
     gap: 1.5rem;
-    height: 75%;
+    flex: auto;
     padding-top: 1.5rem;
     overflow: hidden;
 }
