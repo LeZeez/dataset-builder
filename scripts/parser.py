@@ -119,8 +119,11 @@ def save_conversation(conv: dict, folder: str = "data/wanted") -> Path:
 
 def load_conversation(filepath: str) -> dict:
     """Load a conversation from JSON file."""
-    with open(filepath, 'r', encoding='utf-8') as f:
-        return json.load(f)
+    try:
+        with open(filepath, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except json.JSONDecodeError:
+        return {}
 
 
 def validate_conversation(conv: dict) -> tuple[bool, list[str]]:

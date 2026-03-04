@@ -49,8 +49,12 @@ def get_stats(data_dir: str = "data/wanted") -> dict:
     dates = []
     
     for json_file in json_files:
-        with open(json_file, 'r', encoding='utf-8') as f:
-            conv = json.load(f)
+        try:
+            with open(json_file, 'r', encoding='utf-8') as f:
+                conv = json.load(f)
+        except json.JSONDecodeError:
+            print(f"Skipping malformed JSON file: {json_file}")
+            continue
         
         messages = conv.get("conversations", [])
         stats["total_messages"] += len(messages)
