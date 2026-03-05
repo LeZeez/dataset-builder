@@ -1441,7 +1441,7 @@ async function bulkGenerate(count) {
 
     els.bulkProgress.classList.remove('hidden');
     updateBulkProgress();
-
+    state.listIterators = {};
     for (let i = 0; i < count; i++) {
         if (state.bulk.abortController.signal.aborted) break;
         const promptText = applyVariables(els.systemPrompt.value);
