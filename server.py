@@ -93,19 +93,16 @@ def security_check():
     # Check IP Whitelist
     allowed_ips = server_config.get('allowed_ips', [])
     if allowed_ips and isinstance(allowed_ips, list) and len(allowed_ips) > 0:
-        # Get real IP if behind a proxy
-        client_ip = request.headers.get('X-Forwarded-For', request.remote_addr)
-        if client_ip:
-            client_ip = client_ip.split(',')[0].strip()
-
+        client_ip = request.remote_addr
         if client_ip not in allowed_ips:
             return jsonify({'error': 'Forbidden: IP not allowed'}), 403
 
     # Check Basic Auth
     required_password = server_config.get('password', '')
     if required_password:
+        import hmac
         auth = request.authorization
-        if not auth or auth.password != required_password:
+        if not auth or not hmac.compare_digest(auth.password, required_password):
             return Response(
                 json.dumps({'error': 'Unauthorized'}),
                 401,
@@ -169,7 +166,7 @@ def get_config():
 @app.route('/api/config', methods=['POST'])
 def update_config():
     """Update configuration (API keys, base URLs, etc)."""
-    data = request.get_json(silent=True) or {}
+    data = request.get_json() or {}
     config = load_config()
     
     # Update provider settings
@@ -200,7 +197,7 @@ def update_config():
 @app.route('/api/config/key', methods=['POST'])
 def set_api_key():
     """Set API key for a provider."""
-    data = request.get_json(silent=True) or {}
+    data = request.get_json() or {}
     provider = data.get('provider')
     api_key = data.get('api_key', '')
     
@@ -221,7 +218,7 @@ def set_api_key():
 @app.route('/api/config/baseurl', methods=['POST'])
 def set_base_url():
     """Set base URL for a provider."""
-    data = request.get_json(silent=True) or {}
+    data = request.get_json() or {}
     provider = data.get('provider')
     base_url = data.get('base_url', '')
     
@@ -285,7 +282,7 @@ def get_prompt(name: str):
 @app.route('/api/prompts', methods=['POST'])
 def save_prompt():
     """Create or update a prompt template."""
-    data = request.get_json(silent=True) or {}
+    data = request.get_json() or {}
     name = data.get('name', '').strip()
     content = data.get('content', '')
     
@@ -385,7 +382,7 @@ def prepare_custom_params(raw_params: dict) -> dict:
 @app.route('/api/generate', methods=['POST'])
 def generate_conversation():
     """Generate a conversation using configured LLM."""
-    data = request.get_json(silent=True) or {}
+    data = request.get_json() or {}
     prompt = data.get('prompt', '')
     provider = data.get('provider', 'openai')
     model = data.get('model', 'gpt-4o')
@@ -500,7 +497,7 @@ def generate_google(prompt: str, model: str, temperature: float, config: dict, c
 @app.route('/api/save', methods=['POST'])
 def save_conversation_endpoint():
     """Save a conversation to wanted or rejected folder."""
-    data = request.get_json(silent=True) or {}
+    data = request.get_json() or {}
     conversation = data.get('conversation', {})
     folder = data.get('folder', 'wanted')  # 'wanted' or 'rejected'
     metadata = data.get('metadata', {})
@@ -548,7 +545,7 @@ def save_conversation_endpoint():
 @app.route('/api/save/bulk', methods=['POST'])
 def save_bulk_conversations():
     """Save multiple conversations at once (for bulk generation review)."""
-    data = request.get_json(silent=True) or {}
+    data = request.get_json() or {}
     items = data.get('items', [])
     folder = data.get('folder', 'wanted')
     
@@ -610,7 +607,7 @@ def export_dataset_endpoint(format: str):
         return jsonify({'error': 'Invalid format'}), 400
     
     try:
-        data = request.get_json(silent=True) or {}
+        data = request.get_json() or {}
         selected_ids = data.get('ids', None)  # List of IDs or None for all
         system_prompt = data.get('system_prompt', None)  # Override system prompt
         
@@ -698,7 +695,10 @@ def get_conversation(conv_id: str):
 @app.route('/api/conversation/<conv_id>/move', methods=['POST'])
 def move_conversation(conv_id: str):
     """Move conversation between wanted and rejected."""
-    data = request.get_json(silent=True) or {}
+    if not isinstance(conv_id, str) or '..' in conv_id or '/' in conv_id or '\\' in conv_id:
+        return jsonify({'error': 'Invalid conversation ID'}), 400
+
+    data = request.get_json() or {}
     from_folder = data.get('from', 'wanted')
     to_folder = data.get('to', 'rejected')
     
@@ -739,7 +739,7 @@ def delete_conversation(conv_id: str):
 @app.route('/api/conversations/bulk-delete', methods=['POST'])
 def bulk_delete_conversations():
     """Bulk delete conversations."""
-    data = request.get_json(silent=True) or {}
+    data = request.get_json() or {}
     ids = data.get('ids', [])
     folder = data.get('folder', 'wanted')
 
@@ -764,7 +764,7 @@ def bulk_delete_conversations():
 @app.route('/api/conversations/bulk-move', methods=['POST'])
 def bulk_move_conversations():
     """Bulk move conversations."""
-    data = request.get_json(silent=True) or {}
+    data = request.get_json() or {}
     ids = data.get('ids', [])
     from_folder = data.get('from', 'wanted')
     to_folder = data.get('to', 'rejected')
@@ -884,7 +884,7 @@ def fetch_google_models(provider_config: dict) -> list:
 @app.route('/api/models/history', methods=['POST'])
 def add_model_to_history():
     """Add a model to history for quick access."""
-    data = request.get_json(silent=True) or {}
+    data = request.get_json() or {}
     provider = data.get('provider', 'openai')
     model = data.get('model', '')
     
@@ -913,7 +913,7 @@ def add_model_to_history():
 @app.route('/api/generate/stream', methods=['POST'])
 def generate_stream():
     """Generate conversation with streaming response (SSE)."""
-    data = request.get_json(silent=True) or {}
+    data = request.get_json() or {}
     prompt = data.get('prompt', '')
     provider = data.get('provider', 'openai')
     model = data.get('model', 'gpt-4o')
@@ -1051,7 +1051,7 @@ def get_presets():
 @app.route('/api/presets', methods=['POST'])
 def save_preset():
     """Save a new variable preset."""
-    data = request.get_json(silent=True) or {}
+    data = request.get_json() or {}
     name = data.get('name', '')
     values = data.get('values', {})
     
@@ -1113,7 +1113,7 @@ def get_drafts():
 @app.route('/api/drafts', methods=['POST'])
 def save_draft_endpoint():
     """Save drafts for cross-device sync."""
-    data = request.get_json(silent=True) or {}
+    data = request.get_json() or {}
     drafts = load_drafts()
     
     # Merge incoming data with existing drafts
@@ -1130,7 +1130,7 @@ def save_draft_endpoint():
 @app.route('/api/drafts/<key>', methods=['POST'])
 def save_draft_key(key: str):
     """Save a specific draft key."""
-    data = request.get_json(silent=True) or {}
+    data = request.get_json() or {}
     drafts = load_drafts()
     drafts[key] = data.get('value')
     drafts['_updated'] = datetime.utcnow().isoformat() + 'Z'
@@ -1150,7 +1150,7 @@ def get_chat_presets():
 @app.route('/api/chat-presets', methods=['POST'])
 def save_chat_preset():
     """Save a chat system prompt preset."""
-    data = request.get_json(silent=True) or {}
+    data = request.get_json() or {}
     name = data.get('name', '').strip()
     prompt = data.get('prompt', '')
     
@@ -1238,7 +1238,7 @@ def get_review_queue():
 @app.route('/api/review-queue', methods=['POST'])
 def add_to_review_queue():
     """Add one or more items to the review queue."""
-    data = request.get_json(silent=True) or {}
+    data = request.get_json() or {}
     items = data.get('items', [])
     
     # Also support single-item POST
@@ -1290,7 +1290,7 @@ def remove_from_review_queue(item_id: str):
 @app.route('/api/review-queue/bulk-delete', methods=['POST'])
 def bulk_remove_from_review_queue():
     """Bulk remove items from the review queue."""
-    data = request.get_json(silent=True) or {}
+    data = request.get_json() or {}
     ids = data.get('ids', [])
 
     with _review_queue_lock:
@@ -1304,7 +1304,7 @@ def bulk_remove_from_review_queue():
 @app.route('/api/review-queue/bulk-keep', methods=['POST'])
 def bulk_keep_from_review_queue():
     """Atomically save items from the review queue to wanted and remove them from the queue."""
-    data = request.get_json(silent=True) or {}
+    data = request.get_json() or {}
     ids = data.get('ids', [])
     ids_set = set(ids)
 
