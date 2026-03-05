@@ -1,17 +1,17 @@
 :root {
-    --bg-base: #0f0f1a;
-    --bg-glass: rgba(30, 30, 50, 0.7);
-    --bg-glass-light: rgba(50, 50, 80, 0.5);
+    --bg-base: #0b0c10;
+    --bg-glass: rgba(20, 22, 30, 0.7);
+    --bg-glass-light: rgba(35, 38, 50, 0.5);
     --text-primary: #f0f0f5;
     --text-secondary: #8888aa;
-    --accent: #6366f1;
-    --accent-glow: rgba(99, 102, 241, 0.3);
+    --accent: #7c3aed;
+    --accent-glow: rgba(124, 58, 237, 0.4);
     --success: #22c55e;
     --danger: #ef4444;
     --warning: #f59e0b;
     --human-bubble: #1e3a5f;
     --gpt-bubble: #2d2d4a;
-    --border-glass: rgba(255, 255, 255, 0.1);
+    --border-glass: rgba(255, 255, 255, 0.08);
     --font-ui: 'Inter', sans-serif;
     --font-ar: 'Cairo', sans-serif;
 }
@@ -24,6 +24,7 @@
 
 body {
     background-color: var(--bg-base);
+    background: radial-gradient(circle at top left, #1a1a2e 0%, var(--bg-base) 50%);
     color: var(--text-primary);
     font-family: var(--font-ui);
     min-height: 100vh;
@@ -342,7 +343,8 @@ h1, h2, h3 { font-weight: 600; }
 .card {
     background: var(--bg-glass);
     border: 1px solid var(--border-glass);
-    border-radius: 16px;
+    border-radius: 20px;
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
     padding: 1.5rem;
     display: flex;
     flex-direction: column;
@@ -389,6 +391,7 @@ h1, h2, h3 { font-weight: 600; }
 .input:focus, .select:focus, .textarea:focus {
     outline: none;
     border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-glow);
     background: rgba(0, 0, 0, 0.4);
 }
 
@@ -468,6 +471,13 @@ h1, h2, h3 { font-weight: 600; }
     flex-wrap: wrap;
 }
 
+.prompt-controls .select, .preset-controls .select {
+    min-width: 0;
+    flex: 1;
+    text-overflow: ellipsis;
+    overflow: hidden;
+}
+
 .select-sm {
     padding: 0.4rem 0.6rem;
     padding-right: 1.8rem;
@@ -485,7 +495,8 @@ h1, h2, h3 { font-weight: 600; }
 .variables-header {
     display: flex;
     justify-content: space-between;
-    align-items: center;
+    align-items: flex-start;
+    flex-wrap: wrap;
     margin-bottom: 0.75rem;
     font-size: 0.85rem;
     color: var(--text-secondary);
@@ -500,6 +511,9 @@ h1, h2, h3 { font-weight: 600; }
 .preset-controls {
     display: flex;
     gap: 0.5rem;
+    flex-wrap: nowrap;
+    min-width: 0;
+    width: 100%;
 }
 
 /* ============ CUSTOM PARAMETERS ============ */
@@ -674,7 +688,7 @@ h1, h2, h3 { font-weight: 600; }
 .bubble {
     max-width: 85%;
     padding: 0.8rem 1rem;
-    border-radius: 12px;
+    border-radius: 16px;
     line-height: 1.5;
     position: relative;
     font-family: var(--font-ar);
@@ -684,13 +698,15 @@ h1, h2, h3 { font-weight: 600; }
 }
 
 .bubble.human {
-    background: var(--human-bubble);
+    background: #1e293b;
+    border: 1px solid rgba(255,255,255,0.05);
     align-self: flex-start;
     border-bottom-left-radius: 2px;
 }
 
 .bubble.gpt {
-    background: var(--gpt-bubble);
+    background: #0f172a;
+    border: 1px solid rgba(255,255,255,0.05);
     align-self: flex-end;
     border-bottom-right-radius: 2px;
 }
@@ -853,7 +869,7 @@ kbd {
 /* ============ BUTTONS ============ */
 .btn {
     padding: 0.6rem 1.2rem;
-    border-radius: 8px;
+    border-radius: 12px;
     border: none;
     font-family: var(--font-ui);
     font-weight: 500;
@@ -864,6 +880,8 @@ kbd {
     justify-content: center;
     gap: 0.5rem;
 }
+
+.btn:hover:not(:disabled) { transform: translateY(-1px); }
 
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
@@ -1465,8 +1483,14 @@ kbd {
 /* ============ TOAST ============ */
 .toast-container {
     position: fixed;
-    bottom: 2rem;
-    right: 2rem;
+    top: 2rem;
+    bottom: auto;
+    left: 50%;
+    transform: translateX(-50%);
+    align-items: center;
+    width: max-content;
+    max-width: 90vw;
+    pointer-events: none;
     display: flex;
     flex-direction: column;
     gap: 0.5rem;
@@ -1474,21 +1498,23 @@ kbd {
 }
 
 .toast {
-    padding: 0.8rem 1.2rem;
+    padding: 1rem 1.5rem;
     background: var(--bg-glass);
     border: 1px solid var(--border-glass);
-    border-radius: 8px;
+    border-radius: 12px;
+    box-shadow: 0 10px 40px rgba(0,0,0,0.5);
     color: var(--text-primary);
-    font-size: 0.9rem;
+    font-size: 1.1rem;
+    text-align: center;
     opacity: 0;
-    transform: translateX(100%);
+    transform: translateY(-20px);
     transition: all 0.3s ease;
     backdrop-filter: blur(12px);
 }
 
 .toast.show {
     opacity: 1;
-    transform: translateX(0);
+    transform: translateY(0);
 }
 
 .toast-success { border-left: 3px solid var(--success); }
