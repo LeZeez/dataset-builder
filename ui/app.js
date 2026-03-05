@@ -844,7 +844,14 @@ function applyVariables(text, isPreview = false) {
                 if (parts.length > 0) {
                     val = parts[Math.floor(Math.random() * parts.length)];
                 }
-            } else if (val.includes('::')) { // Default list iterator for named variables
+            } else if (val.startsWith('list::')) {
+                const parts = val.split('::').slice(1);
+                if (parts.length > 0) {
+                    if (!state.listIterators[key]) state.listIterators[key] = 0;
+                    val = parts[state.listIterators[key] % parts.length];
+                    if (!isPreview) state.listIterators[key]++;
+                }
+            } else if (val.includes('::')) { // Default list iterator for named variables without prefix
                 const parts = val.split('::');
                 if (!state.listIterators[key]) state.listIterators[key] = 0;
                 val = parts[state.listIterators[key] % parts.length];
