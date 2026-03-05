@@ -8,7 +8,7 @@ A tool for creating synthetic conversation datasets using frontier LLMs.
 - **Multi-provider support**: OpenAI, Anthropic, Google Gemini
 - **Simple input format** with multi-line message support
 - **Export to popular formats**: ShareGPT, OpenAI, Alpaca
-- **Bulk actions** (Delete, Move, Keep, Remove)
+- **Bulk actions** (Delete, Move, Keep, Discard)
 - **Review queue** management
 - **Manage Files modal** for better organization
 - **Individual JSON files** per conversation for easy management
