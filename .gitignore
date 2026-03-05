@@ -31,3 +31,7 @@ Thumbs.db
 
 # Logs
 *.log
+server.pid
+
+# Data files
+data/drafts.json

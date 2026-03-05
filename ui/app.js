@@ -444,14 +444,24 @@ async function init() {
         reviewBadge: $('#review-badge'),
 
         // Generate Tab - Prompt Manager
+        lastPromptSection: $('#last-prompt-section'),
+        lastPromptContent: $('#last-prompt-content'),
+        hideLastPromptBtn: $('#hide-last-prompt-btn'),
         promptSelect: $('#prompt-select'),
         savePromptBtn: $('#save-prompt-btn'),
         newPromptBtn: $('#new-prompt-btn'),
         deletePromptBtn: $('#delete-prompt-btn'),
         refreshPromptBtn: $('#refresh-prompt-btn'),
         systemPrompt: $('#system-prompt'),
-        variablesSection: $('#variables-section'),
-        variablesGrid: $('#variables-grid'),
+        macrosBtn: $('#macros-btn'),
+        macrosBadge: $('#macros-badge'),
+        macrosModal: $('#macros-modal'),
+        closeMacros: $('#close-macros'),
+        variablesContainer: $('#variables-container'),
+        macroType: $('#macro-type'),
+        macroMakerInputs: $('#macro-maker-inputs'),
+        macroResult: $('#macro-result'),
+        copyMacroBtn: $('#copy-macro-btn'),
         presetSelect: $('#preset-select'),
         savePreset: $('#save-preset'),
         deletePreset: $('#delete-preset'),
@@ -544,6 +554,9 @@ async function init() {
     await loadTags();
     await restoreDraft();
     await loadReviewQueue();
+
+    // Initialize Macro Maker
+    if (els.macroType) updateMacroMakerUI();
 
     setupEventListeners();
     applyHotkeysToUI();
@@ -786,33 +799,237 @@ async function deletePrompt() {
     } catch (e) { toast('Failed to delete', 'error'); }
 }
 
+function safeMathEval(expr) {
+    // Remove all whitespace
+    expr = expr.replace(/\s+/g, '');
+    // Ensure it only contains valid math characters
+    if (!/^[\d\+\-\*\/\(\)\.]+$/.test(expr)) return NaN;
+
+    // Very basic safe evaluation by checking tokenized parts
+    // This is safer than Function or eval
+    try {
+        const tokens = expr.match(/(?:(?:^|[-+*/(])\s*-?\d+(?:\.\d+)?)|[-+*/()]/g);
+        if (!tokens) return NaN;
+
+        let processed = '';
+        for (let t of tokens) {
+            t = t.trim();
+            if (/^-?\d+(?:\.\d+)?$/.test(t)) {
+                processed += t;
+            } else if (['+', '-', '*', '/', '(', ')'].includes(t)) {
+                processed += t;
+            } else {
+                return NaN;
+            }
+        }
+
+        // At this point processed string is strictly validated
+        // We use a small Function here because we strictly validated every single token
+        // to be either a number or a math operator. There's no way to pass identifiers.
+        const result = Function(`'use strict'; return (${processed})`)();
+        return typeof result === 'number' && !isNaN(result) && isFinite(result) ? result : NaN;
+    } catch (e) {
+        return NaN;
+    }
+}
+
+const BUILT_IN_MACROS = [
+    {
+        match: (key) => key.startsWith('//'),
+        handle: () => ({ val: '', isBuiltIn: true })
+    },
+    {
+        match: (key) => key.match(/^[\d\s\+\-\*\/\(\)\.]+$/),
+        handle: (key) => {
+            const result = safeMathEval(key);
+            if (!isNaN(result)) return { val: result, isBuiltIn: true };
+            return null;
+        }
+    },
+    {
+        match: (key) => key.startsWith('roll:'),
+        handle: (key) => {
+            const rollStr = key.substring(5).trim();
+            const rollMatch = rollStr.match(/^(\d+)d(\d+)(?:([+-])(\d+))?$/i);
+            if (rollMatch) {
+                const count = parseInt(rollMatch[1]) || 1;
+                const sides = parseInt(rollMatch[2]) || 6;
+                const sign = rollMatch[3];
+                const mod = parseInt(rollMatch[4]) || 0;
+                let total = 0;
+                for (let i = 0; i < count; i++) {
+                    total += Math.floor(Math.random() * sides) + 1;
+                }
+                if (sign === '+') total += mod;
+                else if (sign === '-') total -= mod;
+                return { val: total, isBuiltIn: true };
+            }
+            return null;
+        }
+    },
+    {
+        match: (key) => key.startsWith('random::'),
+        handle: (key) => {
+            const parts = key.split('::').slice(1);
+            if (parts.length > 0) {
+                return { val: parts[Math.floor(Math.random() * parts.length)], isBuiltIn: true };
+            }
+            return null;
+        }
+    },
+    {
+        match: (key) => key.startsWith('list::'),
+        handle: (key, isPreview) => {
+            const parts = key.split('::').slice(1);
+            if (parts.length > 0) {
+                if (!state.listIterators[key]) state.listIterators[key] = 0;
+                const val = parts[state.listIterators[key] % parts.length];
+                if (!isPreview) state.listIterators[key]++;
+                return { val, isBuiltIn: true };
+            }
+            return null;
+        }
+    }
+];
+
+// ============ MACRO MAKER ============
+function updateMacroMakerUI() {
+    if (!els.macroMakerInputs) return;
+    const type = els.macroType.value;
+    let html = '';
+
+    if (type === 'random' || type === 'list') {
+        html = `
+            <div class="form-group">
+                <label>Options (one per line)</label>
+                <textarea id="macro-options" class="textarea input-sm" rows="4" placeholder="Option 1\nOption 2\nOption 3"></textarea>
+            </div>
+        `;
+    } else if (type === 'roll') {
+        html = `
+            <div class="macro-maker-row">
+                <div class="form-group macro-maker-col">
+                    <label>Count</label>
+                    <input type="number" id="macro-roll-count" class="input input-sm" value="1" min="1">
+                </div>
+                <div class="form-group macro-maker-col">
+                    <label>Sides</label>
+                    <input type="number" id="macro-roll-sides" class="input input-sm" value="6" min="2">
+                </div>
+                <div class="form-group macro-maker-col">
+                    <label>Modifier (+/-)</label>
+                    <input type="number" id="macro-roll-mod" class="input input-sm" value="0">
+                </div>
+            </div>
+        `;
+    } else if (type === 'math') {
+        html = `
+            <div class="form-group">
+                <label>Expression</label>
+                <input type="text" id="macro-math-expr" class="input input-sm" placeholder="e.g. 5+4*2/4" value="1+1">
+            </div>
+        `;
+    } else if (type === 'comment') {
+        html = `
+            <div class="form-group">
+                <label>Comment Text</label>
+                <textarea id="macro-comment-text" class="textarea input-sm" rows="2" placeholder="This will not be sent to the AI"></textarea>
+            </div>
+        `;
+    }
+
+    els.macroMakerInputs.innerHTML = html;
+    generateMacroResult();
+
+    // Add listeners to new inputs
+    els.macroMakerInputs.querySelectorAll('input, textarea').forEach(input => {
+        input.addEventListener('input', generateMacroResult);
+    });
+}
+
+function generateMacroResult() {
+    if (!els.macroResult) return;
+    const type = els.macroType.value;
+    let result = '';
+
+    if (type === 'random' || type === 'list') {
+        const text = document.getElementById('macro-options')?.value || '';
+        const options = text.split('\n').map(s => s.trim()).filter(Boolean);
+        if (options.length > 0) {
+            result = `{{${type}::${options.join('::')}}}`;
+        } else {
+            result = `{{${type}::item1::item2}}`;
+        }
+    } else if (type === 'roll') {
+        const count = document.getElementById('macro-roll-count')?.value || '1';
+        const sides = document.getElementById('macro-roll-sides')?.value || '6';
+        let mod = document.getElementById('macro-roll-mod')?.value || '0';
+        mod = parseInt(mod);
+        let modStr = '';
+        if (mod > 0) modStr = '+' + mod;
+        else if (mod < 0) modStr = String(mod);
+
+        result = `{{roll:${count}d${sides}${modStr}}}`;
+    } else if (type === 'math') {
+        const expr = document.getElementById('macro-math-expr')?.value || '';
+        result = `{{${expr}}}`;
+    } else if (type === 'comment') {
+        const text = document.getElementById('macro-comment-text')?.value || '';
+        result = `{{// ${text}}}`;
+    }
+
+    els.macroResult.value = result;
+}
+
 // ============ VARIABLES & PRESETS ============
 function extractVariables() {
     const text = els.systemPrompt.value;
-    const regex = /\{\{(\w+)\}\}/g;
+    const regex = /\{\{([^\{\}]+)\}\}/g;
     const matches = [...text.matchAll(regex)];
-    const names = [...new Set(matches.map(m => m[1]))];
+    const rawNames = matches.map(m => m[1]);
+    const names = [...new Set(rawNames)].filter(name => {
+        // Use BUILT_IN_MACROS to filter out built-in macros from being treated as regular variables
+        return !BUILT_IN_MACROS.some(macro => macro.match(name));
+    });
+
     state.generate.variableNames = names;
     if (names.length > 0) {
-        els.variablesSection.classList.remove('hidden');
+        if (els.macrosBadge) {
+            els.macrosBadge.textContent = names.length;
+            els.macrosBadge.classList.remove('hidden');
+        }
         renderVariableInputs(names);
     } else {
-        els.variablesSection.classList.add('hidden');
+        if (els.macrosBadge) {
+            els.macrosBadge.classList.add('hidden');
+        }
+        if (els.variablesContainer) {
+            els.variablesContainer.innerHTML = `
+                <div class="empty-state" style="padding: 1rem;">
+                    <div class="empty-icon" style="font-size: 1.5rem; margin-bottom: 0.5rem;">🔍</div>
+                    <p style="font-size: 0.8rem;">No variables found in prompt.</p>
+                </div>`;
+        }
     }
     updateTokenCount();
 }
 
 function renderVariableInputs(names) {
-    els.variablesGrid.innerHTML = names.map(name => `
+    if (!els.variablesContainer) return;
+    els.variablesContainer.innerHTML = names.map(name => {
+        const escapedName = escapeHtml(name);
+        const escapedValue = escapeHtml(state.generate.variables[name] || '');
+        return `
         <div class="form-group">
-            <label for="var-${name}">${name}</label>
-            <input type="text" id="var-${name}" class="input var-input"
-                   data-var="${name}"
-                   value="${state.generate.variables[name] || ''}"
-                   placeholder="${name}...">
+            <label for="var-${escapedName}">${escapedName}</label>
+            <textarea id="var-${escapedName}" class="textarea var-input"
+                   data-var="${escapedName}"
+                   placeholder="${escapedName}..." rows="3" style="min-height: 80px;">${escapedValue}</textarea>
         </div>
-    `).join('');
-    $$('.var-input').forEach(input => {
+    `}).join('');
+
+    // Use the container to query the elements just added
+    els.variablesContainer.querySelectorAll('.var-input').forEach(input => {
         input.addEventListener('input', (e) => {
             state.generate.variables[e.target.dataset.var] = e.target.value;
             updateTokenCount();
@@ -821,56 +1038,171 @@ function renderVariableInputs(names) {
     });
 }
 
-function applyVariables(text, isPreview = false) {
-    const sessionCache = {};
-
-    return text.replace(/\{\{([\w:]+)\}\}/g, (_, key) => {
-        // Handle inline macros: {{random::v1::v2}} or {{list::v1::v2}}
-        if (key.startsWith('random::')) {
+    {
+        match: (key) => key.startsWith('//'),
+        handle: () => ({ val: '', isBuiltIn: true })
+    },
+    {
+        match: (key) => key.match(/^[\d\s\+\-\*\/\(\)\.]+$/),
+        handle: (key) => {
+            const result = safeMathEval(key);
+            if (!isNaN(result)) return { val: result, isBuiltIn: true };
+            return null;
+        }
+    },
+    {
+        match: (key) => key.startsWith('roll:'),
+        handle: (key) => {
+            const rollStr = key.substring(5).trim();
+            const rollMatch = rollStr.match(/^(\d+)d(\d+)(?:([+-])(\d+))?$/i);
+            if (rollMatch) {
+                const count = parseInt(rollMatch[1]) || 1;
+                const sides = parseInt(rollMatch[2]) || 6;
+                const sign = rollMatch[3];
+                const mod = parseInt(rollMatch[4]) || 0;
+                let total = 0;
+                for (let i = 0; i < count; i++) {
+                    total += Math.floor(Math.random() * sides) + 1;
+                }
+                if (sign === '+') total += mod;
+                else if (sign === '-') total -= mod;
+                return { val: total, isBuiltIn: true };
+            }
+            return null;
+        }
+    },
+    {
+        match: (key) => key.startsWith('random::'),
+        handle: (key) => {
             const parts = key.split('::').slice(1);
             if (parts.length > 0) {
-                return parts[Math.floor(Math.random() * parts.length)];
+                return { val: parts[Math.floor(Math.random() * parts.length)], isBuiltIn: true };
             }
+            return null;
         }
-        if (key.startsWith('list::')) {
+    },
+    {
+        match: (key) => key.startsWith('list::'),
+        handle: (key, isPreview) => {
             const parts = key.split('::').slice(1);
             if (parts.length > 0) {
                 if (!state.listIterators[key]) state.listIterators[key] = 0;
                 const val = parts[state.listIterators[key] % parts.length];
                 if (!isPreview) state.listIterators[key]++;
+                return { val, isBuiltIn: true };
+            }
+            return null;
+        }
+    }
+];
+
+function applyVariables(text, isPreview = false, returnObject = false) {
+    const sessionCache = {};
+    let iteration = 0;
+
+    // We need to keep track of the text with and without HTML highlights
+    let plainText = text;
+    let highlightedText = escapeHtml(text);
+
+    // We'll use a marker approach for highlights to avoid messing up the regex replacements
+    let markerId = 0;
+    const highlightMarkers = {};
+
+    let prevPlainText = null;
+
+    while (plainText !== prevPlainText && iteration < 10) {
+        prevPlainText = plainText;
+
+        plainText = plainText.replace(/\{\{([^\{\}]+)\}\}/g, (match, key) => {
+            let val = undefined;
+            let isBuiltIn = false;
+            let handled = false;
+
+            // Check built-in macros
+            for (const macro of BUILT_IN_MACROS) {
+                if (macro.match(key)) {
+                    const result = macro.handle(key, isPreview);
+                    if (result) {
+                        val = result.val;
+                        isBuiltIn = result.isBuiltIn;
+                        handled = true;
+                        break;
+                    }
+                }
+            }
+
+            // Standard variables from the UI grid
+            if (!handled) {
+                if (sessionCache[key] !== undefined) {
+                    val = sessionCache[key];
+                } else {
+                let userVal = state.generate.variables[key];
+                if (userVal !== undefined && userVal !== null && userVal !== '') {
+                    if (userVal.startsWith('random::')) {
+                        const parts = userVal.split('::').slice(1);
+                        if (parts.length > 0) {
+                            userVal = parts[Math.floor(Math.random() * parts.length)];
+                        }
+                    } else if (userVal.startsWith('list::')) {
+                        const parts = userVal.split('::').slice(1);
+                        if (parts.length > 0) {
+                            if (!state.listIterators[key]) state.listIterators[key] = 0;
+                            userVal = parts[state.listIterators[key] % parts.length];
+                            if (!isPreview) state.listIterators[key]++;
+                        }
+                    } else if (userVal.includes('::')) { // Default list iterator for named variables without prefix
+                        const parts = userVal.split('::');
+                        if (!state.listIterators[key]) state.listIterators[key] = 0;
+                        userVal = parts[state.listIterators[key] % parts.length];
+                        if (!isPreview) state.listIterators[key]++;
+                    }
+                    sessionCache[key] = userVal;
+                    val = userVal;
+                }
+            }
+
+            if (val !== undefined) {
+                if (isBuiltIn && val !== '') {
+                    // It's a resolved macro, create a marker for highlighting
+                    const id = `__MARKER_${markerId++}__`;
+                    highlightMarkers[id] = `<span class="macro-highlight" title="${escapeHtml(`{{${key}}}`)}">${escapeHtml(String(val))}</span>`;
+
+                    // Replace the exact match in highlightedText with the marker
+                    // We use split/join to replace only the first occurrence to avoid messing up duplicate macros
+                    const escapedMatch = escapeHtml(match);
+                    const parts = highlightedText.split(escapedMatch);
+                    if (parts.length > 1) {
+                        highlightedText = parts[0] + id + parts.slice(1).join(escapedMatch);
+                    }
+                } else {
+                    // Normal variable or comment, just replace in highlightedText
+                    const escapedMatch = escapeHtml(match);
+                    const parts = highlightedText.split(escapedMatch);
+                    if (parts.length > 1) {
+                        highlightedText = parts[0] + escapeHtml(String(val)) + parts.slice(1).join(escapedMatch);
+                    }
+                }
                 return val;
             }
-        }
 
-        // Standard variables from the UI grid
-        if (sessionCache[key] !== undefined) return sessionCache[key];
+            return `__UNRESOLVED_${key}__`;
+        });
+        iteration++;
+    }
 
-        let val = state.generate.variables[key];
-        if (val) {
-            if (val.startsWith('random::')) {
-                const parts = val.split('::').slice(1);
-                if (parts.length > 0) {
-                    val = parts[Math.floor(Math.random() * parts.length)];
-                }
-            } else if (val.startsWith('list::')) {
-                const parts = val.split('::').slice(1);
-                if (parts.length > 0) {
-                    if (!state.listIterators[key]) state.listIterators[key] = 0;
-                    val = parts[state.listIterators[key] % parts.length];
-                    if (!isPreview) state.listIterators[key]++;
-                }
-            } else if (val.includes('::')) { // Default list iterator for named variables without prefix
-                const parts = val.split('::');
-                if (!state.listIterators[key]) state.listIterators[key] = 0;
-                val = parts[state.listIterators[key] % parts.length];
-                if (!isPreview) state.listIterators[key]++;
-            }
-            sessionCache[key] = val;
-            return val;
-        }
+    // Decode unresolved variables
+    plainText = plainText.replace(/__UNRESOLVED_([^\{]+)__/g, (_, key) => `{{${key}}}`);
+    highlightedText = highlightedText.replace(/__UNRESOLVED_([^\{]+)__/g, (_, key) => escapeHtml(`{{${key}}}`));
 
-        return `{{${key}}}`;
-    });
+    // Replace markers with actual HTML
+    for (const [id, html] of Object.entries(highlightMarkers)) {
+        highlightedText = highlightedText.replace(id, html);
+    }
+
+    if (returnObject) {
+        return { plain: plainText, highlighted: highlightedText };
+    }
+    return plainText;
 }
 
 async function loadPresets() {
@@ -1077,7 +1409,9 @@ function renderTagSuggestions() {
 // ============ TOKEN COUNT ============
 function updateTokenCount() {
     const p = applyVariables(els.systemPrompt.value, true);
-    const tokens = Math.ceil(p.length / 2);
+    // When returnObject is false (default), p is just the plain text string
+    const text = typeof p === 'string' ? p : p.plain;
+    const tokens = Math.ceil(text.length / 2);
     els.tokenCount.textContent = `~${tokens} tokens`;
 }
 
@@ -1342,7 +1676,13 @@ async function generate() {
     els.generateBtn.classList.remove('btn-primary');
     els.generateBtn.querySelector('.btn-text').textContent = '⏹ Stop';
 
-    const promptText = applyVariables(els.systemPrompt.value);
+    const resolved = applyVariables(els.systemPrompt.value, false, true);
+    const promptText = resolved.plain;
+
+    // Update last sent prompt view
+    if (els.lastPromptContent) els.lastPromptContent.innerHTML = resolved.highlighted;
+    if (els.lastPromptSection) els.lastPromptSection.classList.remove('hidden');
+
     try {
         const response = await fetch('/api/generate/stream', {
             method: 'POST',
@@ -1444,7 +1784,13 @@ async function bulkGenerate(count) {
     state.listIterators = {};
     for (let i = 0; i < count; i++) {
         if (state.bulk.abortController.signal.aborted) break;
-        const promptText = applyVariables(els.systemPrompt.value);
+        const resolved = applyVariables(els.systemPrompt.value, false, true);
+        const promptText = resolved.plain;
+
+        // Update last sent prompt view for the last generated item or continuously
+        if (els.lastPromptContent) els.lastPromptContent.innerHTML = resolved.highlighted;
+        if (els.lastPromptSection) els.lastPromptSection.classList.remove('hidden');
+
         try {
             const res = await fetch('/api/generate', {
                 method: 'POST',
@@ -2658,6 +3004,35 @@ function setupEventListeners() {
     els.exportSelectNone?.addEventListener('click', selectNoneExportFiles);
     $('#export-modal .modal-backdrop')?.addEventListener('click', closeExportModal);
     els.saveExportPrompt?.addEventListener('click', saveExportPromptToServer);
+
+    // Macros Modal
+    els.macrosBtn?.addEventListener('click', () => {
+        if (els.macrosModal) els.macrosModal.classList.remove('hidden');
+    });
+    els.closeMacros?.addEventListener('click', () => {
+        if (els.macrosModal) els.macrosModal.classList.add('hidden');
+    });
+    $('#macros-modal .modal-backdrop')?.addEventListener('click', () => {
+        if (els.macrosModal) els.macrosModal.classList.add('hidden');
+    });
+
+    // Macro Maker
+    els.macroType?.addEventListener('change', updateMacroMakerUI);
+    els.copyMacroBtn?.addEventListener('click', () => {
+        const result = els.macroResult?.value;
+        if (result) {
+            navigator.clipboard.writeText(result).then(() => {
+                toast('Macro copied to clipboard!', 'success');
+            }).catch(() => {
+                toast('Failed to copy macro', 'error');
+            });
+        }
+    });
+
+    // Hide last prompt
+    els.hideLastPromptBtn?.addEventListener('click', () => {
+        if (els.lastPromptSection) els.lastPromptSection.classList.add('hidden');
+    });
 
     // Tabs
     els.tabs.forEach(tab => { tab.addEventListener('click', () => switchTab(tab.dataset.tab)); });
