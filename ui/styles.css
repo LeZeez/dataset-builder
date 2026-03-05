@@ -686,7 +686,7 @@ h1, h2, h3 { font-weight: 600; }
 }
 
 .bubble {
-    max-width: 85%;
+    max-width: calc(100% - 2.5rem);
     padding: 0.8rem 1rem;
     border-radius: 16px;
     line-height: 1.5;
@@ -731,7 +731,7 @@ h1, h2, h3 { font-weight: 600; }
     right: -2rem; /* Initial position outside bubble */
     display: flex;
     flex-direction: column;
-    align-items: flex-start;
+    align-items: center;
     opacity: 0;
     transition: opacity 0.2s;
     z-index: 10;
@@ -742,27 +742,34 @@ h1, h2, h3 { font-weight: 600; }
     left: -2rem;
 }
 
-.bubble:hover .bubble-tools { opacity: 1; }
+@media (max-width: 768px) {
+    .bubble-tools {
+        right: -2.25rem;
+    }
+    .bubble.gpt .bubble-tools {
+        left: -2.25rem;
+    }
+}
+
+.bubble:hover .bubble-tools, .bubble-tools.open { opacity: 1; }
 
 .bubble-menu-btn {
-    background: var(--bg-glass);
-    border: 1px solid var(--border-glass);
-    border-radius: 50%;
-    width: 28px;
-    height: 28px;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    padding: 0.35rem;
+    font-size: 0.75rem;
     display: flex;
     align-items: center;
     justify-content: center;
     color: var(--text-secondary);
     cursor: pointer;
     transition: all 0.2s;
-    box-shadow: 0 2px 5px rgba(0,0,0,0.2);
 }
 
 .bubble-menu-btn:hover, .bubble-tools.open .bubble-menu-btn {
     color: var(--text-primary);
-    background: var(--bg-glass-light);
-    border-color: var(--accent);
+    background: rgba(255, 255, 255, 0.1);
 }
 
 .bubble-menu-dropdown {
@@ -785,26 +792,13 @@ h1, h2, h3 { font-weight: 600; }
 /* Global 'Show all tools' toggle state */
 .show-all-tools .bubble-tools {
     opacity: 1;
-    position: relative;
-    top: auto;
-    right: auto;
-    left: auto;
-    flex-direction: row;
-    align-items: center;
-    gap: 0.25rem;
-    margin-top: 0.5rem;
 }
 .show-all-tools .bubble-menu-btn {
     display: none; /* Hide meatball */
 }
 .show-all-tools .bubble-menu-dropdown {
     display: flex;
-    flex-direction: row;
-    background: transparent;
-    border: none;
-    box-shadow: none;
-    padding: 0;
-    margin-top: 0;
+    flex-direction: column;
 }
 
 /* Bubble Actions */
@@ -815,10 +809,10 @@ h1, h2, h3 { font-weight: 600; }
 }
 
 .bubble-btn {
-    background: rgba(255, 255, 255, 0.1);
+    background: transparent;
     border: 1px solid transparent;
     border-radius: 4px;
-    padding: 0.35rem 0.5rem;
+    padding: 0.35rem;
     font-size: 0.75rem;
     cursor: pointer;
     color: var(--text-secondary);
@@ -828,12 +822,12 @@ h1, h2, h3 { font-weight: 600; }
     justify-content: center;
 }
 
-.bubble-btn:hover { background: rgba(255, 255, 255, 0.2); color: var(--text-primary); }
-.bubble-btn.edit:hover { background: var(--accent); border-color: var(--accent); }
-.bubble-btn.delete:hover { background: #e74c3c; border-color: #e74c3c; }
-.bubble-btn.fork:hover { background: #9b59b6; border-color: #9b59b6; }
-.bubble-btn.regen:hover { background: #27ae60; border-color: #27ae60; }
-.bubble-btn.continue:hover { background: #3498db; border-color: #3498db; }
+.bubble-btn:hover { background: rgba(255, 255, 255, 0.1); color: var(--text-primary); }
+.bubble-btn.edit:hover { color: var(--accent); }
+.bubble-btn.delete:hover { color: #e74c3c; }
+.bubble-btn.fork:hover { color: #9b59b6; }
+.bubble-btn.regen:hover { color: #27ae60; }
+.bubble-btn.continue:hover { color: #3498db; }
 .bubble-btn.save { background: #27ae60; color: white; }
 .bubble-btn.cancel { background: #e74c3c; color: white; }
 
@@ -1219,11 +1213,11 @@ kbd {
     }
     /* Provide spacing on mobile for bubble tools if opened */
     .bubble {
-        margin-right: 2rem;
+        margin-right: calc(2rem + 4px);
     }
     .bubble.gpt {
         margin-right: 0;
-        margin-left: 2rem;
+        margin-left: calc(2rem + 4px);
     }
 
 }
