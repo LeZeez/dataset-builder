@@ -17,6 +17,7 @@ import re
 import uuid
 import threading
 import argparse
+import shutil
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, Generator
@@ -29,6 +30,19 @@ from scripts.parser import parse_minimal_format, generate_conversation_id, valid
 from scripts.exporter import export_dataset
 from scripts.stats import get_stats
 import logging
+
+# Copy Default.txt
+defaults_prompt = os.path.join(os.path.dirname(__file__), "defaults", "Default.txt")
+default_destination = os.path.join(os.path.dirname(__file__), "data", "prompts", "Default.txt")
+if not os.path.exists(default_destination):
+    try:
+        os.makedirs(os.path.dirname(default_destination), exist_ok=True)
+        shutil.copy2(defaults_prompt, default_destination)
+    except FileNotFoundError:
+        print(f"[Warning] Source file not found: {defaults_prompt}\n",
+               "Either the repository wasn't fully cloned, or the file was moved/deleted. Proceeding anyway...")
+    except PermissionError:
+        print(f"[Warning] Permission denied when copying Default.txt")
 
 # Load config
 CONFIG_PATH = Path('config.json')
