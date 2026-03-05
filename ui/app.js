@@ -333,6 +333,7 @@ const state = {
     currentTab: 'generate',
     prompts: [],
     currentPromptName: '',
+    listIterators: {},
     generate: {
         prompt: '',
         variables: {},
@@ -812,8 +813,56 @@ function renderVariableInputs(names) {
     });
 }
 
-function applyVariables(text) {
-    return text.replace(/\{\{(\w+)\}\}/g, (_, key) => state.generate.variables[key] || `{{${key}}}`);
+function applyVariables(text, isPreview = false) {
+    const sessionCache = {};
+
+    return text.replace(/\{\{([\w:]+)\}\}/g, (_, key) => {
+        // Handle inline macros: {{random::v1::v2}} or {{list::v1::v2}}
+        if (key.startsWith('random::')) {
+            const parts = key.split('::').slice(1);
+            if (parts.length > 0) {
+                return parts[Math.floor(Math.random() * parts.length)];
+            }
+        }
+        if (key.startsWith('list::')) {
+            const parts = key.split('::').slice(1);
+            if (parts.length > 0) {
+                if (!state.listIterators[key]) state.listIterators[key] = 0;
+                const val = parts[state.listIterators[key] % parts.length];
+                if (!isPreview) state.listIterators[key]++;
+                return val;
+            }
+        }
+
+        // Standard variables from the UI grid
+        if (sessionCache[key] !== undefined) return sessionCache[key];
+
+        let val = state.generate.variables[key];
+        if (val) {
+            if (val.startsWith('random::')) {
+                const parts = val.split('::').slice(1);
+                if (parts.length > 0) {
+                    val = parts[Math.floor(Math.random() * parts.length)];
+                }
+            } else if (val.startsWith('list::')) {
+                const parts = val.split('::').slice(1);
+                if (parts.length > 0) {
+                    if (!state.listIterators[key]) state.listIterators[key] = 0;
+                    val = parts[state.listIterators[key] % parts.length];
+                    if (!isPreview) state.listIterators[key]++;
+                }
+            } else if (val.includes('::')) { // Default list iterator for named variables without prefix
+                const parts = val.split('::');
+                if (!state.listIterators[key]) state.listIterators[key] = 0;
+                val = parts[state.listIterators[key] % parts.length];
+                if (!isPreview) state.listIterators[key]++;
+            }
+            sessionCache[key] = val;
+            return val;
+        }
+
+        return `{{${key}}}`;
+    });
 }
 
 async function loadPresets() {
@@ -1019,7 +1068,7 @@ function renderTagSuggestions() {
 
 // ============ TOKEN COUNT ============
 function updateTokenCount() {
-    const p = applyVariables(els.systemPrompt.value);
+    const p = applyVariables(els.systemPrompt.value, true);
     const tokens = Math.ceil(p.length / 2);
     els.tokenCount.textContent = `~${tokens} tokens`;
 }
@@ -1229,10 +1278,9 @@ async function bulkGenerate(count) {
     els.bulkProgress.classList.remove('hidden');
     updateBulkProgress();
 
-    const promptText = applyVariables(els.systemPrompt.value);
-
     for (let i = 0; i < count; i++) {
         if (state.bulk.abortController.signal.aborted) break;
+        const promptText = applyVariables(els.systemPrompt.value);
         try {
             const res = await fetch('/api/generate', {
                 method: 'POST',
@@ -1429,7 +1477,7 @@ async function sendChatMessage() {
     els.sendBtn.innerHTML = '⏹ Stop';
 
     const context = state.chat.messages.map(m => `${m.from === 'human' ? 'User' : 'Assistant'}: ${m.value}`).join('\n');
-    const baseSystemPrompt = els.chatSystemPrompt?.value || 'You are a helpful and friendly conversational assistant. Keep responses natural and engaging.';
+    const baseSystemPrompt = applyVariables(els.chatSystemPrompt?.value || 'You are a helpful and friendly conversational assistant. Keep responses natural and engaging.');
     const systemPrompt = `${baseSystemPrompt}\n\nPrevious conversation:\n${context}\n\nContinue the conversation naturally.`;
 
     const streamingMsg = { from: 'gpt', value: '', timestamp: new Date().toISOString(), streaming: true };
