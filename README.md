@@ -8,6 +8,9 @@ A tool for creating synthetic conversation datasets using frontier LLMs.
 - **Multi-provider support**: OpenAI, Anthropic, Google Gemini
 - **Simple input format** with multi-line message support
 - **Export to popular formats**: ShareGPT, OpenAI, Alpaca
+- **Bulk actions** (Delete, Move, Keep, Remove)
+- **Review queue** management
+- **Manage Files modal** for better organization
 - **Individual JSON files** per conversation for easy management
 - **Keyboard shortcuts** for fast workflow
 
@@ -119,7 +122,7 @@ dataset-builder/
 
 ### ShareGPT (LLaMA-Factory)
 ```json
-{"conversations": [{"from": "human", "value": "..."}, {"from": "gpt", "value": "..."}]}
+{"conversations": [{"role": "human", "content": "..."}, {"role": "gpt", "content": "..."}]}
 ```
 
 ### OpenAI
