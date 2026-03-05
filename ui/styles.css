@@ -1215,7 +1215,7 @@ kbd {
     .shortcuts-info { display: none; }
 
     #chat-fullscreen {
-        display: inline-flex !important;
+        display: inline-flex;
     }
     /* Provide spacing on mobile for bubble tools if opened */
     .bubble {
@@ -1852,15 +1852,19 @@ kbd {
 }
 
 /* Fullscreen Mobile */
-.fullscreen-mobile {
-    position: fixed !important;
-    inset: 0 !important;
-    z-index: 1000 !important;
-    height: 100vh !important;
-    height: 100dvh !important;
-    width: 100vw !important;
-    max-height: none !important;
-    border-radius: 0 !important;
-    background: var(--bg-base) !important;
-    margin: 0 !important;
+.chat-card.fullscreen-mobile {
+    position: fixed;
+    inset: 0;
+    z-index: 1000;
+    height: 100vh;
+    height: 100dvh;
+    width: 100vw;
+    max-height: none;
+    border-radius: 0;
+    background: var(--bg-base);
+    margin: 0;
+}
+
+#chat-fullscreen {
+    display: none;
 }

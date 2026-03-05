@@ -6,9 +6,7 @@ function toggleChatFullscreen() {
     state.chat.isFullscreen = !state.chat.isFullscreen;
     if (els.chatCard) els.chatCard.classList.toggle('fullscreen-mobile', state.chat.isFullscreen);
     if (els.chatFullscreen) {
-        els.chatFullscreen.innerHTML = state.chat.isFullscreen ?
-            '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3"></path></svg>' :
-            '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"></path></svg>';
+        els.chatFullscreen.innerHTML = state.chat.isFullscreen ? ICON_FULLSCREEN_EXIT : ICON_FULLSCREEN_ENTER;
     }
 }
 function toggleChatTools() {
@@ -22,7 +20,15 @@ function toggleChatTools() {
  * Bulk Generation, Review Queue, Search & Filter
  */
 
+const ICON_FULLSCREEN_EXIT = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3"></path></svg>';
+const ICON_FULLSCREEN_ENTER = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"></path></svg>';
+
+const CHAT_ZOOM_MIN = 0.5;
+const CHAT_ZOOM_MAX = 2;
+const CHAT_ZOOM_STEP = 0.1;
+
 // ============ IndexedDB WRAPPER ============
+
 const DB_NAME = 'dataset-builder';
 const DB_VERSION = 2;
 let _db = null;
@@ -1776,7 +1782,7 @@ function renderChatMessages() {
         let actionsHtml = '';
         if (!isStreaming) {
             actionsHtml = `<div class="bubble-tools">
-                <button class="bubble-menu-btn" onclick="this.parentElement.classList.toggle('open')" title="Tools">
+                <button class="bubble-menu-btn" title="Tools">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="1"></circle><circle cx="12" cy="5" r="1"></circle><circle cx="12" cy="19" r="1"></circle></svg>
                 </button>
                 <div class="bubble-menu-dropdown">
@@ -2618,8 +2624,21 @@ function setupEventListeners() {
         el.addEventListener('change', saveSyncSettings);
     });
 
-    // Close meatball menus when clicking outside
+    // Handle meatball menu clicks and outside clicks
     document.addEventListener('click', (e) => {
+        const toggleBtn = e.target.closest('.bubble-menu-btn');
+        if (toggleBtn) {
+            const parent = toggleBtn.parentElement;
+            const wasOpen = parent.classList.contains('open');
+            // Close all other menus
+            document.querySelectorAll('.bubble-tools.open').forEach(el => el.classList.remove('open'));
+            // Toggle the current one
+            if (!wasOpen) {
+                parent.classList.add('open');
+            }
+            return;
+        }
+
         if (!e.target.closest('.bubble-tools')) {
             document.querySelectorAll('.bubble-tools.open').forEach(el => el.classList.remove('open'));
         }
@@ -2766,8 +2785,8 @@ function setupEventListeners() {
     els.saveChatBtn.addEventListener('click', saveChat);
 
     // Chat header tools
-    els.chatZoomOut?.addEventListener('click', () => { state.chat.zoomLevel = Math.max(0.5, state.chat.zoomLevel - 0.1); applyChatZoom(); });
-    els.chatZoomIn?.addEventListener('click', () => { state.chat.zoomLevel = Math.min(2, state.chat.zoomLevel + 0.1); applyChatZoom(); });
+    els.chatZoomOut?.addEventListener('click', () => { state.chat.zoomLevel = Math.max(CHAT_ZOOM_MIN, Number(state.chat.zoomLevel) - CHAT_ZOOM_STEP).toFixed(2); applyChatZoom(); });
+    els.chatZoomIn?.addEventListener('click', () => { state.chat.zoomLevel = Math.min(CHAT_ZOOM_MAX, Number(state.chat.zoomLevel) + CHAT_ZOOM_STEP).toFixed(2); applyChatZoom(); });
     els.chatFullscreen?.addEventListener('click', toggleChatFullscreen);
     els.chatToggleTools?.addEventListener('click', toggleChatTools);
 
