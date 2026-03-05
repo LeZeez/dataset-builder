@@ -1,3 +1,21 @@
+
+function applyChatZoom() {
+    if (els.chatMessages) els.chatMessages.style.setProperty('--chat-zoom', state.chat.zoomLevel);
+}
+function toggleChatFullscreen() {
+    state.chat.isFullscreen = !state.chat.isFullscreen;
+    if (els.chatCard) els.chatCard.classList.toggle('fullscreen-mobile', state.chat.isFullscreen);
+    if (els.chatFullscreen) {
+        els.chatFullscreen.innerHTML = state.chat.isFullscreen ?
+            '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3"></path></svg>' :
+            '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"></path></svg>';
+    }
+}
+function toggleChatTools() {
+    state.chat.showAllTools = !state.chat.showAllTools;
+    if (els.chatMessages) els.chatMessages.classList.toggle('show-all-tools', state.chat.showAllTools);
+    if (els.chatToggleTools) els.chatToggleTools.style.color = state.chat.showAllTools ? 'var(--accent)' : 'var(--text-secondary)';
+}
 /**
  * Synthetic Dataset Generator v3.0
  * Full-featured frontend with IndexedDB, Smart Sync, Prompt Management,
@@ -349,7 +367,10 @@ const state = {
         isStreaming: false,
         systemPrompt: '',
         abortController: null,
-        editingIndex: null
+        editingIndex: null,
+        zoomLevel: 1,
+        isFullscreen: false,
+        showAllTools: false
     },
     sidebar: {
         open: false
@@ -475,6 +496,11 @@ async function init() {
 
         // Chat Tab
         chatMessages: $('#chat-messages'),
+        chatCard: $('.chat-card'),
+        chatZoomOut: $('#chat-zoom-out'),
+        chatZoomIn: $('#chat-zoom-in'),
+        chatFullscreen: $('#chat-fullscreen'),
+        chatToggleTools: $('#chat-toggle-tools'),
         chatInput: $('#chat-input'),
         sendBtn: $('#send-btn'),
         chatTurns: $('#chat-turns'),
@@ -1746,15 +1772,37 @@ function renderChatMessages() {
                 </div>
             </div>`;
         }
+
+        let actionsHtml = '';
+        if (!isStreaming) {
+            actionsHtml = `<div class="bubble-tools">
+                <button class="bubble-menu-btn" onclick="this.parentElement.classList.toggle('open')" title="Tools">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="1"></circle><circle cx="12" cy="5" r="1"></circle><circle cx="12" cy="19" r="1"></circle></svg>
+                </button>
+                <div class="bubble-menu-dropdown">
+                    <button class="bubble-btn edit" onclick="startEditMessage(${i})" title="Edit">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>
+                    </button>
+                    <button class="bubble-btn delete" onclick="deleteMessage(${i})" title="Delete">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
+                    </button>
+                    <button class="bubble-btn fork" onclick="forkChat(${i})" title="Fork here">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="18" cy="18" r="3"></circle><circle cx="6" cy="6" r="3"></circle><circle cx="18" cy="6" r="3"></circle><path d="M18 9v2c0 .6-.4 1-1 1H7c-.6 0-1 .4-1 1v2"></path></svg>
+                    </button>
+                    ${m.from === 'gpt' ? `<button class="bubble-btn regen" onclick="regenerateFrom(${i})" title="Regenerate">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2.5 2v6h6M21.5 22v-6h-6"/><path d="M22 11.5A10 10 0 0 0 3.2 7.2M2 12.5a10 10 0 0 0 18.8 4.2"/></svg>
+                    </button>` : ''}
+                    ${m.from === 'human' ? `<button class="bubble-btn continue" onclick="continueFromMessage(${i})" title="Continue from here">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+                    </button>` : ''}
+                </div>
+            </div>`;
+        }
+
         return `<div class="bubble ${m.from}" data-index="${i}">
             <span class="role-label">${m.from === 'human' ? 'YOU' : 'GPT'}${isStreaming ? ' (typing...)' : ''}</span>
             <div class="bubble-content">${escapeHtml(m.value)}</div>
-            ${!isStreaming ? `<div class="bubble-actions">
-                <button class="bubble-btn edit" onclick="startEditMessage(${i})" title="Edit">✏️</button>
-                <button class="bubble-btn delete" onclick="deleteMessage(${i})" title="Delete">🗑️</button>
-                ${m.from === 'gpt' ? `<button class="bubble-btn regen" onclick="regenerateFrom(${i})" title="Regenerate">🔄</button>` : ''}
-                ${m.from === 'human' ? `<button class="bubble-btn continue" onclick="continueFromMessage(${i})" title="Continue from here">▶️</button>` : ''}
-            </div>` : ''}
+            ${actionsHtml}
         </div>`;
     }).join('');
     els.chatMessages.scrollTop = els.chatMessages.scrollHeight;
@@ -1822,15 +1870,11 @@ async function saveChat() {
     } catch (e) { toast('Failed to save chat', 'error'); hideSaveIndicator('Save failed'); }
 }
 
-function forkChat() {
-    const index = prompt('Fork from message # (1-' + state.chat.messages.length + '):');
-    if (index) {
-        const idx = parseInt(index) - 1;
-        if (idx >= 0 && idx < state.chat.messages.length) {
-            state.chat.messages = state.chat.messages.slice(0, idx + 1);
-            renderChatMessages();
-            updateChatTurns();
-        }
+function forkChat(index) {
+    if (typeof index === 'number' && index >= 0 && index < state.chat.messages.length) {
+        state.chat.messages = state.chat.messages.slice(0, index + 1);
+        renderChatMessages();
+        updateChatTurns();
     }
 }
 
@@ -1922,8 +1966,8 @@ async function generateAIResponse() {
     }
 }
 
-function enableChatButtons() { els.saveChatBtn.disabled = false; els.forkChatBtn.disabled = false; }
-function disableChatButtons() { els.saveChatBtn.disabled = true; els.forkChatBtn.disabled = true; }
+function enableChatButtons() { if (els.saveChatBtn) els.saveChatBtn.disabled = false; if (els.forkChatBtn) els.forkChatBtn.disabled = false; }
+function disableChatButtons() { if (els.saveChatBtn) els.saveChatBtn.disabled = true; if (els.forkChatBtn) els.forkChatBtn.disabled = true; }
 
 // ============ REVIEW QUEUE (Server-Synced) ============
 async function addToReviewQueue(item) {
@@ -2574,6 +2618,12 @@ function setupEventListeners() {
         el.addEventListener('change', saveSyncSettings);
     });
 
+    // Close meatball menus when clicking outside
+    document.addEventListener('click', (e) => {
+        if (!e.target.closest('.bubble-tools')) {
+            document.querySelectorAll('.bubble-tools.open').forEach(el => el.classList.remove('open'));
+        }
+    });
     // Files Modal
     els.openFilesBtn?.addEventListener('click', openFilesModal);
     els.closeFilesModal?.addEventListener('click', closeFilesModal);
@@ -2714,7 +2764,12 @@ function setupEventListeners() {
     els.sendBtn.addEventListener('click', sendChatMessage);
     els.clearChat.addEventListener('click', clearChat);
     els.saveChatBtn.addEventListener('click', saveChat);
-    els.forkChatBtn.addEventListener('click', forkChat);
+
+    // Chat header tools
+    els.chatZoomOut?.addEventListener('click', () => { state.chat.zoomLevel = Math.max(0.5, state.chat.zoomLevel - 0.1); applyChatZoom(); });
+    els.chatZoomIn?.addEventListener('click', () => { state.chat.zoomLevel = Math.min(2, state.chat.zoomLevel + 0.1); applyChatZoom(); });
+    els.chatFullscreen?.addEventListener('click', toggleChatFullscreen);
+    els.chatToggleTools?.addEventListener('click', toggleChatTools);
 
     // Chat Presets
     els.chatPresetSelect?.addEventListener('change', loadChatPreset);
