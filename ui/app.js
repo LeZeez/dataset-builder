@@ -1070,64 +1070,6 @@ function renderVariableInputs(names) {
     });
 }
 
-    {
-        match: (key) => key.startsWith('//'),
-        handle: () => ({ val: '', isBuiltIn: true })
-    },
-    {
-        match: (key) => key.match(/^[\d\s\+\-\*\/\(\)\.]+$/),
-        handle: (key) => {
-            const result = safeMathEval(key);
-            if (!isNaN(result)) return { val: result, isBuiltIn: true };
-            return null;
-        }
-    },
-    {
-        match: (key) => key.startsWith('roll:'),
-        handle: (key) => {
-            const rollStr = key.substring(5).trim();
-            const rollMatch = rollStr.match(/^(\d+)d(\d+)(?:([+-])(\d+))?$/i);
-            if (rollMatch) {
-                const count = parseInt(rollMatch[1]) || 1;
-                const sides = parseInt(rollMatch[2]) || 6;
-                const sign = rollMatch[3];
-                const mod = parseInt(rollMatch[4]) || 0;
-                let total = 0;
-                for (let i = 0; i < count; i++) {
-                    total += Math.floor(Math.random() * sides) + 1;
-                }
-                if (sign === '+') total += mod;
-                else if (sign === '-') total -= mod;
-                return { val: total, isBuiltIn: true };
-            }
-            return null;
-        }
-    },
-    {
-        match: (key) => key.startsWith('random::'),
-        handle: (key) => {
-            const parts = key.split('::').slice(1);
-            if (parts.length > 0) {
-                return { val: parts[Math.floor(Math.random() * parts.length)], isBuiltIn: true };
-            }
-            return null;
-        }
-    },
-    {
-        match: (key) => key.startsWith('list::'),
-        handle: (key, isPreview) => {
-            const parts = key.split('::').slice(1);
-            if (parts.length > 0) {
-                if (!state.listIterators[key]) state.listIterators[key] = 0;
-                const val = parts[state.listIterators[key] % parts.length];
-                if (!isPreview) state.listIterators[key]++;
-                return { val, isBuiltIn: true };
-            }
-            return null;
-        }
-    }
-];
-
 function applyVariables(text, isPreview = false, returnObject = false) {
     const sessionCache = {};
     let iteration = 0;
@@ -1168,28 +1110,29 @@ function applyVariables(text, isPreview = false, returnObject = false) {
                 if (sessionCache[key] !== undefined) {
                     val = sessionCache[key];
                 } else {
-                let userVal = state.generate.variables[key];
-                if (userVal !== undefined && userVal !== null && userVal !== '') {
-                    if (userVal.startsWith('random::')) {
-                        const parts = userVal.split('::').slice(1);
-                        if (parts.length > 0) {
-                            userVal = parts[Math.floor(Math.random() * parts.length)];
-                        }
-                    } else if (userVal.startsWith('list::')) {
-                        const parts = userVal.split('::').slice(1);
-                        if (parts.length > 0) {
+                    let userVal = state.generate.variables[key];
+                    if (userVal !== undefined && userVal !== null && userVal !== '') {
+                        if (userVal.startsWith('random::')) {
+                            const parts = userVal.split('::').slice(1);
+                            if (parts.length > 0) {
+                                userVal = parts[Math.floor(Math.random() * parts.length)];
+                            }
+                        } else if (userVal.startsWith('list::')) {
+                            const parts = userVal.split('::').slice(1);
+                            if (parts.length > 0) {
+                                if (!state.listIterators[key]) state.listIterators[key] = 0;
+                                userVal = parts[state.listIterators[key] % parts.length];
+                                if (!isPreview) state.listIterators[key]++;
+                            }
+                        } else if (userVal.includes('::')) { // Default list iterator for named variables without prefix
+                            const parts = userVal.split('::');
                             if (!state.listIterators[key]) state.listIterators[key] = 0;
                             userVal = parts[state.listIterators[key] % parts.length];
                             if (!isPreview) state.listIterators[key]++;
                         }
-                    } else if (userVal.includes('::')) { // Default list iterator for named variables without prefix
-                        const parts = userVal.split('::');
-                        if (!state.listIterators[key]) state.listIterators[key] = 0;
-                        userVal = parts[state.listIterators[key] % parts.length];
-                        if (!isPreview) state.listIterators[key]++;
+                        sessionCache[key] = userVal;
+                        val = userVal;
                     }
-                    sessionCache[key] = userVal;
-                    val = userVal;
                 }
             }
 
