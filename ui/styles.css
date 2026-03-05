@@ -9,9 +9,10 @@
     --success: #22c55e;
     --danger: #ef4444;
     --warning: #f59e0b;
-    --human-bubble: #1e3a5f;
-    --gpt-bubble: #2d2d4a;
+    --human-bubble: #1e293b;
+    --gpt-bubble: #0f172a;
     --border-glass: rgba(255, 255, 255, 0.08);
+    --border-bubble: rgba(255, 255, 255, 0.05);
     --font-ui: 'Inter', sans-serif;
     --font-ar: 'Cairo', sans-serif;
 }
@@ -23,7 +24,6 @@
 }
 
 body {
-    background-color: var(--bg-base);
     background: radial-gradient(circle at top left, #1a1a2e 0%, var(--bg-base) 50%);
     color: var(--text-primary);
     font-family: var(--font-ui);
@@ -698,15 +698,15 @@ h1, h2, h3 { font-weight: 600; }
 }
 
 .bubble.human {
-    background: #1e293b;
-    border: 1px solid rgba(255,255,255,0.05);
+    background: var(--human-bubble);
+    border: 1px solid var(--border-bubble);
     align-self: flex-start;
     border-bottom-left-radius: 2px;
 }
 
 .bubble.gpt {
-    background: #0f172a;
-    border: 1px solid rgba(255,255,255,0.05);
+    background: var(--gpt-bubble);
+    border: 1px solid var(--border-bubble);
     align-self: flex-end;
     border-bottom-right-radius: 2px;
 }
@@ -1510,6 +1510,7 @@ kbd {
     transform: translateY(-20px);
     transition: all 0.3s ease;
     backdrop-filter: blur(12px);
+    pointer-events: auto;
 }
 
 .toast.show {
