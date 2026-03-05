@@ -635,9 +635,9 @@ gpt: response"></textarea>
                             </div>
                         </div>
                         <div id="variables-container" class="variables-container">
-                            <div class="empty-state" style="padding: 1rem;">
-                                <div class="empty-icon" style="font-size: 1.5rem; margin-bottom: 0.5rem;">🔍</div>
-                                <p style="font-size: 0.8rem;">No variables found in prompt.</p>
+                            <div class="empty-state empty-state-padded">
+                                <div class="empty-icon empty-icon-large">🔍</div>
+                                <p class="empty-text-small">No variables found in prompt.</p>
                             </div>
                         </div>
                     </div>
@@ -660,10 +660,10 @@ gpt: response"></textarea>
                             <!-- Dynamic inputs for macro maker -->
                         </div>
 
-                        <div class="form-group" style="margin-top: auto; padding-top: 1rem;">
+                        <div class="form-group macro-result-group">
                             <label>Resulting Syntax</label>
-                            <div style="display: flex; gap: 0.5rem; align-items: center;">
-                                <input type="text" id="macro-result" class="input input-sm" style="flex: 1;" readonly>
+                            <div class="macro-result-row">
+                                <input type="text" id="macro-result" class="input input-sm macro-result-input" readonly>
                                 <button id="copy-macro-btn" class="icon-btn" title="Copy to clipboard">📋</button>
                             </div>
                         </div>

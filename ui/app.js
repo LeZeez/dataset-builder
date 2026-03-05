@@ -799,6 +799,99 @@ async function deletePrompt() {
     } catch (e) { toast('Failed to delete', 'error'); }
 }
 
+function safeMathEval(expr) {
+    // Remove all whitespace
+    expr = expr.replace(/\s+/g, '');
+    // Ensure it only contains valid math characters
+    if (!/^[\d\+\-\*\/\(\)\.]+$/.test(expr)) return NaN;
+
+    // Very basic safe evaluation by checking tokenized parts
+    // This is safer than Function or eval
+    try {
+        const tokens = expr.match(/(?:(?:^|[-+*/(])\s*-?\d+(?:\.\d+)?)|[-+*/()]/g);
+        if (!tokens) return NaN;
+
+        let processed = '';
+        for (let t of tokens) {
+            t = t.trim();
+            if (/^-?\d+(?:\.\d+)?$/.test(t)) {
+                processed += t;
+            } else if (['+', '-', '*', '/', '(', ')'].includes(t)) {
+                processed += t;
+            } else {
+                return NaN;
+            }
+        }
+
+        // At this point processed string is strictly validated
+        // We use a small Function here because we strictly validated every single token
+        // to be either a number or a math operator. There's no way to pass identifiers.
+        const result = Function(`'use strict'; return (${processed})`)();
+        return typeof result === 'number' && !isNaN(result) && isFinite(result) ? result : NaN;
+    } catch (e) {
+        return NaN;
+    }
+}
+
+const BUILT_IN_MACROS = [
+    {
+        match: (key) => key.startsWith('//'),
+        handle: () => ({ val: '', isBuiltIn: true })
+    },
+    {
+        match: (key) => key.match(/^[\d\s\+\-\*\/\(\)\.]+$/),
+        handle: (key) => {
+            const result = safeMathEval(key);
+            if (!isNaN(result)) return { val: result, isBuiltIn: true };
+            return null;
+        }
+    },
+    {
+        match: (key) => key.startsWith('roll:'),
+        handle: (key) => {
+            const rollStr = key.substring(5).trim();
+            const rollMatch = rollStr.match(/^(\d+)d(\d+)(?:([+-])(\d+))?$/i);
+            if (rollMatch) {
+                const count = parseInt(rollMatch[1]) || 1;
+                const sides = parseInt(rollMatch[2]) || 6;
+                const sign = rollMatch[3];
+                const mod = parseInt(rollMatch[4]) || 0;
+                let total = 0;
+                for (let i = 0; i < count; i++) {
+                    total += Math.floor(Math.random() * sides) + 1;
+                }
+                if (sign === '+') total += mod;
+                else if (sign === '-') total -= mod;
+                return { val: total, isBuiltIn: true };
+            }
+            return null;
+        }
+    },
+    {
+        match: (key) => key.startsWith('random::'),
+        handle: (key) => {
+            const parts = key.split('::').slice(1);
+            if (parts.length > 0) {
+                return { val: parts[Math.floor(Math.random() * parts.length)], isBuiltIn: true };
+            }
+            return null;
+        }
+    },
+    {
+        match: (key) => key.startsWith('list::'),
+        handle: (key, isPreview) => {
+            const parts = key.split('::').slice(1);
+            if (parts.length > 0) {
+                if (!state.listIterators[key]) state.listIterators[key] = 0;
+                const val = parts[state.listIterators[key] % parts.length];
+                if (!isPreview) state.listIterators[key]++;
+                return { val, isBuiltIn: true };
+            }
+            return null;
+        }
+    }
+];
+
 // ============ MACRO MAKER ============
 function updateMacroMakerUI() {
     if (!els.macroMakerInputs) return;
@@ -814,16 +907,16 @@ function updateMacroMakerUI() {
         `;
     } else if (type === 'roll') {
         html = `
-            <div style="display: flex; gap: 0.5rem;">
-                <div class="form-group" style="flex: 1;">
+            <div class="macro-maker-row">
+                <div class="form-group macro-maker-col">
                     <label>Count</label>
                     <input type="number" id="macro-roll-count" class="input input-sm" value="1" min="1">
                 </div>
-                <div class="form-group" style="flex: 1;">
+                <div class="form-group macro-maker-col">
                     <label>Sides</label>
                     <input type="number" id="macro-roll-sides" class="input input-sm" value="6" min="2">
                 </div>
-                <div class="form-group" style="flex: 1;">
+                <div class="form-group macro-maker-col">
                     <label>Modifier (+/-)</label>
                     <input type="number" id="macro-roll-mod" class="input input-sm" value="0">
                 </div>
@@ -895,12 +988,8 @@ function extractVariables() {
     const matches = [...text.matchAll(regex)];
     const rawNames = matches.map(m => m[1]);
     const names = [...new Set(rawNames)].filter(name => {
-        if (name.startsWith('//')) return false;
-        if (name.startsWith('random::')) return false;
-        if (name.startsWith('list::')) return false;
-        if (name.startsWith('roll:')) return false;
-        if (name.match(/^[\d\s\+\-\*\/\(\)\.]+$/)) return false;
-        return true;
+        // Use BUILT_IN_MACROS to filter out built-in macros from being treated as regular variables
+        return !BUILT_IN_MACROS.some(macro => macro.match(name));
     });
 
     state.generate.variableNames = names;
@@ -927,14 +1016,17 @@ function extractVariables() {
 
 function renderVariableInputs(names) {
     if (!els.variablesContainer) return;
-    els.variablesContainer.innerHTML = names.map(name => `
+    els.variablesContainer.innerHTML = names.map(name => {
+        const escapedName = escapeHtml(name);
+        const escapedValue = escapeHtml(state.generate.variables[name] || '');
+        return `
         <div class="form-group">
-            <label for="var-${name}">${name}</label>
-            <textarea id="var-${name}" class="textarea var-input"
-                   data-var="${name}"
-                   placeholder="${name}..." rows="3" style="min-height: 80px;">${state.generate.variables[name] || ''}</textarea>
+            <label for="var-${escapedName}">${escapedName}</label>
+            <textarea id="var-${escapedName}" class="textarea var-input"
+                   data-var="${escapedName}"
+                   placeholder="${escapedName}..." rows="3" style="min-height: 80px;">${escapedValue}</textarea>
         </div>
-    `).join('');
+    `}).join('');
 
     // Use the container to query the elements just added
     els.variablesContainer.querySelectorAll('.var-input').forEach(input => {
@@ -945,6 +1037,64 @@ function renderVariableInputs(names) {
         });
     });
 }
+
+    {
+        match: (key) => key.startsWith('//'),
+        handle: () => ({ val: '', isBuiltIn: true })
+    },
+    {
+        match: (key) => key.match(/^[\d\s\+\-\*\/\(\)\.]+$/),
+        handle: (key) => {
+            const result = safeMathEval(key);
+            if (!isNaN(result)) return { val: result, isBuiltIn: true };
+            return null;
+        }
+    },
+    {
+        match: (key) => key.startsWith('roll:'),
+        handle: (key) => {
+            const rollStr = key.substring(5).trim();
+            const rollMatch = rollStr.match(/^(\d+)d(\d+)(?:([+-])(\d+))?$/i);
+            if (rollMatch) {
+                const count = parseInt(rollMatch[1]) || 1;
+                const sides = parseInt(rollMatch[2]) || 6;
+                const sign = rollMatch[3];
+                const mod = parseInt(rollMatch[4]) || 0;
+                let total = 0;
+                for (let i = 0; i < count; i++) {
+                    total += Math.floor(Math.random() * sides) + 1;
+                }
+                if (sign === '+') total += mod;
+                else if (sign === '-') total -= mod;
+                return { val: total, isBuiltIn: true };
+            }
+            return null;
+        }
+    },
+    {
+        match: (key) => key.startsWith('random::'),
+        handle: (key) => {
+            const parts = key.split('::').slice(1);
+            if (parts.length > 0) {
+                return { val: parts[Math.floor(Math.random() * parts.length)], isBuiltIn: true };
+            }
+            return null;
+        }
+    },
+    {
+        match: (key) => key.startsWith('list::'),
+        handle: (key, isPreview) => {
+            const parts = key.split('::').slice(1);
+            if (parts.length > 0) {
+                if (!state.listIterators[key]) state.listIterators[key] = 0;
+                const val = parts[state.listIterators[key] % parts.length];
+                if (!isPreview) state.listIterators[key]++;
+                return { val, isBuiltIn: true };
+            }
+            return null;
+        }
+    }
+];
 
 function applyVariables(text, isPreview = false, returnObject = false) {
     const sessionCache = {};
@@ -966,68 +1116,26 @@ function applyVariables(text, isPreview = false, returnObject = false) {
         plainText = plainText.replace(/\{\{([^\{\}]+)\}\}/g, (match, key) => {
             let val = undefined;
             let isBuiltIn = false;
+            let handled = false;
 
-            // Handle comments
-            if (key.startsWith('//')) {
-                val = '';
-                isBuiltIn = true;
-            }
-
-            // Handle math evaluation
-            else if (key.match(/^[\d\s\+\-\*\/\(\)\.]+$/)) {
-                try {
-                    // Safe evaluation of simple math expressions
-                    const result = Function(`'use strict'; return (${key})`)();
-                    if (typeof result === 'number' && !isNaN(result)) {
-                        val = result;
-                        isBuiltIn = true;
+            // Check built-in macros
+            for (const macro of BUILT_IN_MACROS) {
+                if (macro.match(key)) {
+                    const result = macro.handle(key, isPreview);
+                    if (result) {
+                        val = result.val;
+                        isBuiltIn = result.isBuiltIn;
+                        handled = true;
+                        break;
                     }
-                } catch (e) {}
-            }
-
-            // Handle dice rolls
-            else if (key.startsWith('roll:')) {
-                const rollStr = key.substring(5).trim();
-                const rollMatch = rollStr.match(/^(\d+)d(\d+)(?:([+-])(\d+))?$/i);
-                if (rollMatch) {
-                    const count = parseInt(rollMatch[1]) || 1;
-                    const sides = parseInt(rollMatch[2]) || 6;
-                    const sign = rollMatch[3];
-                    const mod = parseInt(rollMatch[4]) || 0;
-                    let total = 0;
-                    for (let i = 0; i < count; i++) {
-                        total += Math.floor(Math.random() * sides) + 1;
-                    }
-                    if (sign === '+') total += mod;
-                    else if (sign === '-') total -= mod;
-                    val = total;
-                    isBuiltIn = true;
-                }
-            }
-
-            // Handle inline macros: {{random::v1::v2}} or {{list::v1::v2}}
-            else if (key.startsWith('random::')) {
-                const parts = key.split('::').slice(1);
-                if (parts.length > 0) {
-                    val = parts[Math.floor(Math.random() * parts.length)];
-                    isBuiltIn = true;
-                }
-            }
-            else if (key.startsWith('list::')) {
-                const parts = key.split('::').slice(1);
-                if (parts.length > 0) {
-                    if (!state.listIterators[key]) state.listIterators[key] = 0;
-                    val = parts[state.listIterators[key] % parts.length];
-                    if (!isPreview) state.listIterators[key]++;
-                    isBuiltIn = true;
                 }
             }
 
             // Standard variables from the UI grid
-            else if (sessionCache[key] !== undefined) {
-                val = sessionCache[key];
-            }
-            else {
+            if (!handled) {
+                if (sessionCache[key] !== undefined) {
+                    val = sessionCache[key];
+                } else {
                 let userVal = state.generate.variables[key];
                 if (userVal !== undefined && userVal !== null && userVal !== '') {
                     if (userVal.startsWith('random::')) {
