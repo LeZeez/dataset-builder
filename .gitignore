@@ -18,9 +18,10 @@ env/
 exports/**/*.jsonl
 data/wanted/*.json
 data/rejected/*.json
+data/prompts/*
 !data/wanted/.gitkeep
 !data/rejected/.gitkeep
-
+!data/prompts/.gitkeep
 # Config with API keys - use config.example.json as template
 config.json
 
