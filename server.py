@@ -16,6 +16,7 @@ import json
 import re
 import uuid
 import threading
+import argparse
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, Generator
@@ -29,8 +30,20 @@ from scripts.exporter import export_dataset
 from scripts.stats import get_stats
 import logging
 
+# Load config
+CONFIG_PATH = Path('config.json')
+DATA_DIR = Path('data')
+
+def load_config() -> dict:
+    if CONFIG_PATH.exists():
+        try:
+            with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except json.JSONDecodeError:
+            return {}
+    return {}
+
 app = Flask(__name__, static_folder='ui', static_url_path='')
-CORS(app)
 
 # Filter out /api/drafts and /api/health logs
 class QuietFilter(logging.Filter):
@@ -41,20 +54,6 @@ class QuietFilter(logging.Filter):
 # Apply the filter to Werkzeug logger
 log = logging.getLogger('werkzeug')
 log.addFilter(QuietFilter())
-
-# Load config
-CONFIG_PATH = Path('config.json')
-DATA_DIR = Path('data')
-
-
-def load_config() -> dict:
-    if CONFIG_PATH.exists():
-        try:
-            with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except json.JSONDecodeError:
-            return {}
-    return {}
 
 
 def save_config(config: dict):
@@ -1170,6 +1169,26 @@ def clear_review_queue():
 
 
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='Synthetic Dataset Generator Server')
+    parser.add_argument('--host', type=str, help='Host to bind to')
+    parser.add_argument('--port', type=int, help='Port to bind to')
+    args = parser.parse_args()
+
+    config = load_config()
+    server_config = config.get('server', {})
+
+    host = args.host or server_config.get('host', '127.0.0.1')
+    port = args.port or server_config.get('port', 5000)
+
+    # Initialize proper CORS
+    allowed_origins = [
+        f'http://localhost:{port}',
+        f'http://127.0.0.1:{port}'
+    ]
+    if host not in ('127.0.0.1', 'localhost', '0.0.0.0'):
+        allowed_origins.append(f'http://{host}:{port}')
+    CORS(app, origins=allowed_origins)
+
     # Ensure directories exist
     (DATA_DIR / 'wanted').mkdir(parents=True, exist_ok=True)
     (DATA_DIR / 'rejected').mkdir(parents=True, exist_ok=True)
@@ -1177,7 +1196,7 @@ if __name__ == '__main__':
     Path('exports').mkdir(exist_ok=True)
     
     print('   Synthetic Dataset Generator')
-    print('   Server running at http://localhost:5000')
+    print(f'   Server running at http://{host}:{port}')
     print('   Press Ctrl+C to stop')
     
-    app.run(debug=False, host='127.0.0.1', port=5000)
+    app.run(debug=False, host=host, port=port)
