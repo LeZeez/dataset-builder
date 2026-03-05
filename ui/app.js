@@ -1248,11 +1248,39 @@ async function generate() {
             }
         }
 
-        state.generate.rawText = fullText;
-        els.conversationEdit.value = fullText;
-        parseAndRender();
-        enableActionButtons();
-        addModelToHistory();
+        const extractedText = extractOutput(fullText);
+
+        if (extractedText.includes('+++')) {
+            const conversationsRaw = extractedText.split('+++').map(s => s.trim()).filter(s => s);
+            let addedCount = 0;
+            for (const convRaw of conversationsRaw) {
+                const parsed = parseMinimalFormat(convRaw);
+                if (parsed.length > 0) {
+                    await addToReviewQueue({
+                        conversations: parsed,
+                        rawText: convRaw,
+                        metadata: { model: getModelValue(), prompt: state.currentPromptName, variables: { ...state.generate.variables } }
+                    });
+                    addedCount++;
+                }
+            }
+            if (addedCount > 0) {
+                toast(`Added ${addedCount} conversations to review queue`, 'success');
+            }
+
+            // Clear current view so we don't accidentally save duplicates manually
+            state.generate.rawText = '';
+            els.conversationEdit.value = '';
+            parseAndRender();
+            disableActionButtons();
+            addModelToHistory();
+        } else {
+            state.generate.rawText = extractedText;
+            els.conversationEdit.value = extractedText;
+            parseAndRender();
+            enableActionButtons();
+            addModelToHistory();
+        }
     } catch (e) {
         if (e.name !== 'AbortError') toast(e.message || 'Generation failed', 'error');
     } finally {
@@ -1296,13 +1324,21 @@ async function bulkGenerate(count) {
             });
             if (res.ok) {
                 const data = await res.json();
-                const parsed = parseMinimalFormat(data.content);
-                if (parsed.length > 0) {
-                    await addToReviewQueue({
-                        conversations: parsed,
-                        rawText: data.content,
-                        metadata: { model: getModelValue(), prompt: state.currentPromptName, variables: { ...state.generate.variables } }
-                    });
+                const extractedText = extractOutput(data.content);
+
+                const conversationsRaw = extractedText.includes('+++') ?
+                    extractedText.split('+++').map(s => s.trim()).filter(s => s) :
+                    [extractedText];
+
+                for (const convRaw of conversationsRaw) {
+                    const parsed = parseMinimalFormat(convRaw);
+                    if (parsed.length > 0) {
+                        await addToReviewQueue({
+                            conversations: parsed,
+                            rawText: convRaw,
+                            metadata: { model: getModelValue(), prompt: state.currentPromptName, variables: { ...state.generate.variables } }
+                        });
+                    }
                 }
             }
         } catch (e) {
@@ -1347,6 +1383,14 @@ function parseAndRender() {
     state.generate.conversation = { conversations: parsed };
     renderConversation(parsed);
     updateTurnCount(parsed.length);
+}
+
+function extractOutput(text) {
+    const match = text.match(/<output>([\s\S]*?)<\/output>/);
+    if (match) {
+        return match[1].trim();
+    }
+    return text.trim();
 }
 
 function parseMinimalFormat(text) {
@@ -1442,6 +1486,13 @@ function toggleEditMode() {
         els.conversationEdit.classList.remove('hidden');
         els.conversationEdit.value = state.generate.rawText;
         els.editToggle.textContent = '👁️ View';
+
+        // Also enable buttons immediately if there is text when entering edit mode
+        if (els.conversationEdit.value.trim().length > 0) {
+            enableActionButtons();
+        } else {
+            disableActionButtons();
+        }
     } else {
         els.conversationView.classList.remove('hidden');
         els.conversationEdit.classList.add('hidden');
@@ -1450,6 +1501,7 @@ function toggleEditMode() {
         els.editToggle.textContent = '✏️ Edit';
     }
 }
+
 
 // ============ CHAT TAB ============
 async function sendChatMessage() {
@@ -2458,6 +2510,15 @@ function setupEventListeners() {
 
     // Edit toggle
     els.editToggle.addEventListener('click', toggleEditMode);
+
+    // Manual edit listener
+    els.conversationEdit.addEventListener('input', () => {
+        if (state.generate.isEditing && els.conversationEdit.value.trim().length > 0) {
+            enableActionButtons();
+        } else if (state.generate.isEditing) {
+            disableActionButtons();
+        }
+    });
 
     // Save/Reject
     els.saveBtn.addEventListener('click', () => saveConversation('wanted'));
