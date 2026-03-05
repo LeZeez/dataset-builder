@@ -1255,7 +1255,7 @@ def bulk_keep_from_review_queue():
 
         for item in items_to_keep:
             try:
-                conv_id = generate_conversation_id('data/wanted')
+                conv_id = generate_conversation_id(str(target_dir))
                 full_conv = {
                     'id': conv_id,
                     'conversations': item.get('conversations', []),
