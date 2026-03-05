@@ -351,9 +351,12 @@ const state = {
         editingIndex: null
     },
     sidebar: {
-        open: false,
+        open: false
+    },
+    filesModal: {
         currentFolder: 'wanted',
-        files: []
+        files: [],
+        selectedIds: new Set()
     },
     export: {
         selectedConversations: new Set(),
@@ -421,8 +424,16 @@ async function init() {
         baseUrl: $('#base-url'),
         saveUrl: $('#save-url'),
         apiStatus: $('#api-status'),
-        searchInput: $('#search-input'),
-        fileList: $('#file-list'),
+        // Files Modal
+        openFilesBtn: $('#open-files-btn'),
+        filesModal: $('#files-modal'),
+        closeFilesModal: $('#close-files-modal'),
+        filesSearchInput: $('#files-search-input'),
+        filesModalList: $('#files-modal-list'),
+        filesModalCount: $('#files-modal-count'),
+        filesSelectAll: $('#files-select-all'),
+        filesSelectNone: $('#files-select-none'),
+        filesBulkActions: $('#files-bulk-actions'),
 
         // Tabs
         tabs: $$('.tab'),
@@ -507,10 +518,8 @@ async function init() {
         // Toast
         toastContainer: $('#toast-container'),
 
-        // Clear & Search toggle
+        // Clear toggle
         clearGenBtn: $('#clear-gen-btn'),
-        searchToggle: $('#search-toggle'),
-        searchBox: $('#search-box'),
 
         // Custom Parameters
         customParamsList: $('#custom-params-list'),
@@ -532,7 +541,6 @@ async function init() {
     await loadPresets();
     await loadChatPresets();
     await loadTags();
-    await loadFiles();
     await restoreDraft();
     await loadReviewQueue();
 
@@ -1036,74 +1044,291 @@ async function loadStats() {
     } catch (e) { console.error('Failed to load stats:', e); }
 }
 
-// ============ FILES (SEARCH & FILTER) ============
-async function loadFiles(folder = 'wanted') {
-    state.sidebar.currentFolder = folder;
-    const search = els.searchInput?.value?.trim() || '';
+// ============ FILES MODAL ============
+function openFilesModal() {
+    els.filesModal.classList.remove('hidden');
+    loadFilesModal(state.filesModal.currentFolder);
+}
+
+function closeFilesModal() {
+    els.filesModal.classList.add('hidden');
+}
+
+async function loadFilesModal(folder = 'wanted') {
+    state.filesModal.currentFolder = folder;
+    const search = els.filesSearchInput?.value?.trim() || '';
+
+    // Update active tab styling
+    $$('#files-modal .file-tab').forEach(t => t.classList.toggle('active', t.dataset.folder === folder));
+
     try {
-        let url = `/api/conversations?folder=${folder}`;
-        if (search) url += `&search=${encodeURIComponent(search)}`;
-        const res = await fetch(url);
-        if (res.ok) {
-            const data = await res.json();
-            state.sidebar.files = Array.isArray(data) ? data : (data.conversations || []);
-            renderFileList();
+        if (folder === 'review') {
+            const res = await fetch('/api/review-queue');
+            if (res.ok) {
+                const data = await res.json();
+                state.filesModal.files = data.queue || [];
+                if (search) {
+                    const s = search.toLowerCase();
+                    state.filesModal.files = state.filesModal.files.filter(f =>
+                        (f.rawText && f.rawText.toLowerCase().includes(s)) ||
+                        (f.conversations && f.conversations.some(c => c.value && c.value.toLowerCase().includes(s)))
+                    );
+                }
+            }
+        } else {
+            let url = `/api/conversations?folder=${folder}`;
+            if (search) url += `&search=${encodeURIComponent(search)}`;
+            const res = await fetch(url);
+            if (res.ok) {
+                const data = await res.json();
+                state.filesModal.files = Array.isArray(data) ? data : (data.conversations || []);
+            }
         }
+
+        // Clean up selected IDs that no longer exist
+        const currentIds = new Set(state.filesModal.files.map(f => f.id));
+        for (let id of state.filesModal.selectedIds) {
+            if (!currentIds.has(id)) state.filesModal.selectedIds.delete(id);
+        }
+
+        renderFilesModalList();
+        updateFilesModalCount();
     } catch (e) { console.error('Failed to load files:', e); }
 }
 
-function renderFileList() {
-    els.fileList.innerHTML = '';
-    if (state.sidebar.files.length === 0) {
-        els.fileList.innerHTML = '<div class="empty-files">No conversations yet</div>';
+function updateFilesModalCount() {
+    if (els.filesModalCount) els.filesModalCount.textContent = state.filesModal.selectedIds.size;
+}
+
+function renderFilesModalList() {
+    if (!els.filesModalList) return;
+    const folder = state.filesModal.currentFolder;
+
+    // Update bulk action buttons
+    els.filesBulkActions.innerHTML = `
+        <button id="files-select-all" class="btn btn-sm">Select All</button>
+        <button id="files-select-none" class="btn btn-sm">Select None</button>
+    `;
+
+    if (folder === 'wanted') {
+        els.filesBulkActions.innerHTML += `
+            <button id="files-bulk-reject" class="btn btn-sm btn-secondary">Move to Rejected</button>
+            <button id="files-bulk-delete" class="btn btn-sm btn-danger">Delete</button>
+        `;
+    } else if (folder === 'rejected') {
+        els.filesBulkActions.innerHTML += `
+            <button id="files-bulk-restore" class="btn btn-sm btn-secondary">Move to Wanted</button>
+            <button id="files-bulk-delete" class="btn btn-sm btn-danger">Delete</button>
+        `;
+    } else if (folder === 'review') {
+        els.filesBulkActions.innerHTML += `
+            <button id="files-bulk-keep" class="btn btn-sm btn-success">Keep Selected</button>
+            <button id="files-bulk-discard" class="btn btn-sm btn-danger">Discard Selected</button>
+        `;
+    }
+
+    // Reattach select all/none listeners
+    $('#files-select-all')?.addEventListener('click', () => {
+        state.filesModal.selectedIds = new Set(state.filesModal.files.map(f => f.id));
+        renderFilesModalList();
+        updateFilesModalCount();
+    });
+    $('#files-select-none')?.addEventListener('click', () => {
+        state.filesModal.selectedIds.clear();
+        renderFilesModalList();
+        updateFilesModalCount();
+    });
+
+    // Attach bulk action listeners
+    $('#files-bulk-reject')?.addEventListener('click', () => handleBulkMove('wanted', 'rejected'));
+    $('#files-bulk-restore')?.addEventListener('click', () => handleBulkMove('rejected', 'wanted'));
+    $('#files-bulk-delete')?.addEventListener('click', () => handleBulkDelete(folder));
+    $('#files-bulk-keep')?.addEventListener('click', () => handleBulkReviewKeep());
+    $('#files-bulk-discard')?.addEventListener('click', () => handleBulkReviewDiscard());
+
+    if (state.filesModal.files.length === 0) {
+        els.filesModalList.innerHTML = '<div class="empty-files">No items found</div>';
         return;
     }
-    state.sidebar.files.forEach(f => {
-        const item = document.createElement('div');
-        item.className = 'file-item';
-        item.dataset.id = f.id;
-        const isSelected = state.export.selectedConversations?.has(f.id) || false;
-        const isRejected = state.sidebar.currentFolder === 'rejected';
-        item.innerHTML = `
-            <div class="file-checkbox">
-                <input type="checkbox" class="select-file" ${isSelected ? 'checked' : ''}>
-            </div>
-            <div class="file-content">
-                <div class="file-preview">${escapeHtml(f.preview || '...')}</div>
-                <div class="file-meta">${formatDate(f.created_at)}${f.turns ? ` • ${f.turns} msgs` : ''}</div>
-            </div>
-            <div class="file-actions">
-                ${!isRejected ? '<button class="icon-btn reject-file" title="Reject">❌</button>' : ''}
-                ${isRejected ? '<button class="icon-btn restore-file" title="Restore">♻️</button>' : ''}
-                <button class="icon-btn delete-file" title="Delete permanently">🗑️</button>
+
+    els.filesModalList.innerHTML = state.filesModal.files.map(f => {
+        const isSelected = state.filesModal.selectedIds.has(f.id);
+
+        let preview = '';
+        let metaStr = '';
+
+        if (folder === 'review') {
+            const firstMsg = f.conversations?.find(c => c.from === 'human') || f.conversations?.[0];
+            preview = firstMsg ? firstMsg.value : 'Empty conversation';
+            preview = preview.length > 80 ? preview.substring(0, 80) + '...' : preview;
+            metaStr = f.createdAt ? formatDate(f.createdAt) : '';
+        } else {
+            preview = f.preview || f.id || 'No preview';
+            const meta = [];
+            if (f.created_at) meta.push(formatDate(f.created_at));
+            if (f.turns) meta.push(`${f.turns} msgs`);
+            if (f.tags?.length) meta.push(f.tags.join(', '));
+            metaStr = meta.join(' • ');
+        }
+
+        return `
+            <div class="export-file-item ${isSelected ? 'selected' : ''}" data-id="${f.id}">
+                <input type="checkbox" ${isSelected ? 'checked' : ''}>
+                <div class="export-file-info">
+                    <div class="export-file-preview">${escapeHtml(preview)}</div>
+                    <div class="export-file-meta">${metaStr || f.id}</div>
+                </div>
+                ${folder !== 'review' ? `
+                <div class="file-actions">
+                    <button class="icon-btn load-btn" data-id="${f.id}" title="Load in Generate Tab">📂 Load</button>
+                </div>
+                ` : ''}
             </div>
         `;
+    }).join('');
+
+    // Bind click events
+    els.filesModalList.querySelectorAll('.export-file-item').forEach(item => {
+        const id = item.dataset.id;
+
+        // Handle load button click
+        const loadBtn = item.querySelector('.load-btn');
+        if (loadBtn) {
+            loadBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                loadConversation(id, folder);
+                closeFilesModal();
+            });
+        }
+
+        // Handle item selection click
         item.addEventListener('click', (e) => {
-            if (!e.target.closest('.select-file') && !e.target.closest('.file-actions'))
-                loadConversation(f.id);
+            if (e.target.type === 'checkbox' || e.target.closest('.file-actions')) return;
+            const cb = item.querySelector('input[type="checkbox"]');
+            cb.checked = !cb.checked;
+            toggleFilesModalSelection(id, cb.checked);
         });
-        const checkbox = item.querySelector('.select-file');
-        checkbox.addEventListener('change', (e) => {
-            e.stopPropagation();
-            if (checkbox.checked) state.export.selectedConversations.add(f.id);
-            else state.export.selectedConversations.delete(f.id);
-        });
-        const rejectBtn = item.querySelector('.reject-file');
-        if (rejectBtn) rejectBtn.addEventListener('click', (e) => { e.stopPropagation(); moveConversation(f.id, 'rejected'); });
-        const restoreBtn = item.querySelector('.restore-file');
-        if (restoreBtn) restoreBtn.addEventListener('click', (e) => { e.stopPropagation(); restoreConversation(f.id); });
-        item.querySelector('.delete-file').addEventListener('click', (e) => {
-            e.stopPropagation();
-            if (confirm('Permanently delete this conversation? This cannot be undone.'))
-                deleteConversation(f.id);
-        });
-        els.fileList.appendChild(item);
+
+        const cb = item.querySelector('input[type="checkbox"]');
+        cb.addEventListener('change', (e) => toggleFilesModalSelection(id, e.target.checked));
     });
 }
 
-async function loadConversation(id) {
+function toggleFilesModalSelection(id, selected) {
+    if (selected) state.filesModal.selectedIds.add(id);
+    else state.filesModal.selectedIds.delete(id);
+
+    const item = els.filesModalList.querySelector(`[data-id="${id}"]`);
+    if (item) item.classList.toggle('selected', selected);
+    updateFilesModalCount();
+}
+
+// Bulk Actions Handlers
+async function handleBulkMove(from, to) {
+    const ids = Array.from(state.filesModal.selectedIds);
+    if (ids.length === 0) return;
+
+    showSaveIndicator('Moving...');
     try {
-        const res = await fetch(`/api/conversation/${id}?folder=${state.sidebar.currentFolder}`);
+        const res = await fetch('/api/conversations/bulk-move', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ids, from, to })
+        });
+        if (res.ok) {
+            toast(`Moved ${ids.length} items to ${to}`, 'success');
+            state.filesModal.selectedIds.clear();
+            loadFilesModal(from);
+            loadStats();
+        } else { toast('Failed to move', 'error'); }
+    } catch (e) { toast('Failed to move', 'error'); }
+    hideSaveIndicator('Moved');
+}
+
+async function handleBulkDelete(folder) {
+    const ids = Array.from(state.filesModal.selectedIds);
+    if (ids.length === 0) return;
+    if (!confirm(`Permanently delete ${ids.length} conversations?`)) return;
+
+    showSaveIndicator('Deleting...');
+    try {
+        const res = await fetch('/api/conversations/bulk-delete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ids, folder })
+        });
+        if (res.ok) {
+            toast(`Deleted ${ids.length} items`, 'success');
+            state.filesModal.selectedIds.clear();
+            loadFilesModal(folder);
+            loadStats();
+        } else { toast('Failed to delete', 'error'); }
+    } catch (e) { toast('Failed to delete', 'error'); }
+    hideSaveIndicator('Deleted');
+}
+
+async function handleBulkReviewKeep() {
+    const ids = Array.from(state.filesModal.selectedIds);
+    if (ids.length === 0) return;
+
+    const itemsToSave = state.filesModal.files
+        .filter(f => ids.includes(f.id))
+        .map(item => ({
+            conversation: { conversations: item.conversations },
+            metadata: item.metadata || {}
+        }));
+
+    showSaveIndicator('Saving...');
+    try {
+        // First bulk save
+        const res = await fetch('/api/save/bulk', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ items: itemsToSave, folder: 'wanted' })
+        });
+
+        if (res.ok) {
+            // Then remove from review queue
+            await fetch('/api/review-queue/bulk-delete', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ids })
+            });
+
+            toast(`Kept ${ids.length} items`, 'success');
+            state.filesModal.selectedIds.clear();
+            loadFilesModal('review');
+            loadReviewQueue(); // Refresh main review tab
+            loadStats();
+        } else { toast('Failed to keep items', 'error'); }
+    } catch (e) { toast('Failed to keep items', 'error'); }
+    hideSaveIndicator('Saved');
+}
+
+async function handleBulkReviewDiscard() {
+    const ids = Array.from(state.filesModal.selectedIds);
+    if (ids.length === 0) return;
+
+    showSaveIndicator('Discarding...');
+    try {
+        const res = await fetch('/api/review-queue/bulk-delete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ids })
+        });
+        if (res.ok) {
+            toast(`Discarded ${ids.length} items`, 'success');
+            state.filesModal.selectedIds.clear();
+            loadFilesModal('review');
+            loadReviewQueue(); // Refresh main review tab
+        } else { toast('Failed to discard', 'error'); }
+    } catch (e) { toast('Failed to discard', 'error'); }
+    hideSaveIndicator('Discarded');
+}
+
+async function loadConversation(id, folder) {
+    try {
+        const res = await fetch(`/api/conversation/${id}?folder=${folder}`);
         if (res.ok) {
             const conv = await res.json();
             state.generate.conversation = conv;
@@ -1118,28 +1343,6 @@ async function loadConversation(id) {
 
 function conversationToRaw(messages) {
     return messages.map(m => `${m.from === 'human' ? 'user' : 'gpt'}: ${m.value}`).join('\n---\n');
-}
-
-async function moveConversation(id, targetFolder) {
-    try {
-        const res = await fetch(`/api/conversation/${id}/move`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ from: state.sidebar.currentFolder, to: targetFolder })
-        });
-        if (res.ok) { toast(`Moved to ${targetFolder}`, 'success'); loadFiles(state.sidebar.currentFolder); loadStats(); }
-        else toast('Failed to move', 'error');
-    } catch (e) { toast('Failed to move', 'error'); }
-}
-
-async function restoreConversation(id) { await moveConversation(id, 'wanted'); }
-
-async function deleteConversation(id) {
-    try {
-        const res = await fetch(`/api/conversation/${id}?folder=${state.sidebar.currentFolder}`, { method: 'DELETE' });
-        if (res.ok) { toast('Permanently deleted', 'success'); loadFiles(state.sidebar.currentFolder); loadStats(); }
-        else { const err = await res.json(); toast(err.error || 'Failed to delete', 'error'); }
-    } catch (e) { toast('Failed to delete', 'error'); }
 }
 
 // ============ GENERATION (Single & Bulk) ============
@@ -1361,7 +1564,6 @@ async function saveConversation(folder, reason = null) {
             hideSaveIndicator('Saved ✓');
             resetGenerateTab();
             loadStats();
-            loadFiles(state.sidebar.currentFolder);
             loadTags();
         } else {
             toast('Failed to save', 'error');
@@ -1918,7 +2120,6 @@ async function keepAllReview() {
             updateReviewBadge();
             renderReviewItem();
             loadStats();
-            loadFiles();
         }
     } catch (e) { toast('Bulk save failed', 'error'); hideSaveIndicator('Save failed'); }
 }
@@ -2340,19 +2541,22 @@ function setupEventListeners() {
         el.addEventListener('change', saveSyncSettings);
     });
 
-    // Search
-    let searchTimer = null;
-    els.searchInput?.addEventListener('input', () => {
-        if (searchTimer) clearTimeout(searchTimer);
-        searchTimer = setTimeout(() => loadFiles(state.sidebar.currentFolder), 300);
+    // Files Modal
+    els.openFilesBtn?.addEventListener('click', openFilesModal);
+    els.closeFilesModal?.addEventListener('click', closeFilesModal);
+    $('#files-modal .modal-backdrop')?.addEventListener('click', closeFilesModal);
+
+    // Files Search
+    let filesSearchTimer = null;
+    els.filesSearchInput?.addEventListener('input', () => {
+        if (filesSearchTimer) clearTimeout(filesSearchTimer);
+        filesSearchTimer = setTimeout(() => loadFilesModal(state.filesModal.currentFolder), 300);
     });
 
-    // File tabs
-    $$('.file-tab').forEach(tab => {
+    // Files Modal Tabs
+    $$('#files-modal .file-tab').forEach(tab => {
         tab.addEventListener('click', (e) => {
-            $$('.file-tab').forEach(t => t.classList.remove('active'));
-            e.target.classList.add('active');
-            loadFiles(e.target.dataset.folder);
+            loadFilesModal(e.target.dataset.folder);
         });
     });
 
@@ -2445,16 +2649,6 @@ function setupEventListeners() {
 
     // Clear generate tab
     els.clearGenBtn?.addEventListener('click', resetGenerateTab);
-
-    // Search toggle
-    els.searchToggle?.addEventListener('click', () => {
-        const box = els.searchBox;
-        if (box) {
-            box.classList.toggle('expanded');
-            if (box.classList.contains('expanded')) els.searchInput?.focus();
-            else { if (els.searchInput) els.searchInput.value = ''; loadFiles(state.sidebar.currentFolder); }
-        }
-    });
 
     // Hotkey config
     $$('.hotkey-input').forEach(input => {

@@ -1653,9 +1653,27 @@ kbd {
     color: var(--text-secondary);
 }
 
+/* Files Modal Search Actions */
+.files-search-actions {
+    margin-bottom: 0.75rem;
+}
+
+.files-search-actions .input {
+    width: 100%;
+}
+
+/* Modal Content Variations */
+.files-modal-content {
+    max-width: 80%;
+    width: 95%;
+    height: 90vh;
+    display: flex;
+    flex-direction: column;
+}
+
 /* Export Modal Mobile */
 @media (max-width: 768px) {
-    .export-modal-content {
+    .export-modal-content, .files-modal-content {
         max-width: 100%;
         width: 100%;
         height: 100%;

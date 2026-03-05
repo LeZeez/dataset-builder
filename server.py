@@ -666,6 +666,48 @@ def delete_conversation(conv_id: str):
     
     return jsonify({'success': True, 'deleted': conv_id})
 
+@app.route('/api/conversations/bulk-delete', methods=['POST'])
+def bulk_delete_conversations():
+    """Bulk delete conversations."""
+    data = request.json
+    ids = data.get('ids', [])
+    folder = data.get('folder', 'wanted')
+
+    if folder not in ('wanted', 'rejected'):
+        return jsonify({'error': 'Invalid folder'}), 400
+
+    deleted = []
+    for conv_id in ids:
+        filepath = DATA_DIR / folder / f'{conv_id}.json'
+        if filepath.exists():
+            filepath.unlink()
+            deleted.append(conv_id)
+
+    return jsonify({'success': True, 'deleted': deleted})
+
+@app.route('/api/conversations/bulk-move', methods=['POST'])
+def bulk_move_conversations():
+    """Bulk move conversations."""
+    data = request.json
+    ids = data.get('ids', [])
+    from_folder = data.get('from', 'wanted')
+    to_folder = data.get('to', 'rejected')
+
+    if from_folder not in ('wanted', 'rejected') or to_folder not in ('wanted', 'rejected'):
+        return jsonify({'error': 'Invalid folder'}), 400
+
+    moved = []
+    for conv_id in ids:
+        src_path = DATA_DIR / from_folder / f'{conv_id}.json'
+        dst_path = DATA_DIR / to_folder / f'{conv_id}.json'
+
+        if src_path.exists():
+            dst_path.parent.mkdir(parents=True, exist_ok=True)
+            src_path.rename(dst_path)
+            moved.append(conv_id)
+
+    return jsonify({'success': True, 'moved': moved})
+
 
 # ============ MODELS ============
 
@@ -1158,6 +1200,20 @@ def remove_from_review_queue(item_id: str):
         
         save_review_queue(queue)
     
+    return jsonify({'success': True, 'count': len(queue)})
+
+@app.route('/api/review-queue/bulk-delete', methods=['POST'])
+def bulk_remove_from_review_queue():
+    """Bulk remove items from the review queue."""
+    data = request.json
+    ids = data.get('ids', [])
+
+    with _review_queue_lock:
+        queue = load_review_queue()
+        ids_set = set(ids)
+        queue = [item for item in queue if item.get('id') not in ids_set]
+        save_review_queue(queue)
+
     return jsonify({'success': True, 'count': len(queue)})
 
 

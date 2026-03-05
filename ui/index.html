@@ -184,23 +184,10 @@
                     </div>
                 </div>
 
-                <!-- Search + Files Section -->
-                <div class="sidebar-section files-section">
-                    <div class="files-header">
-                        <h3 class="sidebar-title">📂 Files</h3>
-                        <button id="search-toggle" class="icon-btn search-toggle-btn"
-                            title="Search conversations">🔍</button>
-                    </div>
-                    <div id="search-box" class="search-box-collapsible">
-                        <input type="text" id="search-input" class="input" placeholder="Search conversations...">
-                    </div>
-                    <div class="file-tabs">
-                        <button class="file-tab active" data-folder="wanted">Wanted</button>
-                        <button class="file-tab" data-folder="rejected">Rejected</button>
-                    </div>
-                    <div id="file-list" class="file-list">
-                        <!-- Files loaded dynamically -->
-                    </div>
+                <!-- Manage Files Section -->
+                <div class="sidebar-section">
+                    <h3 class="sidebar-title">📂 Files</h3>
+                    <button id="open-files-btn" class="btn btn-sm btn-secondary" style="width: 100%;">📂 Manage Files</button>
                 </div>
 
                 <!-- Export Section -->
@@ -583,6 +570,43 @@ gpt: response"></textarea>
                 <div class="modal-actions">
                     <button id="cancel-export" class="btn btn-secondary">Cancel</button>
                     <button id="confirm-export" class="btn btn-primary">Export Selected</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Files Modal -->
+        <div id="files-modal" class="modal hidden">
+            <div class="modal-backdrop"></div>
+            <div class="modal-content files-modal-content">
+                <div class="export-header">
+                    <h3>📂 Manage Files</h3>
+                    <button id="close-files-modal" class="icon-btn" title="Close">✕</button>
+                </div>
+
+                <div class="export-body" style="flex-direction: column;">
+                    <div class="file-tabs">
+                        <button class="file-tab active" data-folder="wanted">Wanted</button>
+                        <button class="file-tab" data-folder="rejected">Rejected</button>
+                        <button class="file-tab" data-folder="review">Review</button>
+                    </div>
+
+                    <div class="files-search-actions">
+                        <input type="text" id="files-search-input" class="input" placeholder="Search conversations...">
+                    </div>
+
+                    <div class="export-selection" style="flex: 1;">
+                        <div class="export-selection-header">
+                            <label><span id="files-modal-count">0</span> Selected</label>
+                            <div class="export-selection-actions" id="files-bulk-actions">
+                                <button id="files-select-all" class="btn btn-sm">Select All</button>
+                                <button id="files-select-none" class="btn btn-sm">Select None</button>
+                                <!-- Dynamic bulk buttons will be added here via JS based on active tab -->
+                            </div>
+                        </div>
+                        <div id="files-modal-list" class="export-file-list" style="max-height: 50vh;">
+                            <!-- Files loaded dynamically -->
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
