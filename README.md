@@ -60,6 +60,22 @@ Navigate to [http://localhost:5000](http://localhost:5000)
 | `Ctrl+Backspace` | Reject |
 | `Ctrl+R` | Regenerate |
 
+## Macros Engine
+
+The Dataset Builder includes a powerful Macros Engine that allows you to dynamically alter your prompts. Macros are processed iteratively, so you can nest them inside each other! The UI features a "Macro Maker" to easily generate these syntaxes.
+
+### Available Built-in Macros
+
+*   **Variables:** `{{my_variable}}` - Basic variable substitution, managed via the Macros button.
+*   **Random:** `{{random::apple::banana::cherry}}` - Picks one item at random from the list.
+*   **List Iterator:** `{{list::first::second::third}}` - Iterates sequentially through the list on each generation.
+*   **Dice Rolls:** `{{roll:1d20+5}}` - Simulates dice rolls (e.g., 2d6-1, 1d100).
+*   **Math Evaluation:** `{{5+4*2/4}}` - Safely evaluates simple mathematical expressions.
+*   **Comments:** `{{// This is a comment}}` - Text that will be removed from the prompt before being sent to the LLM.
+
+### Macro Highlighting
+When you generate a conversation, the "Last Sent Prompt" view will display your fully resolved prompt. Any text that was generated via a built-in macro will be highlighted in red with a dotted underline. Hovering over the highlighted text will reveal the original macro syntax that generated it.
+
 ### Input Format
 
 Conversations use a simple format with `---` as message delimiter:

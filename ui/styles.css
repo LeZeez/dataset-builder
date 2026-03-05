@@ -455,6 +455,34 @@ h1, h2, h3 { font-weight: 600; }
     box-sizing: border-box;
 }
 
+/* Last Sent Prompt */
+.last-prompt-card {
+    flex: none;
+    max-height: 200px;
+    margin-bottom: 0;
+}
+
+.last-prompt-content {
+    font-family: var(--font-ar);
+    font-size: 0.9rem;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    overflow-y: auto;
+    padding: 0.5rem;
+    background: rgba(0, 0, 0, 0.2);
+    border-radius: 8px;
+    border: 1px solid var(--border-glass);
+}
+
+.macro-highlight {
+    color: var(--danger);
+    background: rgba(239, 68, 68, 0.1);
+    border: 1px dashed var(--danger);
+    border-radius: 3px;
+    padding: 0 0.2rem;
+    cursor: help;
+}
+
 /* Prompt Card */
 .prompt-card { flex: 1.2; }
 

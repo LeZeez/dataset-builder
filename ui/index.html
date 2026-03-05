@@ -266,26 +266,14 @@
                         <textarea id="system-prompt" class="textarea"
                             placeholder="Enter your prompt template with {{variables}}..."></textarea>
 
-                        <!-- Dynamic Variables -->
-                        <div id="variables-section" class="variables-section hidden">
-                            <div class="variables-header">
-                                <span>🏷️ Variables</span>
-                                <div class="preset-controls">
-                                    <select id="preset-select" class="select select-sm">
-                                        <option value="">Load preset...</option>
-                                    </select>
-                                    <button id="save-preset" class="icon-btn" title="Save as preset">💾</button>
-                                    <button id="delete-preset" class="icon-btn" title="Delete preset">🗑️</button>
-                                </div>
-                            </div>
-                            <div id="variables-grid" class="variables-grid">
-                                <!-- Variables generated dynamically -->
-                            </div>
-                        </div>
-
                         <div class="prompt-actions">
-                            <div class="token-info">
-                                <span id="token-count">~0 tokens</span>
+                            <div class="prompt-actions-left">
+                                <div class="token-info">
+                                    <span id="token-count">~0 tokens</span>
+                                </div>
+                                <button id="macros-btn" class="btn btn-sm btn-secondary">
+                                    🏷️ Macros <span id="macros-badge" class="badge hidden">0</span>
+                                </button>
                             </div>
                             <!-- Bulk Generation Controls -->
                             <div class="bulk-controls">
@@ -310,6 +298,15 @@
                             <span id="bulk-progress-text">0/0</span>
                             <button id="bulk-cancel" class="btn btn-sm btn-danger">Cancel</button>
                         </div>
+                    </section>
+
+                    <!-- Last Sent Prompt View -->
+                    <section id="last-prompt-section" class="card last-prompt-card hidden">
+                        <div class="card-header">
+                            <h2>📨 Last Sent Prompt</h2>
+                            <button id="hide-last-prompt-btn" class="icon-btn" title="Close">✕</button>
+                        </div>
+                        <div id="last-prompt-content" class="last-prompt-content"></div>
                     </section>
 
                     <!-- Conversation Preview -->
@@ -609,6 +606,66 @@ gpt: response"></textarea>
                         </div>
                         <div id="files-modal-list" class="export-file-list max-h-50vh">
                             <!-- Files loaded dynamically -->
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Macros Modal -->
+        <div id="macros-modal" class="modal hidden">
+            <div class="modal-backdrop"></div>
+            <div class="modal-content macros-modal-content">
+                <div class="export-header">
+                    <h3>🏷️ Macros</h3>
+                    <button id="close-macros" class="icon-btn" title="Close">✕</button>
+                </div>
+
+                <div class="export-body macros-body">
+                    <!-- Left: Variables List -->
+                    <div class="macros-list-section">
+                        <div class="variables-header">
+                            <span>Variables List</span>
+                            <div class="preset-controls">
+                                <select id="preset-select" class="select select-sm">
+                                    <option value="">Load preset...</option>
+                                </select>
+                                <button id="save-preset" class="icon-btn" title="Save as preset">💾</button>
+                                <button id="delete-preset" class="icon-btn" title="Delete preset">🗑️</button>
+                            </div>
+                        </div>
+                        <div id="variables-container" class="variables-container">
+                            <div class="empty-state" style="padding: 1rem;">
+                                <div class="empty-icon" style="font-size: 1.5rem; margin-bottom: 0.5rem;">🔍</div>
+                                <p style="font-size: 0.8rem;">No variables found in prompt.</p>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Right: Macro Maker -->
+                    <div class="macro-maker-section">
+                        <h4>Macro Maker</h4>
+                        <div class="form-group">
+                            <label>Type</label>
+                            <select id="macro-type" class="select select-sm">
+                                <option value="random">Random Item</option>
+                                <option value="list">List Iterator</option>
+                                <option value="roll">Dice Roll</option>
+                                <option value="math">Math Operation</option>
+                                <option value="comment">Comment</option>
+                            </select>
+                        </div>
+
+                        <div id="macro-maker-inputs" class="macro-maker-inputs">
+                            <!-- Dynamic inputs for macro maker -->
+                        </div>
+
+                        <div class="form-group" style="margin-top: auto; padding-top: 1rem;">
+                            <label>Resulting Syntax</label>
+                            <div style="display: flex; gap: 0.5rem; align-items: center;">
+                                <input type="text" id="macro-result" class="input input-sm" style="flex: 1;" readonly>
+                                <button id="copy-macro-btn" class="icon-btn" title="Copy to clipboard">📋</button>
+                            </div>
                         </div>
                     </div>
                 </div>
