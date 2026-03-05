@@ -18,7 +18,7 @@ env/
 exports/**/*.jsonl
 data/wanted/*.json
 data/rejected/*.json
-data/prompts/*
+data/prompts/*.txt
 !data/wanted/.gitkeep
 !data/rejected/.gitkeep
 !data/prompts/.gitkeep
