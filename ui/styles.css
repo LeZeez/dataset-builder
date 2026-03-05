@@ -714,7 +714,7 @@ h1, h2, h3 { font-weight: 600; }
 }
 
 .bubble {
-    max-width: 85%;
+    max-width: calc(100% - 2.5rem);
     padding: 0.8rem 1rem;
     border-radius: 16px;
     line-height: 1.5;
@@ -752,33 +752,110 @@ h1, h2, h3 { font-weight: 600; }
     to { opacity: 1; transform: translateY(0); }
 }
 
+/* Bubble Tools (Meatball Menu) */
+.bubble-tools {
+    position: absolute;
+    top: 0.5rem;
+    right: -2rem; /* Initial position outside bubble */
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    opacity: 0;
+    transition: opacity 0.2s;
+    z-index: 10;
+}
+
+.bubble.gpt .bubble-tools {
+    right: auto;
+    left: -2rem;
+}
+
+@media (max-width: 768px) {
+    .bubble-tools {
+        right: -2.25rem;
+    }
+    .bubble.gpt .bubble-tools {
+        left: -2.25rem;
+    }
+}
+
+.bubble:hover .bubble-tools, .bubble-tools.open { opacity: 1; }
+
+.bubble-menu-btn {
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    padding: 0.35rem;
+    font-size: 0.75rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.bubble-menu-btn:hover, .bubble-tools.open .bubble-menu-btn {
+    color: var(--text-primary);
+    background: rgba(255, 255, 255, 0.1);
+}
+
+.bubble-menu-dropdown {
+    display: none;
+    flex-direction: column;
+    gap: 0.25rem;
+    margin-top: 0.25rem;
+    background: var(--bg-glass);
+    border: 1px solid var(--border-glass);
+    border-radius: 8px;
+    padding: 0.25rem;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+}
+
+/* Open state for the meatball menu */
+.bubble-tools.open .bubble-menu-dropdown {
+    display: flex;
+}
+
+/* Global 'Show all tools' toggle state */
+.show-all-tools .bubble-tools {
+    opacity: 1;
+}
+.show-all-tools .bubble-menu-btn {
+    display: none; /* Hide meatball */
+}
+.show-all-tools .bubble-menu-dropdown {
+    display: flex;
+    flex-direction: column;
+}
+
 /* Bubble Actions */
 .bubble-actions {
     display: flex;
     gap: 0.25rem;
     margin-top: 0.5rem;
-    opacity: 0;
-    transition: opacity 0.2s;
 }
 
-.bubble:hover .bubble-actions { opacity: 1; }
-
 .bubble-btn {
-    background: rgba(255, 255, 255, 0.1);
-    border: none;
+    background: transparent;
+    border: 1px solid transparent;
     border-radius: 4px;
-    padding: 0.25rem 0.5rem;
+    padding: 0.35rem;
     font-size: 0.75rem;
     cursor: pointer;
     color: var(--text-secondary);
     transition: all 0.2s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
 }
 
-.bubble-btn:hover { background: rgba(255, 255, 255, 0.2); color: var(--text-primary); }
-.bubble-btn.edit:hover { background: var(--accent); }
-.bubble-btn.delete:hover { background: #e74c3c; }
-.bubble-btn.regen:hover { background: #27ae60; }
-.bubble-btn.continue:hover { background: #3498db; }
+.bubble-btn:hover { background: rgba(255, 255, 255, 0.1); color: var(--text-primary); }
+.bubble-btn.edit:hover { color: var(--accent); }
+.bubble-btn.delete:hover { color: #e74c3c; }
+.bubble-btn.fork:hover { color: #9b59b6; }
+.bubble-btn.regen:hover { color: #27ae60; }
+.bubble-btn.continue:hover { color: #3498db; }
 .bubble-btn.save { background: #27ae60; color: white; }
 .bubble-btn.cancel { background: #e74c3c; color: white; }
 
@@ -837,6 +914,7 @@ h1, h2, h3 { font-weight: 600; }
     flex-direction: column;
     gap: 1rem;
     padding: 0.5rem;
+    zoom: var(--chat-zoom, 1);
 }
 
 .chat-controls {
@@ -1157,6 +1235,19 @@ kbd {
     .review-controls { flex-wrap: wrap; gap: 0.25rem; }
 
     .shortcuts-info { display: none; }
+
+    #chat-fullscreen {
+        display: inline-flex;
+    }
+    /* Provide spacing on mobile for bubble tools if opened */
+    .bubble {
+        margin-right: calc(2rem + 4px);
+    }
+    .bubble.gpt {
+        margin-right: 0;
+        margin-left: calc(2rem + 4px);
+    }
+
 }
 
 /* Desktop improvements */
@@ -1890,4 +1981,22 @@ kbd {
 
 ::-webkit-scrollbar-thumb:hover {
     background: rgba(255, 255, 255, 0.25);
+}
+
+/* Fullscreen Mobile */
+.chat-card.fullscreen-mobile {
+    position: fixed;
+    inset: 0;
+    z-index: 1000;
+    height: 100vh;
+    height: 100dvh;
+    width: 100vw;
+    max-height: none;
+    border-radius: 0;
+    background: var(--bg-base);
+    margin: 0;
+}
+
+#chat-fullscreen {
+    display: none;
 }
