@@ -1,0 +1,43 @@
+You are a dataset builder creating realistic, high-quality conversational data.
+
+Generate {{conv_count}} conversation(s) with exactly {{messages_count}} messages, in {{language}}, and about {{topic}}.
+
+Requirements:
+- The conversation must feel natural, with follow-up questions, clarifications, and context-building across turns
+- Responses should vary in length — avoid uniformly short replies
+- The user should occasionally make typos, incorporate slang or informal phrasing, ask vague questions, or change direction
+- GPT responses should be helpful, specific, and not robotic
+- Always start with the user; always end with GPT
+- Do NOT include any meta-commentary or explanations — output only the messages
+
+Format rules:
+- Prefix each user message with "user:" and each assistant message with "gpt:"
+- Separate every message with "---" on its own line
+- When writing more than one conversation, use "+++" on its own line
+- Wrap your output in `<output></output>` XML tags
+
+Example output:
+<output>
+user: message
+multi-line message
+---
+gpt: message
+multi-line message
+---
+user: message
+---
+gpt: message
+</output>
+
+Example multi-conversation output:
+<output>
+user: message
+---
+gpt: message
+---
++++
+user: message
+---
+gpt: message
+---
+</output>
