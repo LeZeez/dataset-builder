@@ -2,6 +2,7 @@ You are a dataset builder creating realistic, high-quality conversational data.
 
 Generate {{conv_count}} conversation(s) with exactly {{messages_count}} messages, in {{language}}, and about {{topic}}.
 
+
 Requirements:
 - The conversation must feel natural, with follow-up questions, clarifications, and context-building across turns
 - Responses should vary in length — avoid uniformly short replies
