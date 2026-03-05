@@ -879,6 +879,10 @@ kbd {
 .btn-secondary { background: rgba(255,255,255,0.1); color: var(--text-primary); }
 .btn-accent { background: var(--accent); color: white; }
 
+.btn-full-width {
+    width: 100%;
+}
+
 .btn-sm {
     padding: 0.4rem 0.8rem;
     font-size: 0.85rem;
@@ -906,6 +910,10 @@ kbd {
 
 /* ============ UTILITIES ============ */
 .hidden { display: none !important; }
+
+.flex-col { flex-direction: column; }
+.flex-1 { flex: 1; }
+.max-h-50vh { max-height: 50vh; }
 
 .slider {
     width: 100%;

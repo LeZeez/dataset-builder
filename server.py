@@ -678,10 +678,16 @@ def bulk_delete_conversations():
 
     deleted = []
     for conv_id in ids:
+        if not isinstance(conv_id, str) or '..' in conv_id or '/' in conv_id or '\\' in conv_id:
+            continue
+
         filepath = DATA_DIR / folder / f'{conv_id}.json'
         if filepath.exists():
-            filepath.unlink()
-            deleted.append(conv_id)
+            try:
+                filepath.unlink()
+                deleted.append(conv_id)
+            except Exception as e:
+                app.logger.error(f"Failed to delete conversation {conv_id}: {e}")
 
     return jsonify({'success': True, 'deleted': deleted})
 
@@ -697,14 +703,23 @@ def bulk_move_conversations():
         return jsonify({'error': 'Invalid folder'}), 400
 
     moved = []
+
+    dst_dir = DATA_DIR / to_folder
+    dst_dir.mkdir(parents=True, exist_ok=True)
+
     for conv_id in ids:
+        if not isinstance(conv_id, str) or '..' in conv_id or '/' in conv_id or '\\' in conv_id:
+            continue
+
         src_path = DATA_DIR / from_folder / f'{conv_id}.json'
-        dst_path = DATA_DIR / to_folder / f'{conv_id}.json'
+        dst_path = dst_dir / f'{conv_id}.json'
 
         if src_path.exists():
-            dst_path.parent.mkdir(parents=True, exist_ok=True)
-            src_path.rename(dst_path)
-            moved.append(conv_id)
+            try:
+                src_path.rename(dst_path)
+                moved.append(conv_id)
+            except Exception as e:
+                app.logger.error(f"Failed to move conversation {conv_id}: {e}")
 
     return jsonify({'success': True, 'moved': moved})
 
@@ -1215,6 +1230,72 @@ def bulk_remove_from_review_queue():
         save_review_queue(queue)
 
     return jsonify({'success': True, 'count': len(queue)})
+
+@app.route('/api/review-queue/bulk-keep', methods=['POST'])
+def bulk_keep_from_review_queue():
+    """Atomically save items from the review queue to wanted and remove them from the queue."""
+    data = request.json
+    ids = data.get('ids', [])
+    ids_set = set(ids)
+
+    if not ids:
+        return jsonify({'error': 'No ids provided'}), 400
+
+    saved = []
+    errors = []
+
+    with _review_queue_lock:
+        queue = load_review_queue()
+
+        # Find items to keep
+        items_to_keep = [item for item in queue if item.get('id') in ids_set]
+
+        # Save them to wanted folder
+        target_dir = DATA_DIR / 'wanted'
+        target_dir.mkdir(parents=True, exist_ok=True)
+
+        for item in items_to_keep:
+            try:
+                conv_id = generate_conversation_id('data/wanted')
+                full_conv = {
+                    'id': conv_id,
+                    'conversations': item.get('conversations', []),
+                    'metadata': {
+                        'created_at': datetime.utcnow().isoformat() + 'Z',
+                        'source': 'synthetic',
+                        **item.get('metadata', {})
+                    }
+                }
+
+                is_valid, errs = validate_conversation(full_conv)
+                if not is_valid:
+                    errors.append({'error': errs, 'original_id': item.get('id')})
+                    # Don't remove from queue if validation fails
+                    ids_set.discard(item.get('id'))
+                    continue
+
+                filepath = target_dir / f'{conv_id}.json'
+                with open(filepath, 'w', encoding='utf-8') as f:
+                    json.dump(full_conv, f, ensure_ascii=False, indent=2)
+
+                saved.append({'id': conv_id, 'original_id': item.get('id')})
+            except Exception as e:
+                errors.append({'error': str(e), 'original_id': item.get('id')})
+                ids_set.discard(item.get('id'))
+
+        # Remove successfully saved items from the review queue
+        if saved:
+            queue = [item for item in queue if item.get('id') not in ids_set]
+            save_review_queue(queue)
+
+    return jsonify({
+        'success': True,
+        'saved_count': len(saved),
+        'error_count': len(errors),
+        'saved': saved,
+        'errors': errors,
+        'count': len(queue)
+    })
 
 
 @app.route('/api/review-queue', methods=['DELETE'])

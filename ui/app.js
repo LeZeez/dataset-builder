@@ -1104,47 +1104,16 @@ function renderFilesModalList() {
     if (!els.filesModalList) return;
     const folder = state.filesModal.currentFolder;
 
-    // Update bulk action buttons
-    els.filesBulkActions.innerHTML = `
-        <button id="files-select-all" class="btn btn-sm">Select All</button>
-        <button id="files-select-none" class="btn btn-sm">Select None</button>
-    `;
-
-    if (folder === 'wanted') {
-        els.filesBulkActions.innerHTML += `
-            <button id="files-bulk-reject" class="btn btn-sm btn-secondary">Move to Rejected</button>
-            <button id="files-bulk-delete" class="btn btn-sm btn-danger">Delete</button>
-        `;
-    } else if (folder === 'rejected') {
-        els.filesBulkActions.innerHTML += `
-            <button id="files-bulk-restore" class="btn btn-sm btn-secondary">Move to Wanted</button>
-            <button id="files-bulk-delete" class="btn btn-sm btn-danger">Delete</button>
-        `;
-    } else if (folder === 'review') {
-        els.filesBulkActions.innerHTML += `
-            <button id="files-bulk-keep" class="btn btn-sm btn-success">Keep Selected</button>
-            <button id="files-bulk-discard" class="btn btn-sm btn-danger">Discard Selected</button>
-        `;
-    }
-
-    // Reattach select all/none listeners
-    $('#files-select-all')?.addEventListener('click', () => {
-        state.filesModal.selectedIds = new Set(state.filesModal.files.map(f => f.id));
-        renderFilesModalList();
-        updateFilesModalCount();
+    // Update bulk action buttons visibility
+    const buttons = Array.from(els.filesBulkActions.querySelectorAll('button[data-folder]'));
+    buttons.forEach(btn => {
+        const folders = btn.dataset.folder.split(' ');
+        if (folders.includes(folder)) {
+            btn.removeAttribute('hidden');
+        } else {
+            btn.setAttribute('hidden', '');
+        }
     });
-    $('#files-select-none')?.addEventListener('click', () => {
-        state.filesModal.selectedIds.clear();
-        renderFilesModalList();
-        updateFilesModalCount();
-    });
-
-    // Attach bulk action listeners
-    $('#files-bulk-reject')?.addEventListener('click', () => handleBulkMove('wanted', 'rejected'));
-    $('#files-bulk-restore')?.addEventListener('click', () => handleBulkMove('rejected', 'wanted'));
-    $('#files-bulk-delete')?.addEventListener('click', () => handleBulkDelete(folder));
-    $('#files-bulk-keep')?.addEventListener('click', () => handleBulkReviewKeep());
-    $('#files-bulk-discard')?.addEventListener('click', () => handleBulkReviewDiscard());
 
     if (state.filesModal.files.length === 0) {
         els.filesModalList.innerHTML = '<div class="empty-files">No items found</div>';
@@ -1167,51 +1136,25 @@ function renderFilesModalList() {
             const meta = [];
             if (f.created_at) meta.push(formatDate(f.created_at));
             if (f.turns) meta.push(`${f.turns} msgs`);
-            if (f.tags?.length) meta.push(f.tags.join(', '));
+            if (f.tags?.length) meta.push(f.tags.map(t => escapeHtml(t)).join(', '));
             metaStr = meta.join(' • ');
         }
 
         return `
-            <div class="export-file-item ${isSelected ? 'selected' : ''}" data-id="${f.id}">
-                <input type="checkbox" ${isSelected ? 'checked' : ''}>
+            <div class="export-file-item ${isSelected ? 'selected' : ''}" data-id="${escapeHtml(f.id)}">
+                <input type="checkbox" class="file-checkbox" ${isSelected ? 'checked' : ''}>
                 <div class="export-file-info">
                     <div class="export-file-preview">${escapeHtml(preview)}</div>
-                    <div class="export-file-meta">${metaStr || f.id}</div>
+                    <div class="export-file-meta">${metaStr ? metaStr : escapeHtml(f.id)}</div>
                 </div>
                 ${folder !== 'review' ? `
                 <div class="file-actions">
-                    <button class="icon-btn load-btn" data-id="${f.id}" title="Load in Generate Tab">📂 Load</button>
+                    <button class="icon-btn load-btn" data-id="${escapeHtml(f.id)}" title="Load in Generate Tab">📂 Load</button>
                 </div>
                 ` : ''}
             </div>
         `;
     }).join('');
-
-    // Bind click events
-    els.filesModalList.querySelectorAll('.export-file-item').forEach(item => {
-        const id = item.dataset.id;
-
-        // Handle load button click
-        const loadBtn = item.querySelector('.load-btn');
-        if (loadBtn) {
-            loadBtn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                loadConversation(id, folder);
-                closeFilesModal();
-            });
-        }
-
-        // Handle item selection click
-        item.addEventListener('click', (e) => {
-            if (e.target.type === 'checkbox' || e.target.closest('.file-actions')) return;
-            const cb = item.querySelector('input[type="checkbox"]');
-            cb.checked = !cb.checked;
-            toggleFilesModalSelection(id, cb.checked);
-        });
-
-        const cb = item.querySelector('input[type="checkbox"]');
-        cb.addEventListener('change', (e) => toggleFilesModalSelection(id, e.target.checked));
-    });
 }
 
 function toggleFilesModalSelection(id, selected) {
@@ -1271,31 +1214,21 @@ async function handleBulkReviewKeep() {
     const ids = Array.from(state.filesModal.selectedIds);
     if (ids.length === 0) return;
 
-    const itemsToSave = state.filesModal.files
-        .filter(f => ids.includes(f.id))
-        .map(item => ({
-            conversation: { conversations: item.conversations },
-            metadata: item.metadata || {}
-        }));
-
     showSaveIndicator('Saving...');
     try {
-        // First bulk save
-        const res = await fetch('/api/save/bulk', {
+        const res = await fetch('/api/review-queue/bulk-keep', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ items: itemsToSave, folder: 'wanted' })
+            body: JSON.stringify({ ids })
         });
 
         if (res.ok) {
-            // Then remove from review queue
-            await fetch('/api/review-queue/bulk-delete', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ ids })
-            });
-
-            toast(`Kept ${ids.length} items`, 'success');
+            const data = await res.json();
+            if (data.error_count > 0) {
+                toast(`Kept ${data.saved_count} items. Failed to save ${data.error_count} items.`, 'warning');
+            } else {
+                toast(`Kept ${data.saved_count} items`, 'success');
+            }
             state.filesModal.selectedIds.clear();
             loadFilesModal('review');
             loadReviewQueue(); // Refresh main review tab
@@ -1328,7 +1261,7 @@ async function handleBulkReviewDiscard() {
 
 async function loadConversation(id, folder) {
     try {
-        const res = await fetch(`/api/conversation/${id}?folder=${folder}`);
+        const res = await fetch(`/api/conversation/${encodeURIComponent(id)}?folder=${encodeURIComponent(folder)}`);
         if (res.ok) {
             const conv = await res.json();
             state.generate.conversation = conv;
@@ -2558,6 +2491,48 @@ function setupEventListeners() {
         tab.addEventListener('click', (e) => {
             loadFilesModal(e.target.dataset.folder);
         });
+    });
+
+    // Files Modal Bulk Actions Static Listeners
+    $('#files-select-all')?.addEventListener('click', () => {
+        state.filesModal.selectedIds = new Set(state.filesModal.files.map(f => f.id));
+        renderFilesModalList();
+        updateFilesModalCount();
+    });
+    $('#files-select-none')?.addEventListener('click', () => {
+        state.filesModal.selectedIds.clear();
+        renderFilesModalList();
+        updateFilesModalCount();
+    });
+    $('#files-bulk-reject')?.addEventListener('click', () => handleBulkMove('wanted', 'rejected'));
+    $('#files-bulk-restore')?.addEventListener('click', () => handleBulkMove('rejected', 'wanted'));
+    $('#files-bulk-delete')?.addEventListener('click', () => handleBulkDelete(state.filesModal.currentFolder));
+    $('#files-bulk-keep')?.addEventListener('click', () => handleBulkReviewKeep());
+    $('#files-bulk-discard')?.addEventListener('click', () => handleBulkReviewDiscard());
+
+    // Event Delegation for Files Modal List Items
+    els.filesModalList?.addEventListener('click', (e) => {
+        const item = e.target.closest('.export-file-item');
+        if (!item) return;
+
+        const id = item.dataset.id;
+        const loadBtn = e.target.closest('.load-btn');
+        const checkbox = e.target.closest('.file-checkbox');
+
+        if (loadBtn) {
+            e.stopPropagation();
+            loadConversation(id, state.filesModal.currentFolder);
+            closeFilesModal();
+        } else if (checkbox) {
+            e.stopPropagation();
+            toggleFilesModalSelection(id, checkbox.checked);
+        } else if (!e.target.closest('.file-actions')) {
+            const cb = item.querySelector('.file-checkbox');
+            if (cb) {
+                cb.checked = !cb.checked;
+                toggleFilesModalSelection(id, cb.checked);
+            }
+        }
     });
 
     // Export buttons

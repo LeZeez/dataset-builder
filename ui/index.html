@@ -187,7 +187,7 @@
                 <!-- Manage Files Section -->
                 <div class="sidebar-section">
                     <h3 class="sidebar-title">📂 Files</h3>
-                    <button id="open-files-btn" class="btn btn-sm btn-secondary" style="width: 100%;">📂 Manage Files</button>
+                    <button id="open-files-btn" class="btn btn-sm btn-secondary btn-full-width">📂 Manage Files</button>
                 </div>
 
                 <!-- Export Section -->
@@ -583,7 +583,7 @@ gpt: response"></textarea>
                     <button id="close-files-modal" class="icon-btn" title="Close">✕</button>
                 </div>
 
-                <div class="export-body" style="flex-direction: column;">
+                <div class="export-body flex-col">
                     <div class="file-tabs">
                         <button class="file-tab active" data-folder="wanted">Wanted</button>
                         <button class="file-tab" data-folder="rejected">Rejected</button>
@@ -594,16 +594,20 @@ gpt: response"></textarea>
                         <input type="text" id="files-search-input" class="input" placeholder="Search conversations...">
                     </div>
 
-                    <div class="export-selection" style="flex: 1;">
+                    <div class="export-selection flex-1">
                         <div class="export-selection-header">
                             <label><span id="files-modal-count">0</span> Selected</label>
                             <div class="export-selection-actions" id="files-bulk-actions">
                                 <button id="files-select-all" class="btn btn-sm">Select All</button>
                                 <button id="files-select-none" class="btn btn-sm">Select None</button>
-                                <!-- Dynamic bulk buttons will be added here via JS based on active tab -->
+                                <button id="files-bulk-reject" class="btn btn-sm btn-secondary" data-folder="wanted" hidden>Move to Rejected</button>
+                                <button id="files-bulk-restore" class="btn btn-sm btn-secondary" data-folder="rejected" hidden>Move to Wanted</button>
+                                <button id="files-bulk-keep" class="btn btn-sm btn-success" data-folder="review" hidden>Keep Selected</button>
+                                <button id="files-bulk-discard" class="btn btn-sm btn-danger" data-folder="review" hidden>Discard Selected</button>
+                                <button id="files-bulk-delete" class="btn btn-sm btn-danger" data-folder="wanted rejected" hidden>Delete</button>
                             </div>
                         </div>
-                        <div id="files-modal-list" class="export-file-list" style="max-height: 50vh;">
+                        <div id="files-modal-list" class="export-file-list max-h-50vh">
                             <!-- Files loaded dynamically -->
                         </div>
                     </div>
