@@ -13,6 +13,8 @@ try:
             if resp.ok:
                 print("Server is up.")
                 break
+            else:
+                time.sleep(0.5)
         except requests.ConnectionError:
             time.sleep(0.5)
     else:

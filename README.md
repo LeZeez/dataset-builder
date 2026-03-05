@@ -194,9 +194,22 @@ Then edit as needed:
       "base_url": "https://api.openai.com/v1",
       "api_key": "sk-..."
     }
+  },
+  "server": {
+    "host": "127.0.0.1",
+    "port": 5000,
+    "allowed_ips": ["127.0.0.1"],
+    "password": "your-secure-password"
   }
 }
 ```
+
+### Security Configuration
+
+You can secure the web UI by configuring the `server` block in `config.json`:
+
+*   **`allowed_ips`**: An array of allowed IP addresses. If provided, only clients matching these IPs can access the server. Leave empty `[]` to allow all.
+*   **`password`**: A password for HTTP Basic Authentication. If provided, users will be prompted for this password when accessing the UI. Leave empty `""` to disable authentication.
 
 ### Custom Base URLs
 
