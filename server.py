@@ -650,7 +650,7 @@ def list_exports():
                 'format': fmt_dir.name,
                 'path': f"{fmt_dir.name}/{file.name}",
                 'size': stat.st_size,
-                'created_at': stat.st_ctime * 1000
+                'created_at': stat.st_mtime * 1000
             })
 
     files.sort(key=lambda x: x['created_at'], reverse=True)
@@ -659,12 +659,11 @@ def list_exports():
 @app.route('/api/exports/<format>/<filename>', methods=['GET'])
 def download_export(format: str, filename: str):
     '''Download an exported dataset.'''
+    if format not in ('sharegpt', 'openai', 'alpaca'):
+        return jsonify({'error': 'Invalid format'}), 400
     filename = re.sub(r'[^a-zA-Z0-9_.-]', '', filename)
     if not filename or filename.startswith('.'):
         return jsonify({'error': 'Invalid filename'}), 400
-
-    if format not in ('sharegpt', 'openai', 'alpaca'):
-        return jsonify({'error': 'Invalid format'}), 400
 
     export_dir = Path('exports') / format
     return send_from_directory(str(export_dir), filename, as_attachment=True)
@@ -672,12 +671,11 @@ def download_export(format: str, filename: str):
 @app.route('/api/exports/<format>/<filename>', methods=['DELETE'])
 def delete_export(format: str, filename: str):
     '''Delete an exported dataset.'''
+    if format not in ('sharegpt', 'openai', 'alpaca'):
+        return jsonify({'error': 'Invalid format'}), 400
     filename = re.sub(r'[^a-zA-Z0-9_.-]', '', filename)
     if not filename or filename.startswith('.'):
         return jsonify({'error': 'Invalid filename'}), 400
-
-    if format not in ('sharegpt', 'openai', 'alpaca'):
-        return jsonify({'error': 'Invalid format'}), 400
 
     file_path = Path('exports') / format / filename
     if file_path.exists():
@@ -688,6 +686,8 @@ def delete_export(format: str, filename: str):
 @app.route('/api/exports/<format>/<filename>', methods=['PUT'])
 def rename_export(format: str, filename: str):
     '''Rename an exported dataset.'''
+    if format not in ('sharegpt', 'openai', 'alpaca'):
+        return jsonify({'error': 'Invalid format'}), 400
     filename = re.sub(r'[^a-zA-Z0-9_.-]', '', filename)
     if not filename or filename.startswith('.'):
         return jsonify({'error': 'Invalid old filename'}), 400
@@ -703,7 +703,7 @@ def rename_export(format: str, filename: str):
 
     if file_path.exists():
         if new_file_path.exists():
-             return jsonify({'error': 'File already exists'}), 400
+            return jsonify({'error': 'File already exists'}), 400
         file_path.rename(new_file_path)
         return jsonify({'success': True})
     return jsonify({'error': 'File not found'}), 404
@@ -721,6 +721,8 @@ def export_dataset_endpoint(format: str):
         filename = data.get('filename', None) # Optional custom filename
         if filename:
             filename = re.sub(r'[^a-zA-Z0-9_.-]', '', filename)
+            if not filename or filename.startswith('.'):
+                return jsonify({'error': 'Invalid filename'}), 400
             if not filename.endswith('.jsonl'): filename += '.jsonl'
         
         output_path = export_dataset(

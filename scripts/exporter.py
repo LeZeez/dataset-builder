@@ -8,6 +8,7 @@ Supported formats:
 """
 
 import json
+import time
 from pathlib import Path
 from typing import Literal
 
@@ -120,7 +121,6 @@ def export_dataset(
         "alpaca": to_alpaca
     }[format]
     
-    import time
     if not filename:
         filename = f"dataset_{format}_{int(time.time())}.jsonl"
 

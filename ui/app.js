@@ -3367,6 +3367,10 @@ function renderExportedDatasets(files) {
         renameBtn.onclick = async () => {
             const newName = prompt('Enter new filename (must end in .jsonl):', file.name);
             if (!newName || newName === file.name) return;
+            if (!newName.endsWith('.jsonl')) {
+                toast('Filename must end with .jsonl', 'error');
+                return;
+            }
             try {
                 const res = await fetch(`/api/exports/${file.format}/${encodeURIComponent(file.name)}`, {
                     method: 'PUT',
