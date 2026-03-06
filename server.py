@@ -22,9 +22,13 @@ import threading
 import traceback
 import uuid
 from datetime import datetime, timezone
+<<<<<<< perf-optimization-top-level-imports-4365142075326149533
 from pathlib import Path
 from typing import Generator, Optional
 from urllib.parse import urlparse
+=======
+from typing import Generator
+>>>>>>> master
 
 import anthropic
 import google.generativeai as genai
@@ -34,15 +38,28 @@ from flask_cors import CORS
 from werkzeug.exceptions import HTTPException
 
 # Import our modules
-from scripts.parser import parse_minimal_format, generate_conversation_id, validate_conversation
+from scripts.parser import generate_conversation_id, validate_conversation
 from scripts.exporter import export_dataset
 from scripts.stats import get_stats
 
 # Load config
 CONFIG_PATH = Path('config.json')
 DATA_DIR = Path('data')
+VALID_FOLDERS = ('wanted', 'rejected')
 
 _config_lock = threading.Lock()
+
+
+def is_safe_id(id_str: str) -> bool:
+    """Checks for path traversal characters in an ID."""
+    if not isinstance(id_str, str):
+        return False
+    return '..' not in id_str and '/' not in id_str and '\\' not in id_str
+
+
+def is_valid_folder(folder: str) -> bool:
+    """Checks if a folder is in the allowlist."""
+    return folder in VALID_FOLDERS
 
 def setup_defaults():
     # Setup prompt directories
@@ -368,7 +385,9 @@ def delete_prompt(name: str):
 @app.route('/api/prompt/<version>', methods=['GET'])
 def get_prompt_legacy(version: str):
     """Get prompt template by version (legacy endpoint)."""
-    prompt_path = DATA_DIR / 'prompts' / f'{version}.txt'
+    # Sanitize version
+    safe_version = re.sub(r'[^a-zA-Z0-9_-]', '', version)
+    prompt_path = DATA_DIR / 'prompts' / f'{safe_version}.txt'
     if prompt_path.exists():
         return jsonify({'content': prompt_path.read_text(encoding='utf-8')})
     return jsonify({'error': 'Prompt not found'}), 404
@@ -562,7 +581,7 @@ def save_conversation_endpoint():
     folder = data.get('folder', 'wanted')  # 'wanted' or 'rejected'
     metadata = data.get('metadata', {})
     
-    if folder not in ('wanted', 'rejected'):
+    if not is_valid_folder(folder):
         return jsonify({'error': 'Invalid folder'}), 400
     
     # Generate ID
@@ -609,7 +628,7 @@ def save_bulk_conversations():
     items = data.get('items', [])
     folder = data.get('folder', 'wanted')
     
-    if folder not in ('wanted', 'rejected'):
+    if not is_valid_folder(folder):
         return jsonify({'error': 'Invalid folder'}), 400
     
     saved = []
@@ -692,6 +711,9 @@ def export_dataset_endpoint(format: str):
 def list_conversations():
     """List all saved conversations."""
     folder = request.args.get('folder', 'wanted')
+    if not is_valid_folder(folder):
+        return jsonify({'error': 'Invalid folder'}), 400
+
     search = request.args.get('search', '').strip().lower()
     tag_filter = request.args.get('tag', '').strip()
     folder_path = DATA_DIR / folder
@@ -739,7 +761,13 @@ def list_conversations():
 @app.route('/api/conversation/<conv_id>', methods=['GET'])
 def get_conversation(conv_id: str):
     """Get a single conversation by ID."""
+    if not is_safe_id(conv_id):
+        return jsonify({'error': 'Invalid conversation ID'}), 400
+
     folder = request.args.get('folder', 'wanted')
+    if not is_valid_folder(folder):
+        return jsonify({'error': 'Invalid folder'}), 400
+
     filepath = DATA_DIR / folder / f'{conv_id}.json'
     
     if not filepath.exists():
@@ -755,14 +783,14 @@ def get_conversation(conv_id: str):
 @app.route('/api/conversation/<conv_id>/move', methods=['POST'])
 def move_conversation(conv_id: str):
     """Move conversation between wanted and rejected."""
-    if not isinstance(conv_id, str) or '..' in conv_id or '/' in conv_id or '\\' in conv_id:
+    if not is_safe_id(conv_id):
         return jsonify({'error': 'Invalid conversation ID'}), 400
 
     data = request.get_json() or {}
     from_folder = data.get('from', 'wanted')
     to_folder = data.get('to', 'rejected')
     
-    if from_folder not in ('wanted', 'rejected') or to_folder not in ('wanted', 'rejected'):
+    if not is_valid_folder(from_folder) or not is_valid_folder(to_folder):
         return jsonify({'error': 'Invalid folder'}), 400
     
     src_path = DATA_DIR / from_folder / f'{conv_id}.json'
@@ -781,9 +809,12 @@ def move_conversation(conv_id: str):
 @app.route('/api/conversation/<conv_id>', methods=['DELETE'])
 def delete_conversation(conv_id: str):
     """Permanently delete a conversation."""
+    if not is_safe_id(conv_id):
+        return jsonify({'error': 'Invalid conversation ID'}), 400
+
     folder = request.args.get('folder', 'wanted')
     
-    if folder not in ('wanted', 'rejected'):
+    if not is_valid_folder(folder):
         return jsonify({'error': 'Invalid folder'}), 400
     
     filepath = DATA_DIR / folder / f'{conv_id}.json'
@@ -803,12 +834,12 @@ def bulk_delete_conversations():
     ids = data.get('ids', [])
     folder = data.get('folder', 'wanted')
 
-    if folder not in ('wanted', 'rejected'):
+    if not is_valid_folder(folder):
         return jsonify({'error': 'Invalid folder'}), 400
 
     deleted = []
     for conv_id in ids:
-        if not isinstance(conv_id, str) or '..' in conv_id or '/' in conv_id or '\\' in conv_id:
+        if not is_safe_id(conv_id):
             continue
 
         filepath = DATA_DIR / folder / f'{conv_id}.json'
@@ -829,7 +860,7 @@ def bulk_move_conversations():
     from_folder = data.get('from', 'wanted')
     to_folder = data.get('to', 'rejected')
 
-    if from_folder not in ('wanted', 'rejected') or to_folder not in ('wanted', 'rejected'):
+    if not is_valid_folder(from_folder) or not is_valid_folder(to_folder):
         return jsonify({'error': 'Invalid folder'}), 400
 
     moved = []
@@ -838,7 +869,7 @@ def bulk_move_conversations():
     dst_dir.mkdir(parents=True, exist_ok=True)
 
     for conv_id in ids:
-        if not isinstance(conv_id, str) or '..' in conv_id or '/' in conv_id or '\\' in conv_id:
+        if not is_safe_id(conv_id):
             continue
 
         src_path = DATA_DIR / from_folder / f'{conv_id}.json'
