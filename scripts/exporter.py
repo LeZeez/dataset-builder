@@ -94,7 +94,8 @@ def export_dataset(
     output_dir: str = "exports",
     format: Literal["sharegpt", "openai", "alpaca"] = "sharegpt",
     selected_ids: list[str] = None,
-    system_prompt: str = None
+    system_prompt: str = None,
+    filename: str = None
 ) -> Path:
     """
     Export all conversations from source directory to specified format.
@@ -119,7 +120,11 @@ def export_dataset(
         "alpaca": to_alpaca
     }[format]
     
-    output_file = output_path / "dataset.jsonl"
+    import time
+    if not filename:
+        filename = f"dataset_{format}_{int(time.time())}.jsonl"
+
+    output_file = output_path / filename
     
     count = 0
     with open(output_file, 'w', encoding='utf-8') as out:
