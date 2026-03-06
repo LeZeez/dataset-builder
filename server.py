@@ -35,6 +35,8 @@ import logging
 CONFIG_PATH = Path('config.json')
 DATA_DIR = Path('data')
 
+_config_lock = threading.Lock()
+
 def setup_defaults():
     # Setup prompt directories
     prompts_dir = DATA_DIR / 'prompts'
@@ -67,23 +69,18 @@ def setup_defaults():
 
             changed = False
 
-            # Setup Chat default preset
-            if 'chat_presets' not in config or not config['chat_presets']:
-                chat_prompt_path = Path(__file__).parent / "defaults" / "Chat.txt"
-                if chat_prompt_path.exists():
-                    with open(chat_prompt_path, 'r', encoding='utf-8') as cf:
-                        chat_content = cf.read()
-                    config['chat_presets'] = [{'name': 'Default', 'prompt': chat_content}]
-                    changed = True
+            def _add_default_preset(key, filename):
+                nonlocal changed
+                if key not in config or not config[key]:
+                    path = Path(__file__).parent / "defaults" / filename
+                    if path.exists():
+                        with open(path, 'r', encoding='utf-8') as f_preset:
+                            content = f_preset.read()
+                        config[key] = [{'name': 'Default', 'prompt': content}]
+                        changed = True
 
-            # Setup Export default preset
-            if 'export_presets' not in config or not config['export_presets']:
-                export_prompt_path = Path(__file__).parent / "defaults" / "Export.txt"
-                if export_prompt_path.exists():
-                    with open(export_prompt_path, 'r', encoding='utf-8') as ef:
-                        export_content = ef.read()
-                    config['export_presets'] = [{'name': 'Default', 'prompt': export_content}]
-                    changed = True
+            _add_default_preset('chat_presets', 'Chat.txt')
+            _add_default_preset('export_presets', 'Export.txt')
 
             if changed:
                 with open(CONFIG_PATH, 'w', encoding='utf-8') as f:
@@ -95,13 +92,14 @@ def setup_defaults():
 setup_defaults()
 
 def load_config() -> dict:
-    if CONFIG_PATH.exists():
-        try:
-            with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except json.JSONDecodeError:
-            return {}
-    return {}
+    with _config_lock:
+        if CONFIG_PATH.exists():
+            try:
+                with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except (json.JSONDecodeError, IOError):
+                return {}
+        return {}
 
 app = Flask(__name__, static_folder='ui', static_url_path='')
 
@@ -143,8 +141,11 @@ def security_check():
 
 
 def save_config(config: dict):
-    with open(CONFIG_PATH, 'w', encoding='utf-8') as f:
-        json.dump(config, f, indent=2, ensure_ascii=False)
+    with _config_lock:
+        temp_path = CONFIG_PATH.with_suffix('.json.tmp')
+        with open(temp_path, 'w', encoding='utf-8') as f:
+            json.dump(config, f, indent=2, ensure_ascii=False)
+        os.replace(temp_path, CONFIG_PATH)
 
 
 @app.errorhandler(Exception)
