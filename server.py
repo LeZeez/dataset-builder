@@ -676,6 +676,9 @@ def delete_export(format: str, filename: str):
     if not filename or filename.startswith('.'):
         return jsonify({'error': 'Invalid filename'}), 400
 
+    if format not in ('sharegpt', 'openai', 'alpaca'):
+        return jsonify({'error': 'Invalid format'}), 400
+
     file_path = Path('exports') / format / filename
     if file_path.exists():
         file_path.unlink()
