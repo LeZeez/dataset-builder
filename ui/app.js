@@ -280,7 +280,8 @@ let syncSettings = {
     autoSyncEnabled: true,
     syncInterval: 30,
     autoSaveEnabled: true,
-    saveInterval: 2000
+    saveInterval: 2000,
+    askRejectReason: true
 };
 
 async function loadSyncSettings() {
@@ -297,6 +298,7 @@ async function saveSyncSettings() {
     syncSettings.syncInterval = parseInt(el('sync-interval')?.value) || 30;
     syncSettings.autoSaveEnabled = el('auto-save-enabled')?.checked ?? true;
     syncSettings.saveInterval = parseInt(el('save-interval')?.value) || 2000;
+    syncSettings.askRejectReason = el('ask-reject-reason')?.checked ?? true;
     await dbSet('settings', 'syncSettings', syncSettings);
     syncEngine.stopAutoSync();
     syncEngine.startAutoSync();
@@ -309,6 +311,7 @@ function applySyncSettingsToUI() {
     if (el('sync-interval')) el('sync-interval').value = syncSettings.syncInterval;
     if (el('auto-save-enabled')) el('auto-save-enabled').checked = syncSettings.autoSaveEnabled;
     if (el('save-interval')) el('save-interval').value = syncSettings.saveInterval;
+    if (el('ask-reject-reason')) el('ask-reject-reason').checked = syncSettings.askRejectReason;
 }
 
 // ============ DEFAULT HOTKEYS ============
@@ -1427,21 +1430,48 @@ async function handleBulkReviewDiscard() {
     const ids = Array.from(state.filesModal.selectedIds);
     if (ids.length === 0) return;
 
-    showSaveIndicator('Discarding...');
+    showSaveIndicator('Rejecting...');
     try {
-        const res = await fetch('/api/review-queue/bulk-delete', {
+        // Find the items
+        const itemsToReject = state.filesModal.files.filter(f => ids.includes(f.id)).map(item => ({
+            conversation: { conversations: item.conversations },
+            metadata: item.metadata || {}
+        }));
+
+        // First save to rejected
+        const saveRes = await fetch('/api/save/bulk', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ ids })
+            body: JSON.stringify({ items: itemsToReject, folder: 'rejected' })
         });
-        if (res.ok) {
-            toast(`Discarded ${ids.length} items`, 'success');
-            state.filesModal.selectedIds.clear();
-            loadFilesModal('review');
-            loadReviewQueue(); // Refresh main review tab
-        } else { toast('Failed to discard', 'error'); }
-    } catch (e) { toast('Failed to discard', 'error'); }
-    hideSaveIndicator('Discarded');
+
+        if (saveRes.ok) {
+            // Then delete from queue
+            const delRes = await fetch('/api/review-queue/bulk-delete', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ids })
+            });
+
+            if (delRes.ok) {
+                toast(`Rejected ${ids.length} items`, 'info');
+                state.filesModal.selectedIds.clear();
+                loadFilesModal('review');
+                loadReviewQueue(); // Refresh main review tab
+                loadStats();
+                hideSaveIndicator('Rejected');
+            } else {
+                toast('Failed to remove from queue after rejecting', 'error');
+                hideSaveIndicator('Reject failed');
+            }
+        } else {
+            toast('Failed to reject', 'error');
+            hideSaveIndicator('Reject failed');
+        }
+    } catch (e) {
+        toast('Failed to reject', 'error');
+        hideSaveIndicator('Reject failed');
+    }
 }
 
 async function loadConversation(id, folder) {
@@ -1737,7 +1767,13 @@ async function saveConversation(folder, reason = null) {
     } catch (e) { toast('Failed to save', 'error'); hideSaveIndicator('Save failed'); }
 }
 
-function showRejectModal() { els.rejectModal.classList.remove('hidden'); }
+function showRejectModal() {
+    if (syncSettings.askRejectReason === false) {
+        saveConversation('rejected', 'none');
+        return;
+    }
+    els.rejectModal.classList.remove('hidden');
+}
 function hideRejectModal() { els.rejectModal.classList.add('hidden'); }
 
 function resetGenerateTab() {
@@ -2262,8 +2298,28 @@ async function reviewKeep() {
 }
 
 async function reviewReject() {
-    await removeFromReviewQueue(state.review.currentIndex);
-    toast('Rejected', 'info');
+    const item = state.review.queue[state.review.currentIndex];
+    if (!item) return;
+    showSaveIndicator('Rejecting...');
+    try {
+        const res = await fetch('/api/save', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                conversation: { conversations: item.conversations },
+                folder: 'rejected',
+                metadata: item.metadata || {}
+            })
+        });
+        if (res.ok) {
+            await removeFromReviewQueue(state.review.currentIndex);
+            toast('Rejected', 'info');
+            hideSaveIndicator('Rejected ✓');
+            loadStats();
+        } else {
+            toast('Failed to reject', 'error'); hideSaveIndicator('Reject failed');
+        }
+    } catch (e) { toast('Failed to reject', 'error'); hideSaveIndicator('Reject failed'); }
 }
 
 async function removeFromReviewQueue(idx) {
@@ -2328,14 +2384,33 @@ async function keepAllReview() {
 
 async function rejectAllReview() {
     if (state.review.queue.length === 0) return;
-    if (!confirm(`Discard all ${state.review.queue.length} conversations?`)) return;
-    try { await fetch('/api/review-queue', { method: 'DELETE' }); } catch (e) { }
-    await dbClear('reviewQueue');
-    state.review.queue = [];
-    state.review.currentIndex = 0;
-    updateReviewBadge();
-    renderReviewItem();
-    toast('Queue cleared', 'info');
+    if (!confirm(`Reject all ${state.review.queue.length} conversations?`)) return;
+    showSaveIndicator('Rejecting all...');
+    const items = state.review.queue.map(item => ({
+        conversation: { conversations: item.conversations },
+        metadata: item.metadata || {}
+    }));
+    try {
+        const res = await fetch('/api/save/bulk', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ items, folder: 'rejected' })
+        });
+        if (res.ok) {
+            const data = await res.json();
+            toast(`Rejected ${data.saved_count} conversations`, 'info');
+            hideSaveIndicator('Rejected ✓');
+            try { await fetch('/api/review-queue', { method: 'DELETE' }); } catch (e) { }
+            await dbClear('reviewQueue');
+            state.review.queue = [];
+            state.review.currentIndex = 0;
+            updateReviewBadge();
+            renderReviewItem();
+            loadStats();
+        } else {
+            toast('Bulk reject failed', 'error'); hideSaveIndicator('Reject failed');
+        }
+    } catch (e) { toast('Bulk reject failed', 'error'); hideSaveIndicator('Reject failed'); }
 }
 
 async function clearReviewQueue() {
@@ -2608,11 +2683,13 @@ async function buildDraftObject() {
         chat: {
             messages: state.chat.messages.filter(m => !m.streaming),
             systemPrompt: els.chatSystemPrompt?.value || '',
+            presetName: els.chatPresetSelect?.value || '',
             zoomLevel: state.chat.zoomLevel,
             showAllTools: state.chat.showAllTools
         },
         export: {
-            systemPrompt: els.exportSystemPrompt?.value || ''
+            systemPrompt: els.exportSystemPrompt?.value || '',
+            presetName: els.exportPresetSelect?.value || ''
         },
         _localTime: new Date().toISOString()
     };
@@ -2679,6 +2756,9 @@ function applyDraft(draft) {
         els.chatSystemPrompt.value = draft.chat.systemPrompt;
         state.chat.systemPrompt = draft.chat.systemPrompt;
     }
+    if (draft.chat?.presetName && els.chatPresetSelect) {
+        els.chatPresetSelect.value = draft.chat.presetName;
+    }
     if (draft.chat?.zoomLevel != null) {
         state.chat.zoomLevel = draft.chat.zoomLevel;
         applyChatZoom();
@@ -2691,6 +2771,9 @@ function applyDraft(draft) {
     if (draft.export?.systemPrompt && els.exportSystemPrompt) {
         els.exportSystemPrompt.value = draft.export.systemPrompt;
         state.export.systemPrompt = draft.export.systemPrompt;
+    }
+    if (draft.export?.presetName && els.exportPresetSelect) {
+        els.exportPresetSelect.value = draft.export.presetName;
     }
 }
 
@@ -2938,7 +3021,7 @@ function setupEventListeners() {
     els.saveUrl.addEventListener('click', saveBaseUrl);
 
     // Sync settings
-    document.querySelectorAll('#auto-sync-enabled, #sync-interval, #auto-save-enabled, #save-interval').forEach(el => {
+    document.querySelectorAll('#auto-sync-enabled, #sync-interval, #auto-save-enabled, #save-interval, #ask-reject-reason').forEach(el => {
         el.addEventListener('change', saveSyncSettings);
     });
 
