@@ -359,7 +359,9 @@ def delete_prompt(name: str):
 @app.route('/api/prompt/<version>', methods=['GET'])
 def get_prompt_legacy(version: str):
     """Get prompt template by version (legacy endpoint)."""
-    prompt_path = DATA_DIR / 'prompts' / f'{version}.txt'
+    # Sanitize version
+    safe_version = re.sub(r'[^a-zA-Z0-9_-]', '', version)
+    prompt_path = DATA_DIR / 'prompts' / f'{safe_version}.txt'
     if prompt_path.exists():
         return jsonify({'content': prompt_path.read_text(encoding='utf-8')})
     return jsonify({'error': 'Prompt not found'}), 404
@@ -665,6 +667,9 @@ def export_dataset_endpoint(format: str):
 def list_conversations():
     """List all saved conversations."""
     folder = request.args.get('folder', 'wanted')
+    if folder not in ('wanted', 'rejected'):
+        return jsonify({'error': 'Invalid folder'}), 400
+
     search = request.args.get('search', '').strip().lower()
     tag_filter = request.args.get('tag', '').strip()
     folder_path = DATA_DIR / folder
@@ -712,7 +717,13 @@ def list_conversations():
 @app.route('/api/conversation/<conv_id>', methods=['GET'])
 def get_conversation(conv_id: str):
     """Get a single conversation by ID."""
+    if not isinstance(conv_id, str) or '..' in conv_id or '/' in conv_id or '\\' in conv_id:
+        return jsonify({'error': 'Invalid conversation ID'}), 400
+
     folder = request.args.get('folder', 'wanted')
+    if folder not in ('wanted', 'rejected'):
+        return jsonify({'error': 'Invalid folder'}), 400
+
     filepath = DATA_DIR / folder / f'{conv_id}.json'
     
     if not filepath.exists():
@@ -754,6 +765,9 @@ def move_conversation(conv_id: str):
 @app.route('/api/conversation/<conv_id>', methods=['DELETE'])
 def delete_conversation(conv_id: str):
     """Permanently delete a conversation."""
+    if not isinstance(conv_id, str) or '..' in conv_id or '/' in conv_id or '\\' in conv_id:
+        return jsonify({'error': 'Invalid conversation ID'}), 400
+
     folder = request.args.get('folder', 'wanted')
     
     if folder not in ('wanted', 'rejected'):
