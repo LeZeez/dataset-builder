@@ -527,6 +527,7 @@ async function init() {
         chatSystemPrompt: $('#chat-system-prompt'),
         chatPresetSelect: $('#chat-preset-select'),
         saveChatPreset: $('#save-chat-preset'),
+        newChatPreset: $('#new-chat-preset'),
         deleteChatPreset: $('#delete-chat-preset'),
 
         // Review Tab
@@ -547,10 +548,14 @@ async function init() {
         cancelReject: $('#cancel-reject'),
         exportModal: $('#export-modal'),
         exportFormat: $('#export-format'),
-        exportPromptSource: $('#export-prompt-source'),
+        exportPromptSourceChat: $('#export-prompt-source-chat'),
+        exportPromptSourceGenerate: $('#export-prompt-source-generate'),
         exportCustomPromptGroup: $('#export-custom-prompt-group'),
         exportSystemPrompt: $('#export-system-prompt'),
-        saveExportPrompt: $('#save-export-prompt'),
+        exportPresetSelect: $('#export-preset-select'),
+        saveExportPreset: $('#save-export-preset'),
+        newExportPreset: $('#new-export-preset'),
+        deleteExportPreset: $('#delete-export-preset'),
         exportFileCount: $('#export-file-count'),
         exportFileList: $('#export-file-list'),
         exportSelectAll: $('#export-select-all'),
@@ -601,6 +606,7 @@ async function init() {
     await loadModels();
     await loadPresets();
     await loadChatPresets();
+    await loadExportPresets();
     await loadTags();
     await restoreDraft();
     await loadReviewQueue();
@@ -991,6 +997,7 @@ async function savePresetAction() {
         if (res.ok) {
             const data = await res.json();
             renderPresetSelect(data.presets);
+            if (els.presetSelect) els.presetSelect.value = name;
             toast('Preset saved!', 'success');
         }
     } catch (e) { toast('Failed to save preset', 'error'); }
@@ -1071,65 +1078,115 @@ function removeCustomParam(key) {
     debouncedSaveDraft();
 }
 
-// ============ CHAT PRESETS ============
-async function loadChatPresets() {
+// ============ SYSTEM PRESETS (Chat & Export) ============
+async function loadSystemPresets(type) {
     try {
-        const res = await fetch('/api/chat-presets');
+        const res = await fetch(`/api/${type}-presets`);
         if (res.ok) {
             const data = await res.json();
-            renderChatPresetSelect(data.presets || []);
+            renderSystemPresetSelect(type, data.presets || []);
         }
-    } catch (e) { console.error('Failed to load chat presets:', e); }
+    } catch (e) { console.error(`Failed to load ${type} presets:`, e); }
 }
 
-function renderChatPresetSelect(presets) {
-    if (!els.chatPresetSelect) return;
-    els.chatPresetSelect.innerHTML = '<option value="">Load preset...</option>';
+function renderSystemPresetSelect(type, presets) {
+    const selectEl = els[`${type}PresetSelect`];
+    if (!selectEl) return;
+    selectEl.innerHTML = '<option value="">Load preset...</option>';
     presets.forEach(p => {
         const opt = document.createElement('option');
         opt.value = p.name; opt.textContent = p.name;
         opt.dataset.prompt = p.prompt;
-        els.chatPresetSelect.appendChild(opt);
+        selectEl.appendChild(opt);
     });
 }
 
-function loadChatPreset() {
-    const selected = els.chatPresetSelect.selectedOptions[0];
+function loadSystemPreset(type) {
+    const selectEl = els[`${type}PresetSelect`];
+    const targetEl = els[`${type}SystemPrompt`];
+    const selected = selectEl.selectedOptions[0];
+
     if (selected && selected.dataset.prompt) {
-        els.chatSystemPrompt.value = selected.dataset.prompt;
-        state.chat.systemPrompt = selected.dataset.prompt;
+        targetEl.value = selected.dataset.prompt;
+        if (state[type]) state[type].systemPrompt = selected.dataset.prompt;
         debouncedSaveDraft();
         toast('Preset loaded!', 'success');
     }
 }
 
-async function saveChatPreset() {
-    const name = prompt('Preset name:');
-    if (!name) return;
-    const promptText = els.chatSystemPrompt?.value || '';
+async function saveSystemPreset(type) {
+    const selectEl = els[`${type}PresetSelect`];
+    const targetEl = els[`${type}SystemPrompt`];
+    let name = selectEl?.value;
+
+    if (!name) {
+        name = prompt('Preset name:');
+        if (!name) return;
+    }
+
+    const promptText = targetEl?.value || '';
     try {
-        const res = await fetch('/api/chat-presets', {
+        const res = await fetch(`/api/${type}-presets`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ name, prompt: promptText })
         });
         if (res.ok) {
             const data = await res.json();
-            renderChatPresetSelect(data.presets || []);
-            toast('Chat preset saved!', 'success');
+            renderSystemPresetSelect(type, data.presets || []);
+            if (selectEl) selectEl.value = name;
+            toast(`${type === 'chat' ? 'Chat' : 'Export'} preset saved!`, 'success');
         }
     } catch (e) { toast('Failed to save preset', 'error'); }
 }
 
-async function deleteChatPreset() {
-    const selected = els.chatPresetSelect?.value;
+async function newSystemPreset(type) {
+    const name = prompt('New preset name:');
+    if (!name) return;
+
+    const selectEl = els[`${type}PresetSelect`];
+    const targetEl = els[`${type}SystemPrompt`];
+    const promptText = targetEl?.value || '';
+
+    try {
+        const res = await fetch(`/api/${type}-presets`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name, prompt: promptText, overwrite: false })
+        });
+        const data = await res.json();
+
+        if (res.ok) {
+            renderSystemPresetSelect(type, data.presets || []);
+            if (selectEl) selectEl.value = name;
+            toast(`New ${type === 'chat' ? 'chat' : 'export'} preset created!`, 'success');
+        } else {
+            toast(data.error || 'Failed to create preset', 'error');
+        }
+    } catch (e) { toast('Failed to create preset', 'error'); }
+}
+
+async function deleteSystemPreset(type) {
+    const selectEl = els[`${type}PresetSelect`];
+    const selected = selectEl?.value;
+
     if (!selected) { toast('Select a preset to delete', 'info'); return; }
     if (!confirm(`Delete preset "${selected}"?`)) return;
+
     try {
-        const res = await fetch(`/api/chat-presets/${encodeURIComponent(selected)}`, { method: 'DELETE' });
-        if (res.ok) { await loadChatPresets(); toast('Preset deleted!', 'success'); }
+        const res = await fetch(`/api/${type}-presets/${encodeURIComponent(selected)}`, { method: 'DELETE' });
+        if (res.ok) {
+            await loadSystemPresets(type);
+            toast('Preset deleted!', 'success');
+        }
     } catch (e) { toast('Failed to delete preset', 'error'); }
 }
+
+async function loadChatPresets() { await loadSystemPresets('chat'); }
+function loadChatPreset() { loadSystemPreset('chat'); }
+async function saveChatPreset() { await saveSystemPreset('chat'); }
+async function newChatPreset() { await newSystemPreset('chat'); }
+async function deleteChatPreset() { await deleteSystemPreset('chat'); }
 
 // ============ TAGS ============
 async function loadTags() {
@@ -2347,17 +2404,54 @@ async function saveDefaultModel() {
 }
 
 // ============ EXPORT ============
+// ============ EXPORT PRESETS ============
+async function loadExportPresets() { await loadSystemPresets('export'); }
+function loadExportPreset() { loadSystemPreset('export'); }
+async function saveExportPreset() { await saveSystemPreset('export'); }
+async function newExportPreset() { await newSystemPreset('export'); }
+async function deleteExportPreset() { await deleteSystemPreset('export'); }
+
 async function openExportModal(format) {
     els.exportFormat.value = format || 'sharegpt';
-    els.exportPromptSource.value = 'custom';
-    if (els.exportCustomPromptGroup) els.exportCustomPromptGroup.style.display = 'block';
-    if (els.exportSystemPrompt) {
-        if (state.export.systemPrompt) els.exportSystemPrompt.value = state.export.systemPrompt;
-        else if (state.currentTab === 'chat') els.exportSystemPrompt.value = els.chatSystemPrompt?.value || '';
-        else els.exportSystemPrompt.value = els.systemPrompt?.value || '';
+
+    // Set checkboxes based on current tab if no draft
+    if (!state.export.systemPrompt) {
+        els.exportPromptSourceChat.checked = false;
+        els.exportPromptSourceGenerate.checked = false;
+
+        if (state.currentTab === 'chat') {
+            els.exportPromptSourceChat.checked = true;
+        } else if (state.currentTab === 'generate') {
+            els.exportPromptSourceGenerate.checked = true;
+        }
+        updateExportPromptState();
+    } else {
+        if (els.exportSystemPrompt) els.exportSystemPrompt.value = state.export.systemPrompt;
     }
+
     await loadExportFiles();
     els.exportModal.classList.remove('hidden');
+}
+
+function updateExportPromptState() {
+    const useChat = els.exportPromptSourceChat?.checked;
+    const useGenerate = els.exportPromptSourceGenerate?.checked;
+
+    // Mutual exclusivity
+    if (useChat && useGenerate) {
+        if (this === els.exportPromptSourceChat) els.exportPromptSourceGenerate.checked = false;
+        else els.exportPromptSourceChat.checked = false;
+    }
+
+    if (els.exportPromptSourceChat?.checked || els.exportPromptSourceGenerate?.checked) {
+        els.exportCustomPromptGroup.classList.add('disabled-group');
+        els.exportSystemPrompt.disabled = true;
+        els.exportPresetSelect.disabled = true;
+    } else {
+        els.exportCustomPromptGroup.classList.remove('disabled-group');
+        els.exportSystemPrompt.disabled = false;
+        els.exportPresetSelect.disabled = false;
+    }
 }
 
 async function loadExportFiles() {
@@ -2416,12 +2510,12 @@ function selectAllExportFiles() { state.export.selectedIds = new Set(state.expor
 function selectNoneExportFiles() { state.export.selectedIds.clear(); renderExportFileList(); updateExportCount(); }
 
 function getExportSystemPrompt() {
-    const source = els.exportPromptSource?.value || 'none';
-    switch (source) {
-        case 'generate': return els.systemPrompt?.value || '';
-        case 'chat': return els.chatSystemPrompt?.value || state.chat.systemPrompt || '';
-        case 'custom': return els.exportSystemPrompt?.value || '';
-        default: return null;
+    if (els.exportPromptSourceChat?.checked) {
+        return els.chatSystemPrompt?.value || state.chat.systemPrompt || '';
+    } else if (els.exportPromptSourceGenerate?.checked) {
+        return els.systemPrompt?.value || '';
+    } else {
+        return els.exportSystemPrompt?.value || '';
     }
 }
 
@@ -2942,13 +3036,20 @@ function setupEventListeners() {
     });
     els.cancelExport?.addEventListener('click', closeExportModal);
     els.closeExport?.addEventListener('click', closeExportModal);
-    els.exportPromptSource?.addEventListener('change', (e) => {
-        if (els.exportCustomPromptGroup) els.exportCustomPromptGroup.style.display = e.target.value === 'custom' ? 'block' : 'none';
-    });
+
+    // Checkbox events
+    els.exportPromptSourceChat?.addEventListener('change', updateExportPromptState.bind(els.exportPromptSourceChat));
+    els.exportPromptSourceGenerate?.addEventListener('change', updateExportPromptState.bind(els.exportPromptSourceGenerate));
+
+    // Export Presets
+    els.exportPresetSelect?.addEventListener('change', loadExportPreset);
+    els.saveExportPreset?.addEventListener('click', saveExportPreset);
+    els.newExportPreset?.addEventListener('click', newExportPreset);
+    els.deleteExportPreset?.addEventListener('click', deleteExportPreset);
+
     els.exportSelectAll?.addEventListener('click', selectAllExportFiles);
     els.exportSelectNone?.addEventListener('click', selectNoneExportFiles);
     $('#export-modal .modal-backdrop')?.addEventListener('click', closeExportModal);
-    els.saveExportPrompt?.addEventListener('click', saveExportPromptToServer);
 
     // Tabs
     els.tabs.forEach(tab => { tab.addEventListener('click', () => switchTab(tab.dataset.tab)); });
@@ -3019,6 +3120,7 @@ function setupEventListeners() {
     // Chat Presets
     els.chatPresetSelect?.addEventListener('change', loadChatPreset);
     els.saveChatPreset?.addEventListener('click', saveChatPreset);
+    els.newChatPreset?.addEventListener('click', newChatPreset);
     els.deleteChatPreset?.addEventListener('click', deleteChatPreset);
 
     // Review
