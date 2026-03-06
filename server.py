@@ -446,9 +446,8 @@ _DEFAULT_TRUSTED_DOMAINS = (
 )
 
 
-def _get_trusted_domains() -> tuple:
+def _get_trusted_domains(config: dict) -> tuple:
     """Get trusted domains from config, falling back to defaults."""
-    config = load_config()
     extra = config.get('server', {}).get('trusted_domains', [])
     if extra:
         return tuple(set(_DEFAULT_TRUSTED_DOMAINS) | set(extra))
