@@ -24,6 +24,12 @@ from typing import Optional, Generator
 
 from flask import Flask, request, jsonify, send_from_directory, Response
 from flask_cors import CORS
+from werkzeug.exceptions import HTTPException
+import hmac
+import traceback
+import openai
+import anthropic
+import google.generativeai as genai
 
 # Import our modules
 from scripts.parser import parse_minimal_format, generate_conversation_id, validate_conversation
@@ -130,7 +136,6 @@ def security_check():
     # Check Basic Auth
     required_password = server_config.get('password', '')
     if required_password:
-        import hmac
         auth = request.authorization
         if not auth or not hmac.compare_digest(auth.password, required_password):
             return Response(
@@ -151,8 +156,6 @@ def save_config(config: dict):
 @app.errorhandler(Exception)
 def handle_exception(e):
     """Return JSON instead of HTML for HTTP errors and uncaught exceptions."""
-    from werkzeug.exceptions import HTTPException
-    import traceback
 
     if isinstance(e, HTTPException):
         return jsonify({'error': e.description}), e.code
@@ -442,7 +445,6 @@ def generate_conversation():
 
 def generate_openai(prompt: str, model: str, temperature: float, config: dict, custom_params: dict = None) -> str:
     """Generate using OpenAI API."""
-    import openai
     
     provider_config = config.get('providers', {}).get('openai', {})
     
@@ -471,7 +473,6 @@ def generate_openai(prompt: str, model: str, temperature: float, config: dict, c
 
 def generate_anthropic(prompt: str, model: str, temperature: float, config: dict, custom_params: dict = None) -> str:
     """Generate using Anthropic API."""
-    import anthropic
     
     provider_config = config.get('providers', {}).get('anthropic', {})
     
@@ -499,7 +500,6 @@ def generate_anthropic(prompt: str, model: str, temperature: float, config: dict
 
 def generate_google(prompt: str, model: str, temperature: float, config: dict, custom_params: dict = None) -> str:
     """Generate using Google Gemini API."""
-    import google.generativeai as genai
     
     provider_config = config.get('providers', {}).get('google', {})
     
@@ -864,7 +864,6 @@ def list_models():
 
 def fetch_openai_models(provider_config: dict) -> list:
     """Fetch models from OpenAI-compatible API."""
-    import openai
     
     api_key = provider_config.get('api_key') or os.environ.get('OPENAI_API_KEY')
     if not api_key:
@@ -882,7 +881,6 @@ def fetch_openai_models(provider_config: dict) -> list:
 
 def fetch_anthropic_models(provider_config: dict) -> list:
     """Fetch models from Anthropic API."""
-    import anthropic
     
     api_key = provider_config.get('api_key') or os.environ.get('ANTHROPIC_API_KEY')
     if not api_key:
@@ -902,7 +900,6 @@ def fetch_anthropic_models(provider_config: dict) -> list:
 
 def fetch_google_models(provider_config: dict) -> list:
     """Fetch models from Google AI."""
-    import google.generativeai as genai
     
     api_key = provider_config.get('api_key') or os.environ.get('GOOGLE_API_KEY')
     if not api_key:
@@ -977,7 +974,6 @@ def generate_stream():
 
 def stream_openai(prompt: str, model: str, temperature: float, config: dict, system_prompt: str = '', custom_params: dict = None) -> Generator:
     """Stream from OpenAI API."""
-    import openai
     
     provider_config = config.get('providers', {}).get('openai', {})
     api_key = provider_config.get('api_key') or os.environ.get('OPENAI_API_KEY')
@@ -1012,7 +1008,6 @@ def stream_openai(prompt: str, model: str, temperature: float, config: dict, sys
 
 def stream_anthropic(prompt: str, model: str, temperature: float, config: dict, system_prompt: str = '', custom_params: dict = None) -> Generator:
     """Stream from Anthropic API."""
-    import anthropic
     
     provider_config = config.get('providers', {}).get('anthropic', {})
     api_key = provider_config.get('api_key') or os.environ.get('ANTHROPIC_API_KEY')
@@ -1039,7 +1034,6 @@ def stream_anthropic(prompt: str, model: str, temperature: float, config: dict, 
 
 def stream_google(prompt: str, model: str, temperature: float, config: dict, system_prompt: str = '', custom_params: dict = None) -> Generator:
     """Stream from Google Gemini API."""
-    import google.generativeai as genai
     
     provider_config = config.get('providers', {}).get('google', {})
     api_key = provider_config.get('api_key') or os.environ.get('GOOGLE_API_KEY')
