@@ -20,13 +20,13 @@ import argparse
 import shutil
 from pathlib import Path
 from datetime import datetime, timezone
-from typing import Optional, Generator
+from typing import Generator
 
 from flask import Flask, request, jsonify, send_from_directory, Response
 from flask_cors import CORS
 
 # Import our modules
-from scripts.parser import parse_minimal_format, generate_conversation_id, validate_conversation
+from scripts.parser import generate_conversation_id, validate_conversation
 from scripts.exporter import export_dataset
 from scripts.stats import get_stats
 import logging
