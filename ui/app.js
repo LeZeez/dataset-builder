@@ -1146,7 +1146,7 @@ async function newChatPreset() {
                 return;
             }
         }
-    } catch (e) {}
+    } catch (e) { toast('Failed to check for duplicate preset names.', 'error'); return; }
 
     const promptText = els.chatSystemPrompt?.value || '';
     try {
@@ -2458,7 +2458,7 @@ async function newExportPreset() {
                 return;
             }
         }
-    } catch (e) {}
+    } catch (e) { toast('Failed to check for duplicate preset names.', 'error'); return; }
 
     const promptText = els.exportSystemPrompt?.value || '';
     try {
@@ -3113,8 +3113,8 @@ function setupEventListeners() {
     els.closeExport?.addEventListener('click', closeExportModal);
 
     // Checkbox events
-    els.exportPromptSourceChat?.addEventListener('change', updateExportPromptState);
-    els.exportPromptSourceGenerate?.addEventListener('change', updateExportPromptState);
+    els.exportPromptSourceChat?.addEventListener('change', updateExportPromptState.bind(els.exportPromptSourceChat));
+    els.exportPromptSourceGenerate?.addEventListener('change', updateExportPromptState.bind(els.exportPromptSourceGenerate));
 
     // Export Presets
     els.exportPresetSelect?.addEventListener('change', loadExportPreset);

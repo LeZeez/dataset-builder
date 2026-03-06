@@ -41,16 +41,16 @@ def setup_defaults():
     prompts_dir.mkdir(parents=True, exist_ok=True)
 
     # Copy Generate.txt to Default.txt
-    defaults_prompt = os.path.join(os.path.dirname(__file__), "defaults", "Generate.txt")
-    default_destination = os.path.join(os.path.dirname(__file__), "data", "prompts", "Default.txt")
-    if not os.path.exists(default_destination) and os.path.exists(defaults_prompt):
+    defaults_prompt = Path(__file__).parent / "defaults" / "Generate.txt"
+    default_destination = DATA_DIR / "prompts" / "Default.txt"
+    if not default_destination.exists() and defaults_prompt.exists():
         try:
             shutil.copy2(defaults_prompt, default_destination)
         except PermissionError:
             print(f"[Warning] Permission denied when copying Generate.txt")
 
     # Copy config.example.json to config.json
-    config_example = os.path.join(os.path.dirname(__file__), "config.example.json")
+    config_example = Path(__file__).parent / "config.example.json"
     if not CONFIG_PATH.exists():
         try:
             shutil.copy2(config_example, CONFIG_PATH)
@@ -69,8 +69,8 @@ def setup_defaults():
 
             # Setup Chat default preset
             if 'chat_presets' not in config or not config['chat_presets']:
-                chat_prompt_path = os.path.join(os.path.dirname(__file__), "defaults", "Chat.txt")
-                if os.path.exists(chat_prompt_path):
+                chat_prompt_path = Path(__file__).parent / "defaults" / "Chat.txt"
+                if chat_prompt_path.exists():
                     with open(chat_prompt_path, 'r', encoding='utf-8') as cf:
                         chat_content = cf.read()
                     config['chat_presets'] = [{'name': 'Default', 'prompt': chat_content}]
@@ -78,8 +78,8 @@ def setup_defaults():
 
             # Setup Export default preset
             if 'export_presets' not in config or not config['export_presets']:
-                export_prompt_path = os.path.join(os.path.dirname(__file__), "defaults", "Export.txt")
-                if os.path.exists(export_prompt_path):
+                export_prompt_path = Path(__file__).parent / "defaults" / "Export.txt"
+                if export_prompt_path.exists():
                     with open(export_prompt_path, 'r', encoding='utf-8') as ef:
                         export_content = ef.read()
                     config['export_presets'] = [{'name': 'Default', 'prompt': export_content}]
@@ -89,8 +89,8 @@ def setup_defaults():
                 with open(CONFIG_PATH, 'w', encoding='utf-8') as f:
                     json.dump(config, f, indent=2, ensure_ascii=False)
 
-        except Exception as e:
-            print(f"[Warning] Failed to setup default presets: {e}")
+        except (json.JSONDecodeError, IOError) as e:
+            print(f"[Warning] Failed to setup default presets due to a config or file error: {e}")
 
 setup_defaults()
 
