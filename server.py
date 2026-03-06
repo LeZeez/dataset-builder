@@ -68,19 +68,22 @@ def setup_defaults():
             changed = False
 
             # Setup Chat default preset
-            presets_to_setup = [
-                ('chat_presets', "Chat.txt"),
-                ('export_presets', "Export.txt"),
-            ]
+            if 'chat_presets' not in config or not config['chat_presets']:
+                chat_prompt_path = Path(__file__).parent / "defaults" / "Chat.txt"
+                if chat_prompt_path.exists():
+                    with open(chat_prompt_path, 'r', encoding='utf-8') as cf:
+                        chat_content = cf.read()
+                    config['chat_presets'] = [{'name': 'Default', 'prompt': chat_content}]
+                    changed = True
 
-            for preset_key, filename in presets_to_setup:
-                if preset_key not in config or not config[preset_key]:
-                    prompt_path = Path(__file__).parent / "defaults" / filename
-                    if prompt_path.exists():
-                        with open(prompt_path, 'r', encoding='utf-8') as f:
-                            content = f.read()
-                        config[preset_key] = [{'name': 'Default', 'prompt': content}]
-                        changed = True
+            # Setup Export default preset
+            if 'export_presets' not in config or not config['export_presets']:
+                export_prompt_path = Path(__file__).parent / "defaults" / "Export.txt"
+                if export_prompt_path.exists():
+                    with open(export_prompt_path, 'r', encoding='utf-8') as ef:
+                        export_content = ef.read()
+                    config['export_presets'] = [{'name': 'Default', 'prompt': export_content}]
+                    changed = True
 
             if changed:
                 with open(CONFIG_PATH, 'w', encoding='utf-8') as f:
@@ -1083,6 +1086,7 @@ def save_preset():
     data = request.get_json() or {}
     name = data.get('name', '')
     values = data.get('values', {})
+    overwrite = data.get('overwrite', True)
     
     if not name:
         return jsonify({'error': 'Preset name required'}), 400
@@ -1094,6 +1098,8 @@ def save_preset():
     # Update existing or add new
     existing = next((p for p in config['variable_presets'] if p['name'] == name), None)
     if existing:
+        if not overwrite:
+            return jsonify({'error': 'Preset already exists'}), 400
         existing['values'] = values
     else:
         config['variable_presets'].append({'name': name, 'values': values})
@@ -1181,6 +1187,7 @@ def save_export_preset():
     data = request.get_json() or {}
     name = data.get('name', '').strip()
     prompt = data.get('prompt', '')
+    overwrite = data.get('overwrite', True)
 
     if not name:
         return jsonify({'error': 'Name required'}), 400
@@ -1192,6 +1199,8 @@ def save_export_preset():
     # Update existing or add new
     existing = next((p for p in config['export_presets'] if p['name'] == name), None)
     if existing:
+        if not overwrite:
+            return jsonify({'error': 'Preset already exists'}), 400
         existing['prompt'] = prompt
     else:
         config['export_presets'].append({'name': name, 'prompt': prompt})
@@ -1223,6 +1232,7 @@ def save_chat_preset():
     data = request.get_json() or {}
     name = data.get('name', '').strip()
     prompt = data.get('prompt', '')
+    overwrite = data.get('overwrite', True)
     
     if not name:
         return jsonify({'error': 'Name required'}), 400
@@ -1234,6 +1244,8 @@ def save_chat_preset():
     # Update existing or add new
     existing = next((p for p in config['chat_presets'] if p['name'] == name), None)
     if existing:
+        if not overwrite:
+            return jsonify({'error': 'Preset already exists'}), 400
         existing['prompt'] = prompt
     else:
         config['chat_presets'].append({'name': name, 'prompt': prompt})

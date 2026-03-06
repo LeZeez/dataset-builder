@@ -1078,101 +1078,115 @@ function removeCustomParam(key) {
     debouncedSaveDraft();
 }
 
-// ============ CHAT PRESETS ============
-async function loadChatPresets() {
+// ============ SYSTEM PRESETS (Chat & Export) ============
+async function loadSystemPresets(type) {
     try {
-        const res = await fetch('/api/chat-presets');
+        const res = await fetch(`/api/${type}-presets`);
         if (res.ok) {
             const data = await res.json();
-            renderChatPresetSelect(data.presets || []);
+            renderSystemPresetSelect(type, data.presets || []);
         }
-    } catch (e) { console.error('Failed to load chat presets:', e); }
+    } catch (e) { console.error(`Failed to load ${type} presets:`, e); }
 }
 
-function renderChatPresetSelect(presets) {
-    if (!els.chatPresetSelect) return;
-    els.chatPresetSelect.innerHTML = '<option value="">Load preset...</option>';
+function renderSystemPresetSelect(type, presets) {
+    const selectEl = els[`${type}PresetSelect`];
+    if (!selectEl) return;
+    selectEl.innerHTML = '<option value="">Load preset...</option>';
     presets.forEach(p => {
         const opt = document.createElement('option');
         opt.value = p.name; opt.textContent = p.name;
         opt.dataset.prompt = p.prompt;
-        els.chatPresetSelect.appendChild(opt);
+        selectEl.appendChild(opt);
     });
 }
 
-function loadChatPreset() {
-    const selected = els.chatPresetSelect.selectedOptions[0];
+function loadSystemPreset(type) {
+    const selectEl = els[`${type}PresetSelect`];
+    const targetEl = els[`${type}SystemPrompt`];
+    const selected = selectEl.selectedOptions[0];
+
     if (selected && selected.dataset.prompt) {
-        els.chatSystemPrompt.value = selected.dataset.prompt;
-        state.chat.systemPrompt = selected.dataset.prompt;
+        targetEl.value = selected.dataset.prompt;
+        if (state[type]) state[type].systemPrompt = selected.dataset.prompt;
         debouncedSaveDraft();
         toast('Preset loaded!', 'success');
     }
 }
 
-async function saveChatPreset() {
-    let name = els.chatPresetSelect?.value;
+async function saveSystemPreset(type) {
+    const selectEl = els[`${type}PresetSelect`];
+    const targetEl = els[`${type}SystemPrompt`];
+    let name = selectEl?.value;
+
     if (!name) {
         name = prompt('Preset name:');
         if (!name) return;
     }
-    const promptText = els.chatSystemPrompt?.value || '';
+
+    const promptText = targetEl?.value || '';
     try {
-        const res = await fetch('/api/chat-presets', {
+        const res = await fetch(`/api/${type}-presets`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ name, prompt: promptText })
         });
         if (res.ok) {
             const data = await res.json();
-            renderChatPresetSelect(data.presets || []);
-            if (els.chatPresetSelect) els.chatPresetSelect.value = name;
-            toast('Chat preset saved!', 'success');
+            renderSystemPresetSelect(type, data.presets || []);
+            if (selectEl) selectEl.value = name;
+            toast(`${type === 'chat' ? 'Chat' : 'Export'} preset saved!`, 'success');
         }
     } catch (e) { toast('Failed to save preset', 'error'); }
 }
 
-async function newChatPreset() {
+async function newSystemPreset(type) {
     const name = prompt('New preset name:');
     if (!name) return;
 
-    // We fetch the current list first to avoid duplicates
-    try {
-        const res = await fetch('/api/chat-presets');
-        if (res.ok) {
-            const data = await res.json();
-            if ((data.presets || []).some(p => p.name === name)) {
-                toast(`A preset with the name "${name}" already exists.`, 'error');
-                return;
-            }
-        }
-    } catch (e) { toast('Failed to check for duplicate preset names.', 'error'); return; }
+    const selectEl = els[`${type}PresetSelect`];
+    const targetEl = els[`${type}SystemPrompt`];
+    const promptText = targetEl?.value || '';
 
-    const promptText = els.chatSystemPrompt?.value || '';
     try {
-        const res = await fetch('/api/chat-presets', {
+        const res = await fetch(`/api/${type}-presets`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name, prompt: promptText })
+            body: JSON.stringify({ name, prompt: promptText, overwrite: false })
         });
+        const data = await res.json();
+
         if (res.ok) {
-            const data = await res.json();
-            renderChatPresetSelect(data.presets || []);
-            if (els.chatPresetSelect) els.chatPresetSelect.value = name;
-            toast('New chat preset created!', 'success');
+            renderSystemPresetSelect(type, data.presets || []);
+            if (selectEl) selectEl.value = name;
+            toast(`New ${type === 'chat' ? 'chat' : 'export'} preset created!`, 'success');
+        } else {
+            toast(data.error || 'Failed to create preset', 'error');
         }
     } catch (e) { toast('Failed to create preset', 'error'); }
 }
 
-async function deleteChatPreset() {
-    const selected = els.chatPresetSelect?.value;
+async function deleteSystemPreset(type) {
+    const selectEl = els[`${type}PresetSelect`];
+    const selected = selectEl?.value;
+
     if (!selected) { toast('Select a preset to delete', 'info'); return; }
     if (!confirm(`Delete preset "${selected}"?`)) return;
+
     try {
-        const res = await fetch(`/api/chat-presets/${encodeURIComponent(selected)}`, { method: 'DELETE' });
-        if (res.ok) { await loadChatPresets(); toast('Preset deleted!', 'success'); }
+        const res = await fetch(`/api/${type}-presets/${encodeURIComponent(selected)}`, { method: 'DELETE' });
+        if (res.ok) {
+            await loadSystemPresets(type);
+            toast('Preset deleted!', 'success');
+        }
     } catch (e) { toast('Failed to delete preset', 'error'); }
 }
+
+async function loadChatPresets() { await loadSystemPresets('chat'); }
+function loadChatPreset() { loadSystemPreset('chat'); }
+async function saveChatPreset() { await saveSystemPreset('chat'); }
+async function newChatPreset() { await newSystemPreset('chat'); }
+async function deleteChatPreset() { await deleteSystemPreset('chat'); }
 
 // ============ TAGS ============
 async function loadTags() {
@@ -2391,100 +2405,11 @@ async function saveDefaultModel() {
 
 // ============ EXPORT ============
 // ============ EXPORT PRESETS ============
-async function loadExportPresets() {
-    try {
-        const res = await fetch('/api/export-presets');
-        if (res.ok) {
-            const data = await res.json();
-            renderExportPresetSelect(data.presets || []);
-        }
-    } catch (e) { console.error('Failed to load export presets:', e); }
-}
-
-function renderExportPresetSelect(presets) {
-    if (!els.exportPresetSelect) return;
-    els.exportPresetSelect.innerHTML = '<option value="">Load preset...</option>';
-    presets.forEach(p => {
-        const opt = document.createElement('option');
-        opt.value = p.name; opt.textContent = p.name;
-        opt.dataset.prompt = p.prompt;
-        els.exportPresetSelect.appendChild(opt);
-    });
-}
-
-function loadExportPreset() {
-    const selected = els.exportPresetSelect.selectedOptions[0];
-    if (selected && selected.dataset.prompt) {
-        els.exportSystemPrompt.value = selected.dataset.prompt;
-        state.export.systemPrompt = selected.dataset.prompt;
-        debouncedSaveDraft();
-        toast('Preset loaded!', 'success');
-    }
-}
-
-async function saveExportPreset() {
-    let name = els.exportPresetSelect?.value;
-    if (!name) {
-        name = prompt('Preset name:');
-        if (!name) return;
-    }
-    const promptText = els.exportSystemPrompt?.value || '';
-    try {
-        const res = await fetch('/api/export-presets', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name, prompt: promptText })
-        });
-        if (res.ok) {
-            const data = await res.json();
-            renderExportPresetSelect(data.presets || []);
-            if (els.exportPresetSelect) els.exportPresetSelect.value = name;
-            toast('Export preset saved!', 'success');
-        }
-    } catch (e) { toast('Failed to save preset', 'error'); }
-}
-
-async function newExportPreset() {
-    const name = prompt('New preset name:');
-    if (!name) return;
-
-    // We fetch the current list first to avoid duplicates
-    try {
-        const res = await fetch('/api/export-presets');
-        if (res.ok) {
-            const data = await res.json();
-            if ((data.presets || []).some(p => p.name === name)) {
-                toast(`A preset with the name "${name}" already exists.`, 'error');
-                return;
-            }
-        }
-    } catch (e) { toast('Failed to check for duplicate preset names.', 'error'); return; }
-
-    const promptText = els.exportSystemPrompt?.value || '';
-    try {
-        const res = await fetch('/api/export-presets', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name, prompt: promptText })
-        });
-        if (res.ok) {
-            const data = await res.json();
-            renderExportPresetSelect(data.presets || []);
-            if (els.exportPresetSelect) els.exportPresetSelect.value = name;
-            toast('New export preset created!', 'success');
-        }
-    } catch (e) { toast('Failed to create preset', 'error'); }
-}
-
-async function deleteExportPreset() {
-    const selected = els.exportPresetSelect?.value;
-    if (!selected) { toast('Select a preset to delete', 'info'); return; }
-    if (!confirm(`Delete preset "${selected}"?`)) return;
-    try {
-        const res = await fetch(`/api/export-presets/${encodeURIComponent(selected)}`, { method: 'DELETE' });
-        if (res.ok) { await loadExportPresets(); toast('Preset deleted!', 'success'); }
-    } catch (e) { toast('Failed to delete preset', 'error'); }
-}
+async function loadExportPresets() { await loadSystemPresets('export'); }
+function loadExportPreset() { loadSystemPreset('export'); }
+async function saveExportPreset() { await saveSystemPreset('export'); }
+async function newExportPreset() { await newSystemPreset('export'); }
+async function deleteExportPreset() { await deleteSystemPreset('export'); }
 
 async function openExportModal(format) {
     els.exportFormat.value = format || 'sharegpt';
