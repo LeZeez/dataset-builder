@@ -663,6 +663,9 @@ def download_export(format: str, filename: str):
     if not filename or filename.startswith('.'):
         return jsonify({'error': 'Invalid filename'}), 400
 
+    if format not in ('sharegpt', 'openai', 'alpaca'):
+        return jsonify({'error': 'Invalid format'}), 400
+
     export_dir = Path('exports') / format
     return send_from_directory(str(export_dir), filename, as_attachment=True)
 
