@@ -718,7 +718,6 @@ label {
 }
 
 .conversation-edit {
-    display: none;
     flex: 1;
     min-height: 160px;
 }
