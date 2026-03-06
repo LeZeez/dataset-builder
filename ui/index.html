@@ -719,6 +719,10 @@ gpt: response"></textarea>
                         <div class="export-summary">
                             <span id="export-file-count">0</span> conversations selected
                         </div>
+                        <div class="form-group" style="margin-top: 1rem;">
+                            <label for="export-filename">Custom Filename (optional)</label>
+                            <input type="text" id="export-filename" class="input" placeholder="e.g. my_dataset.jsonl">
+                        </div>
                     </div>
 
                     <!-- Right: File Selection -->
@@ -729,6 +733,7 @@ gpt: response"></textarea>
                                 <button id="export-select-all" class="btn btn-sm">Select All</button>
                                 <button id="export-select-none" class="btn btn-sm">Select None</button>
                             </div>
+                            <button id="view-exported-datasets-btn" class="btn btn-sm btn-secondary" style="margin-left: auto;">View Exported</button>
                         </div>
                         <div id="export-file-list" class="export-file-list">
                             <!-- Files loaded dynamically -->
@@ -789,6 +794,29 @@ gpt: response"></textarea>
                         </div>
                         <div id="files-modal-list" class="export-file-list max-h-50vh">
                             <!-- Files loaded dynamically -->
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Exported Datasets Modal -->
+        <div id="exported-datasets-modal" class="modal hidden">
+            <div class="modal-backdrop"></div>
+            <div class="modal-content files-modal-content">
+                <div class="export-header">
+                    <h3>Exported Datasets</h3>
+                    <button id="close-exported-datasets-modal" class="icon-btn" title="Close">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <line x1="18" y1="6" x2="6" y2="18"></line>
+                            <line x1="6" y1="6" x2="18" y2="18"></line>
+                        </svg>
+                    </button>
+                </div>
+                <div class="export-body flex-col">
+                    <div class="export-selection flex-1">
+                        <div id="exported-datasets-list" class="export-file-list max-h-50vh">
+                            <!-- Items populated by JS -->
                         </div>
                     </div>
                 </div>
