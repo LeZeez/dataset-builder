@@ -11,25 +11,34 @@ Provides API endpoints for:
 - Health check for sync engine
 """
 
-import os
-import json
-import re
-import uuid
-import threading
 import argparse
+import hmac
+import ipaddress
+import json
+import logging
+import os
+import re
 import shutil
-from pathlib import Path
+import socket
+import threading
+import traceback
+import uuid
 from datetime import datetime, timezone
+from functools import wraps
+from pathlib import Path
 from typing import Generator
-
-from flask import Flask, request, jsonify, send_from_directory, Response
+from urllib.parse import urlparse
+import anthropic
+import google.generativeai as genai
+import openai
+from flask import Flask, Response, jsonify, request, send_from_directory
 from flask_cors import CORS
+from werkzeug.exceptions import HTTPException
 
 # Import our modules
 from scripts.parser import generate_conversation_id, validate_conversation
 from scripts.exporter import export_dataset
 from scripts.stats import get_stats
-import logging
 
 # Load config
 CONFIG_PATH = Path('config.json')
@@ -143,7 +152,6 @@ def security_check():
     # Check Basic Auth
     required_password = server_config.get('password', '')
     if required_password:
-        import hmac
         auth = request.authorization
         if not auth or not hmac.compare_digest(auth.password, required_password):
             return Response(
@@ -164,8 +172,6 @@ def save_config(config: dict):
 @app.errorhandler(Exception)
 def handle_exception(e):
     """Return JSON instead of HTML for HTTP errors and uncaught exceptions."""
-    from werkzeug.exceptions import HTTPException
-    import traceback
 
     if isinstance(e, HTTPException):
         return jsonify({'error': e.description}), e.code
@@ -226,6 +232,8 @@ def update_config():
             
             # Update base URL
             if 'base_url' in data:
+                if not validate_base_url(data['base_url']):
+                    return jsonify({'error': 'Invalid base URL'}), 400
                 config['providers'][provider]['base_url'] = data['base_url']
     
     # Update default provider/model/temperature
@@ -249,7 +257,7 @@ def set_api_key():
     
     if not provider:
         return jsonify({'error': 'Provider required'}), 400
-    
+
     config = load_config()
     
     if provider not in config.get('providers', {}):
@@ -270,6 +278,9 @@ def set_base_url():
     
     if not provider:
         return jsonify({'error': 'Provider required'}), 400
+    
+    if base_url and not validate_base_url(base_url):
+        return jsonify({'error': 'Invalid base URL'}), 400
     
     config = load_config()
     
@@ -425,6 +436,76 @@ def prepare_custom_params(raw_params: dict) -> dict:
     return {k: parse_param_value(v) for k, v in raw_params.items()}
 
 
+# Default trusted API domains (can be extended via config.json server.trusted_domains)
+_DEFAULT_TRUSTED_DOMAINS = (
+    'api.openai.com',
+    'api.anthropic.com',
+    'generativelanguage.googleapis.com',
+    'openrouter.ai',
+    'api.together.xyz',
+)
+
+
+def _get_trusted_domains(config: dict) -> tuple:
+    """Get trusted domains from config, falling back to defaults."""
+    extra = config.get('server', {}).get('trusted_domains', [])
+    if extra:
+        return tuple(set(_DEFAULT_TRUSTED_DOMAINS) | set(extra))
+    return _DEFAULT_TRUSTED_DOMAINS
+
+
+def _is_private_ip(hostname: str) -> bool:
+    """Resolve hostname and check if it points to a private/reserved IP."""
+    try:
+        infos = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+        for _family, _type, _proto, _canonname, sockaddr in infos:
+            ip = ipaddress.ip_address(sockaddr[0])
+            if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast:
+                return True
+        return False
+    except (socket.gaierror, ValueError):
+        # If DNS resolution fails, treat as unsafe
+        return True
+
+
+def validate_base_url(url: str) -> bool:
+    """Validate base_url to prevent SSRF attacks.
+
+    - Always blocks non-http(s) schemes
+    - Always allows known trusted API domains (configurable via config.json)
+    - If server.allow_local_network is true (default), allows any URL including
+      localhost and private IPs — suitable for self-hosted setups
+    - If server.allow_local_network is false, rejects private/loopback/link-local IPs
+    """
+    if not url:
+        return True
+    try:
+        parsed = urlparse(url)
+        if parsed.scheme not in ('http', 'https'):
+            return False
+        hostname = parsed.hostname
+        if not hostname:
+            return False
+
+        # Always allow known trusted API domains
+        trusted = _get_trusted_domains(config)
+        if any(hostname == d or hostname.endswith('.' + d) for d in trusted):
+            return True
+
+        # Check config: allow_local_network defaults to true (self-hosted friendly)
+        allow_local = config.get('server', {}).get('allow_local_network', True)
+        if allow_local:
+            return True
+
+        # Strict mode: reject private/reserved IPs
+        if _is_private_ip(hostname):
+            return False
+
+        return True
+    except Exception:
+        return False
+
+
 # ============ GENERATION ============
 
 @app.route('/api/generate', methods=['POST'])
@@ -457,7 +538,6 @@ def generate_conversation():
 
 def generate_openai(prompt: str, model: str, temperature: float, config: dict, custom_params: dict = None) -> str:
     """Generate using OpenAI API."""
-    import openai
     
     provider_config = config.get('providers', {}).get('openai', {})
     
@@ -467,7 +547,9 @@ def generate_openai(prompt: str, model: str, temperature: float, config: dict, c
         raise ValueError('OpenAI API key not set. Configure it in Settings.')
     
     base_url = provider_config.get('base_url') or 'https://api.openai.com/v1'
-    
+    if not validate_base_url(base_url):
+        raise ValueError('Invalid base URL configured for OpenAI.')
+
     client = openai.OpenAI(api_key=api_key, base_url=base_url)
     
     kwargs = dict(
@@ -486,7 +568,6 @@ def generate_openai(prompt: str, model: str, temperature: float, config: dict, c
 
 def generate_anthropic(prompt: str, model: str, temperature: float, config: dict, custom_params: dict = None) -> str:
     """Generate using Anthropic API."""
-    import anthropic
     
     provider_config = config.get('providers', {}).get('anthropic', {})
     
@@ -495,7 +576,9 @@ def generate_anthropic(prompt: str, model: str, temperature: float, config: dict
         raise ValueError('Anthropic API key not set. Configure it in Settings.')
     
     base_url = provider_config.get('base_url') or 'https://api.anthropic.com/v1'
-    
+    if not validate_base_url(base_url):
+        raise ValueError('Invalid base URL configured for Anthropic.')
+
     client = anthropic.Anthropic(api_key=api_key, base_url=base_url)
     
     kwargs = dict(
@@ -514,7 +597,6 @@ def generate_anthropic(prompt: str, model: str, temperature: float, config: dict
 
 def generate_google(prompt: str, model: str, temperature: float, config: dict, custom_params: dict = None) -> str:
     """Generate using Google Gemini API."""
-    import google.generativeai as genai
     
     provider_config = config.get('providers', {}).get('google', {})
     
@@ -648,23 +730,111 @@ def save_bulk_conversations():
 
 # ============ EXPORT ============
 
+@app.route('/api/exports', methods=['GET'])
+def list_exports():
+    '''List all exported datasets.'''
+    export_dir = Path('exports')
+    if not export_dir.exists():
+        return jsonify({'files': []})
+
+    files = []
+    for fmt_dir in export_dir.iterdir():
+        if not fmt_dir.is_dir(): continue
+        for file in fmt_dir.glob('*.jsonl'):
+            try:
+                stat = file.stat()
+                files.append({
+                    'name': file.name,
+                    'format': fmt_dir.name,
+                    'path': f"{fmt_dir.name}/{file.name}",
+                    'size': stat.st_size,
+                    'created_at': stat.st_mtime * 1000
+                })
+            except FileNotFoundError:
+                continue
+
+    files.sort(key=lambda x: x['created_at'], reverse=True)
+    return jsonify({'files': files})
+
+VALID_EXPORT_FORMATS = ('sharegpt', 'openai', 'alpaca')
+
+
+def validate_export_params(f):
+    """Decorator to validate export format and sanitize filename for export endpoints."""
+    @wraps(f)
+    def decorated(format, filename, *args, **kwargs):
+        if format not in VALID_EXPORT_FORMATS:
+            return jsonify({'error': 'Invalid format'}), 400
+        filename = re.sub(r'[^a-zA-Z0-9_.-]', '', filename)
+        if not filename or filename.startswith('.'):
+            return jsonify({'error': 'Invalid filename'}), 400
+        return f(format, filename, *args, **kwargs)
+    return decorated
+
+
+@app.route('/api/exports/<format>/<filename>', methods=['GET'])
+@validate_export_params
+def download_export(format: str, filename: str):
+    '''Download an exported dataset.'''
+    export_dir = Path('exports') / format
+    return send_from_directory(str(export_dir), filename, as_attachment=True)
+
+
+@app.route('/api/exports/<format>/<filename>', methods=['DELETE'])
+@validate_export_params
+def delete_export(format: str, filename: str):
+    '''Delete an exported dataset.'''
+    file_path = Path('exports') / format / filename
+    if file_path.exists():
+        file_path.unlink()
+        return jsonify({'success': True})
+    return jsonify({'error': 'File not found'}), 404
+
+
+@app.route('/api/exports/<format>/<filename>', methods=['PUT'])
+@validate_export_params
+def rename_export(format: str, filename: str):
+    '''Rename an exported dataset.'''
+    data = request.get_json() or {}
+    new_filename = data.get('new_name', '')
+    new_filename = re.sub(r'[^a-zA-Z0-9_.-]', '', new_filename)
+    if not new_filename or new_filename.startswith('.') or not new_filename.endswith('.jsonl'):
+        return jsonify({'error': 'Invalid new filename. Must end in .jsonl'}), 400
+
+    file_path = Path('exports') / format / filename
+    new_file_path = Path('exports') / format / new_filename
+
+    if file_path.exists():
+        if new_file_path.exists():
+            return jsonify({'error': 'File already exists'}), 400
+        file_path.rename(new_file_path)
+        return jsonify({'success': True})
+    return jsonify({'error': 'File not found'}), 404
+
 @app.route('/api/export/<format>', methods=['POST'])
 def export_dataset_endpoint(format: str):
     """Export dataset to specified format."""
-    if format not in ('sharegpt', 'openai', 'alpaca'):
+    if format not in VALID_EXPORT_FORMATS:
         return jsonify({'error': 'Invalid format'}), 400
     
     try:
         data = request.get_json() or {}
         selected_ids = data.get('ids', None)  # List of IDs or None for all
         system_prompt = data.get('system_prompt', None)  # Override system prompt
+        filename = data.get('filename', None) # Optional custom filename
+        if filename:
+            filename = re.sub(r'[^a-zA-Z0-9_.-]', '', filename)
+            if not filename or filename.startswith('.'):
+                return jsonify({'error': 'Invalid filename'}), 400
+            if not filename.endswith('.jsonl'): filename += '.jsonl'
         
         output_path = export_dataset(
             'data/wanted',
             'exports',
             format,
             selected_ids=selected_ids,
-            system_prompt=system_prompt
+            system_prompt=system_prompt,
+            filename=filename
         )
         return jsonify({
             'success': True,
@@ -891,13 +1061,14 @@ def list_models():
 
 def fetch_openai_models(provider_config: dict) -> list:
     """Fetch models from OpenAI-compatible API."""
-    import openai
     
     api_key = provider_config.get('api_key') or os.environ.get('OPENAI_API_KEY')
     if not api_key:
         return []
     
     base_url = provider_config.get('base_url') or 'https://api.openai.com/v1'
+    if not validate_base_url(base_url):
+        return []
     client = openai.OpenAI(api_key=api_key, base_url=base_url)
     
     response = client.models.list()
@@ -909,7 +1080,6 @@ def fetch_openai_models(provider_config: dict) -> list:
 
 def fetch_anthropic_models(provider_config: dict) -> list:
     """Fetch models from Anthropic API."""
-    import anthropic
     
     api_key = provider_config.get('api_key') or os.environ.get('ANTHROPIC_API_KEY')
     if not api_key:
@@ -917,6 +1087,8 @@ def fetch_anthropic_models(provider_config: dict) -> list:
     
     try:
         base_url = provider_config.get('base_url') or 'https://api.anthropic.com'
+        if not validate_base_url(base_url):
+            return []
         client = anthropic.Anthropic(api_key=api_key, base_url=base_url)
         
         response = client.models.list()
@@ -929,7 +1101,6 @@ def fetch_anthropic_models(provider_config: dict) -> list:
 
 def fetch_google_models(provider_config: dict) -> list:
     """Fetch models from Google AI."""
-    import google.generativeai as genai
     
     api_key = provider_config.get('api_key') or os.environ.get('GOOGLE_API_KEY')
     if not api_key:
@@ -1004,7 +1175,6 @@ def generate_stream():
 
 def stream_openai(prompt: str, model: str, temperature: float, config: dict, system_prompt: str = '', custom_params: dict = None) -> Generator:
     """Stream from OpenAI API."""
-    import openai
     
     provider_config = config.get('providers', {}).get('openai', {})
     api_key = provider_config.get('api_key') or os.environ.get('OPENAI_API_KEY')
@@ -1013,6 +1183,9 @@ def stream_openai(prompt: str, model: str, temperature: float, config: dict, sys
         return
     
     base_url = provider_config.get('base_url') or 'https://api.openai.com/v1'
+    if not validate_base_url(base_url):
+        yield f"data: {json.dumps({'error': 'Invalid base URL configured for OpenAI'})}\n\n"
+        return
     client = openai.OpenAI(api_key=api_key, base_url=base_url)
     
     messages = []
@@ -1039,7 +1212,6 @@ def stream_openai(prompt: str, model: str, temperature: float, config: dict, sys
 
 def stream_anthropic(prompt: str, model: str, temperature: float, config: dict, system_prompt: str = '', custom_params: dict = None) -> Generator:
     """Stream from Anthropic API."""
-    import anthropic
     
     provider_config = config.get('providers', {}).get('anthropic', {})
     api_key = provider_config.get('api_key') or os.environ.get('ANTHROPIC_API_KEY')
@@ -1047,7 +1219,12 @@ def stream_anthropic(prompt: str, model: str, temperature: float, config: dict, 
         yield f"data: {json.dumps({'error': 'Anthropic API key not set'})}\n\n"
         return
     
-    client = anthropic.Anthropic(api_key=api_key)
+    base_url = provider_config.get('base_url') or 'https://api.anthropic.com/v1'
+    if not validate_base_url(base_url):
+        yield f"data: {json.dumps({'error': 'Invalid base URL configured for Anthropic'})}\n\n"
+        return
+
+    client = anthropic.Anthropic(api_key=api_key, base_url=base_url)
     
     kwargs = dict(
         model=model or 'claude-3-5-sonnet-20241022',
@@ -1066,7 +1243,6 @@ def stream_anthropic(prompt: str, model: str, temperature: float, config: dict, 
 
 def stream_google(prompt: str, model: str, temperature: float, config: dict, system_prompt: str = '', custom_params: dict = None) -> Generator:
     """Stream from Google Gemini API."""
-    import google.generativeai as genai
     
     provider_config = config.get('providers', {}).get('google', {})
     api_key = provider_config.get('api_key') or os.environ.get('GOOGLE_API_KEY')

@@ -347,7 +347,7 @@
                             <div class="prompt-actions">
                                 <div class="token-info">
                                     <span id="token-count">~0 tokens</span>
-                                    <span id="var-count-badge" class="muted" style="margin-left:0.5rem;"></span>
+                                    <span id="var-count-badge" class="muted ml-half"></span>
                                 </div>
                                 <div class="bulk-controls">
                                     <label for="bulk-count" class="bulk-label">Count:</label>
@@ -504,7 +504,7 @@ gpt: response"></textarea>
                                 </svg>
                             </button>
                             <div class="collapse-content">
-                                <div class="preset-controls" style="margin-bottom: 0.5rem;">
+                                <div class="preset-controls mb-half">
                                     <select id="chat-preset-select" class="select select-sm">
                                         <option value="">Load preset...</option>
                                     </select>
@@ -675,7 +675,7 @@ gpt: response"></textarea>
 
                         <div class="form-group">
                             <label>System Prompt Source</label>
-                            <div class="checkbox-group" style="display: flex; gap: 1rem; margin-top: 0.5rem;">
+                            <div class="checkbox-row">
                                 <label class="toggle-label">
                                     <input type="checkbox" id="export-prompt-source-chat">
                                     <span>Chat Tab</span>
@@ -688,7 +688,7 @@ gpt: response"></textarea>
                         </div>
 
                         <div class="form-group" id="export-custom-prompt-group">
-                            <div class="preset-controls" style="margin-bottom: 0.5rem;">
+                            <div class="preset-controls mb-half">
                                 <select id="export-preset-select" class="select select-sm">
                                     <option value="">Load preset...</option>
                                 </select>
@@ -719,6 +719,10 @@ gpt: response"></textarea>
                         <div class="export-summary">
                             <span id="export-file-count">0</span> conversations selected
                         </div>
+                        <div class="form-group export-filename-group">
+                            <label for="export-filename">Custom Filename (optional)</label>
+                            <input type="text" id="export-filename" class="input" placeholder="e.g. my_dataset.jsonl">
+                        </div>
                     </div>
 
                     <!-- Right: File Selection -->
@@ -729,6 +733,7 @@ gpt: response"></textarea>
                                 <button id="export-select-all" class="btn btn-sm">Select All</button>
                                 <button id="export-select-none" class="btn btn-sm">Select None</button>
                             </div>
+                            <button id="view-exported-datasets-btn" class="btn btn-sm btn-secondary ml-auto">View Exported</button>
                         </div>
                         <div id="export-file-list" class="export-file-list">
                             <!-- Files loaded dynamically -->
@@ -795,6 +800,29 @@ gpt: response"></textarea>
             </div>
         </div>
 
+        <!-- Exported Datasets Modal -->
+        <div id="exported-datasets-modal" class="modal hidden">
+            <div class="modal-backdrop"></div>
+            <div class="modal-content files-modal-content">
+                <div class="export-header">
+                    <h3>Exported Datasets</h3>
+                    <button id="close-exported-datasets-modal" class="icon-btn" title="Close">
+                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <line x1="18" y1="6" x2="6" y2="18"></line>
+                            <line x1="6" y1="6" x2="18" y2="18"></line>
+                        </svg>
+                    </button>
+                </div>
+                <div class="export-body flex-col">
+                    <div class="export-selection flex-1">
+                        <div id="exported-datasets-list" class="export-file-list max-h-50vh">
+                            <!-- Items populated by JS -->
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <!-- Macros Modal -->
         <div id="macros-modal" class="modal hidden">
             <div class="modal-backdrop"></div>
@@ -819,7 +847,7 @@ gpt: response"></textarea>
 
                 <!-- Variables Tab -->
                 <div id="macros-variables" class="macros-tab-content active">
-                    <div class="preset-controls" style="margin-bottom:0.25rem;">
+                    <div class="preset-controls mb-quarter">
                         <select id="preset-select" class="select select-sm">
                             <option value="">Load preset...</option>
                         </select>
@@ -927,7 +955,7 @@ gpt: response"></textarea>
                         <button id="clear-history-btn" class="btn btn-sm">Clear</button>
                     </div>
                     <div id="prompt-history-list" class="prompt-history-list">
-                        <div class="empty-state" style="padding: 2rem 1rem;">
+                        <div class="empty-state empty-padding">
                             <p>No history yet. Send a prompt to record it here.</p>
                         </div>
                     </div>
