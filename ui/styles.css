@@ -718,7 +718,6 @@ label {
 }
 
 .conversation-edit {
-    display: none;
     flex: 1;
     min-height: 160px;
 }
@@ -1891,7 +1890,8 @@ kbd {
 }
 
 @media (min-width: 769px) {
-    #chat-fullscreen {
+    #chat-fullscreen,
+    #sidebar-toggle {
         display: none !important;
     }
 }

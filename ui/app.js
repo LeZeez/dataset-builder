@@ -2,8 +2,14 @@
 // ============ CONSTANTS ============
 const ICON_FULLSCREEN_EXIT = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3"></path></svg>';
 const ICON_FULLSCREEN_ENTER = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"></path></svg>';
-const ICON_STOP = '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>';
 const ICON_SEND = '<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"></path></svg>';
+const ICON_LOAD = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>';
+const ICON_VIEW = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path><circle cx="12" cy="12" r="3"></circle></svg>';
+const ICON_EDIT = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>';
+const ICON_STOP = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect></svg>';
+const ICON_EMPTY_CONV = '<svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>';
+const ICON_EMPTY_CHAT = '<svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>';
+const ICON_EMPTY_QUEUE = '<svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 16 12 14 15 10 15 8 12 2 12"></polyline><path d="M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"></path></svg>';
 
 const CHAT_ZOOM_MIN = 0.5;
 const CHAT_ZOOM_MAX = 2;
@@ -28,6 +34,7 @@ function toggleChatTools() {
     state.chat.showAllTools = !state.chat.showAllTools;
     if (els.chatMessages) els.chatMessages.classList.toggle('show-all-tools', state.chat.showAllTools);
     if (els.chatToggleTools) els.chatToggleTools.style.color = state.chat.showAllTools ? 'var(--accent)' : '';
+    debouncedSaveDraft();
 }
 
 
@@ -603,6 +610,11 @@ async function init() {
     applyHotkeysToUI();
     setupAutoSaveTimer();
     syncEngine.startAutoSync();
+
+    // Initial renders
+    renderConversation([]);
+    renderChatMessages();
+    renderReviewItem();
 }
 
 // ============ SYNC UI ============
@@ -672,7 +684,7 @@ function populateModelSelect(models, history) {
 
     if (history && history.length > 0) {
         const optgroup = document.createElement('optgroup');
-        optgroup.label = '⭐ Recent';
+        optgroup.label = 'Recent';
         history.forEach(m => {
             const opt = document.createElement('option');
             opt.value = m; opt.textContent = m;
@@ -1265,7 +1277,7 @@ function renderFilesModalList() {
                 </div>
                 ${folder !== 'review' ? `
                 <div class="file-actions">
-                    <button class="icon-btn load-btn" data-id="${escapeHtml(f.id)}" title="Load in Generate Tab">📂 Load</button>
+                    <button class="icon-btn load-btn" data-id="${escapeHtml(f.id)}" title="Load in Generate Tab">${ICON_LOAD} Load</button>
                 </div>
                 ` : ''}
             </div>
@@ -1614,13 +1626,15 @@ function parseMinimalFormat(text) {
 
 function renderConversation(messages) {
     if (!messages || messages.length === 0) {
-        els.conversationView.innerHTML = `<div class="empty-state"><div class="empty-icon">💭</div><p>Click "Generate" to create a conversation</p></div>`;
+        els.conversationView.innerHTML = `<div class="empty-state"><div class="empty-icon">${ICON_EMPTY_CONV}</div><p>Click "Generate" to create a conversation</p></div>`;
         return;
     }
     els.conversationView.innerHTML = messages.map(m => `
         <div class="bubble ${m.from}">
-            <span class="role-label">${m.from === 'human' ? 'USER' : 'GPT'}</span>
-            ${escapeHtml(m.value)}
+            <div class="bubble-header">
+                <span class="role-label">${m.from === 'human' ? 'USER' : 'GPT'}</span>
+            </div>
+            <div class="bubble-content">${escapeHtml(m.value)}</div>
         </div>
     `).join('');
     els.conversationView.scrollTop = els.conversationView.scrollHeight;
@@ -1689,7 +1703,7 @@ function toggleEditMode() {
         els.conversationView.classList.add('hidden');
         els.conversationEdit.classList.remove('hidden');
         els.conversationEdit.value = state.generate.rawText;
-        els.editToggle.textContent = '👁️ View';
+        els.editToggle.innerHTML = `${ICON_VIEW} View`;
 
         // Also enable buttons immediately if there is text when entering edit mode
         if (els.conversationEdit.value.trim().length > 0) {
@@ -1702,12 +1716,26 @@ function toggleEditMode() {
         els.conversationEdit.classList.add('hidden');
         state.generate.rawText = els.conversationEdit.value;
         parseAndRender();
-        els.editToggle.textContent = '✏️ Edit';
+        els.editToggle.innerHTML = `${ICON_EDIT} Edit`;
     }
 }
 
 
 // ============ CHAT TAB ============
+function setButtonToStop(button) {
+    button.disabled = false;
+    button.classList.add('btn-danger');
+    button.classList.remove('btn-primary');
+    button.innerHTML = `${ICON_STOP} Stop`;
+}
+
+function setButtonToSend(button) {
+    button.disabled = false;
+    button.classList.add('btn-primary');
+    button.classList.remove('btn-danger');
+    button.innerHTML = `${ICON_SEND}`;
+}
+
 async function sendChatMessage() {
     if (state.chat.isStreaming) {
         if (state.chat.abortController) { state.chat.abortController.abort(); state.chat.abortController = null; toast('Chat stopped', 'info'); }
@@ -1727,10 +1755,7 @@ async function sendChatMessage() {
 
     state.chat.isStreaming = true;
     state.chat.abortController = new AbortController();
-    els.sendBtn.disabled = false;
-    els.sendBtn.classList.add('btn-danger');
-    els.sendBtn.classList.remove('btn-primary');
-    els.sendBtn.innerHTML = '⏹ Stop';
+    setButtonToStop(els.sendBtn);
 
     const context = state.chat.messages.map(m => `${m.from === 'human' ? 'User' : 'Assistant'}: ${m.value}`).join('\n');
     const baseSystemPrompt = applyVariables(els.chatSystemPrompt?.value || 'You are a helpful and friendly conversational assistant. Keep responses natural and engaging.');
@@ -1790,16 +1815,14 @@ async function sendChatMessage() {
         state.chat.abortController = null;
         streamingMsg.streaming = false;
         renderChatMessages();
-        els.sendBtn.classList.remove('btn-danger');
-        els.sendBtn.classList.add('btn-primary');
-        els.sendBtn.innerHTML = '<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"></path></svg>';
+        setButtonToSend(els.sendBtn);
         debouncedSaveDraft();
     }
 }
 
 function renderChatMessages() {
     if (state.chat.messages.length === 0) {
-        els.chatMessages.innerHTML = `<div class="empty-state"><div class="empty-icon">🗣️</div><p>Start a conversation by typing below</p></div>`;
+        els.chatMessages.innerHTML = `<div class="empty-state"><div class="empty-icon">${ICON_EMPTY_CHAT}</div><p>Start a conversation by typing below</p></div>`;
         return;
     }
     els.chatMessages.innerHTML = state.chat.messages.map((m, i) => {
@@ -1942,10 +1965,7 @@ async function generateAIResponse() {
 
     state.chat.isStreaming = true;
     state.chat.abortController = new AbortController();
-    els.sendBtn.disabled = false;
-    els.sendBtn.classList.add('btn-danger');
-    els.sendBtn.classList.remove('btn-primary');
-    els.sendBtn.innerHTML = '⏹ Stop';
+    setButtonToStop(els.sendBtn);
 
     const context = state.chat.messages.map(m => `${m.from === 'human' ? 'User' : 'Assistant'}: ${m.value}`).join('\n');
     const baseSystemPrompt = els.chatSystemPrompt?.value || 'You are a helpful and friendly conversational assistant. Keep responses natural and engaging.';
@@ -2120,7 +2140,7 @@ function renderReviewItem() {
     const idx = state.review.currentIndex;
 
     if (queue.length === 0) {
-        els.reviewConversation.innerHTML = `<div class="empty-state"><div class="empty-icon">📭</div><p>No items in review queue</p><p class="small">Generate conversations in bulk to fill the queue</p></div>`;
+        els.reviewConversation.innerHTML = `<div class="empty-state"><div class="empty-icon">${ICON_EMPTY_QUEUE}</div><p>No items in review queue</p><p class="small">Generate conversations in bulk to fill the queue</p></div>`;
         els.reviewKeepBtn.disabled = true;
         els.reviewRejectBtn.disabled = true;
         els.reviewEditBtn.disabled = true;
@@ -2494,7 +2514,8 @@ async function buildDraftObject() {
         chat: {
             messages: state.chat.messages.filter(m => !m.streaming),
             systemPrompt: els.chatSystemPrompt?.value || '',
-            zoomLevel: state.chat.zoomLevel
+            zoomLevel: state.chat.zoomLevel,
+            showAllTools: state.chat.showAllTools
         },
         export: {
             systemPrompt: els.exportSystemPrompt?.value || ''
@@ -2567,6 +2588,11 @@ function applyDraft(draft) {
     if (draft.chat?.zoomLevel != null) {
         state.chat.zoomLevel = draft.chat.zoomLevel;
         applyChatZoom();
+    }
+    if (draft.chat?.showAllTools != null) {
+        state.chat.showAllTools = draft.chat.showAllTools;
+        if (els.chatMessages) els.chatMessages.classList.toggle('show-all-tools', state.chat.showAllTools);
+        if (els.chatToggleTools) els.chatToggleTools.style.color = state.chat.showAllTools ? 'var(--accent)' : '';
     }
     if (draft.export?.systemPrompt && els.exportSystemPrompt) {
         els.exportSystemPrompt.value = draft.export.systemPrompt;
