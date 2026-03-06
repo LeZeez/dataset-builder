@@ -11,31 +11,32 @@ Provides API endpoints for:
 - Health check for sync engine
 """
 
-import os
-import json
-import re
-import uuid
-import threading
 import argparse
-import shutil
-from pathlib import Path
-from datetime import datetime, timezone
-from typing import Optional, Generator
-
-from flask import Flask, request, jsonify, send_from_directory, Response
-from flask_cors import CORS
-from werkzeug.exceptions import HTTPException
 import hmac
+import json
+import logging
+import os
+import re
+import shutil
+import threading
 import traceback
-import openai
+import uuid
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Generator, Optional
+from urllib.parse import urlparse
+
 import anthropic
 import google.generativeai as genai
+import openai
+from flask import Flask, Response, jsonify, request, send_from_directory
+from flask_cors import CORS
+from werkzeug.exceptions import HTTPException
 
 # Import our modules
 from scripts.parser import parse_minimal_format, generate_conversation_id, validate_conversation
 from scripts.exporter import export_dataset
 from scripts.stats import get_stats
-import logging
 
 # Load config
 CONFIG_PATH = Path('config.json')
@@ -216,6 +217,8 @@ def update_config():
             
             # Update base URL
             if 'base_url' in data:
+                if not validate_base_url(data['base_url']):
+                    return jsonify({'error': 'Invalid base URL'}), 400
                 config['providers'][provider]['base_url'] = data['base_url']
     
     # Update default provider/model/temperature
@@ -240,6 +243,9 @@ def set_api_key():
     if not provider:
         return jsonify({'error': 'Provider required'}), 400
     
+    if not validate_base_url(base_url):
+        return jsonify({'error': 'Invalid base URL'}), 400
+
     config = load_config()
     
     if provider not in config.get('providers', {}):
@@ -413,6 +419,23 @@ def prepare_custom_params(raw_params: dict) -> dict:
     return {k: parse_param_value(v) for k, v in raw_params.items()}
 
 
+def validate_base_url(url: str) -> bool:
+    """Basic validation for base_url to prevent obvious SSRF attempts."""
+    if not url:
+        return True
+    try:
+        parsed = urlparse(url)
+        if parsed.scheme not in ('http', 'https'):
+            return False
+        # Block access to common cloud metadata services
+        blocked_hosts = ('169.254.169.254', 'metadata.google.internal', 'metadata')
+        if parsed.hostname in blocked_hosts:
+            return False
+        return True
+    except Exception:
+        return False
+
+
 # ============ GENERATION ============
 
 @app.route('/api/generate', methods=['POST'])
@@ -454,7 +477,9 @@ def generate_openai(prompt: str, model: str, temperature: float, config: dict, c
         raise ValueError('OpenAI API key not set. Configure it in Settings.')
     
     base_url = provider_config.get('base_url') or 'https://api.openai.com/v1'
-    
+    if not validate_base_url(base_url):
+        raise ValueError('Invalid base URL configured for OpenAI.')
+
     client = openai.OpenAI(api_key=api_key, base_url=base_url)
     
     kwargs = dict(
@@ -481,7 +506,9 @@ def generate_anthropic(prompt: str, model: str, temperature: float, config: dict
         raise ValueError('Anthropic API key not set. Configure it in Settings.')
     
     base_url = provider_config.get('base_url') or 'https://api.anthropic.com/v1'
-    
+    if not validate_base_url(base_url):
+        raise ValueError('Invalid base URL configured for Anthropic.')
+
     client = anthropic.Anthropic(api_key=api_key, base_url=base_url)
     
     kwargs = dict(
@@ -870,6 +897,8 @@ def fetch_openai_models(provider_config: dict) -> list:
         return []
     
     base_url = provider_config.get('base_url') or 'https://api.openai.com/v1'
+    if not validate_base_url(base_url):
+        return []
     client = openai.OpenAI(api_key=api_key, base_url=base_url)
     
     response = client.models.list()
@@ -888,6 +917,8 @@ def fetch_anthropic_models(provider_config: dict) -> list:
     
     try:
         base_url = provider_config.get('base_url') or 'https://api.anthropic.com'
+        if not validate_base_url(base_url):
+            return []
         client = anthropic.Anthropic(api_key=api_key, base_url=base_url)
         
         response = client.models.list()
@@ -982,6 +1013,9 @@ def stream_openai(prompt: str, model: str, temperature: float, config: dict, sys
         return
     
     base_url = provider_config.get('base_url') or 'https://api.openai.com/v1'
+    if not validate_base_url(base_url):
+        yield f"data: {json.dumps({'error': 'Invalid base URL configured for OpenAI'})}\n\n"
+        return
     client = openai.OpenAI(api_key=api_key, base_url=base_url)
     
     messages = []
@@ -1015,7 +1049,12 @@ def stream_anthropic(prompt: str, model: str, temperature: float, config: dict, 
         yield f"data: {json.dumps({'error': 'Anthropic API key not set'})}\n\n"
         return
     
-    client = anthropic.Anthropic(api_key=api_key)
+    base_url = provider_config.get('base_url') or 'https://api.anthropic.com/v1'
+    if not validate_base_url(base_url):
+        yield f"data: {json.dumps({'error': 'Invalid base URL configured for Anthropic'})}\n\n"
+        return
+
+    client = anthropic.Anthropic(api_key=api_key, base_url=base_url)
     
     kwargs = dict(
         model=model or 'claude-3-5-sonnet-20241022',
