@@ -22,16 +22,11 @@ import threading
 import traceback
 import uuid
 from datetime import datetime, timezone
-<<<<<<< perf-optimization-top-level-imports-4365142075326149533
 from pathlib import Path
-from typing import Generator, Optional
-from urllib.parse import urlparse
-=======
 from typing import Generator
->>>>>>> master
-
+from urllib.parse import urlparse
 import anthropic
-import google.generativeai as genai
+import google.genai as genai
 import openai
 from flask import Flask, Response, jsonify, request, send_from_directory
 from flask_cors import CORS
