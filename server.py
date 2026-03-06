@@ -68,22 +68,19 @@ def setup_defaults():
             changed = False
 
             # Setup Chat default preset
-            if 'chat_presets' not in config or not config['chat_presets']:
-                chat_prompt_path = Path(__file__).parent / "defaults" / "Chat.txt"
-                if chat_prompt_path.exists():
-                    with open(chat_prompt_path, 'r', encoding='utf-8') as cf:
-                        chat_content = cf.read()
-                    config['chat_presets'] = [{'name': 'Default', 'prompt': chat_content}]
-                    changed = True
+            presets_to_setup = [
+                ('chat_presets', "Chat.txt"),
+                ('export_presets', "Export.txt"),
+            ]
 
-            # Setup Export default preset
-            if 'export_presets' not in config or not config['export_presets']:
-                export_prompt_path = Path(__file__).parent / "defaults" / "Export.txt"
-                if export_prompt_path.exists():
-                    with open(export_prompt_path, 'r', encoding='utf-8') as ef:
-                        export_content = ef.read()
-                    config['export_presets'] = [{'name': 'Default', 'prompt': export_content}]
-                    changed = True
+            for preset_key, filename in presets_to_setup:
+                if preset_key not in config or not config[preset_key]:
+                    prompt_path = Path(__file__).parent / "defaults" / filename
+                    if prompt_path.exists():
+                        with open(prompt_path, 'r', encoding='utf-8') as f:
+                            content = f.read()
+                        config[preset_key] = [{'name': 'Default', 'prompt': content}]
+                        changed = True
 
             if changed:
                 with open(CONFIG_PATH, 'w', encoding='utf-8') as f:
