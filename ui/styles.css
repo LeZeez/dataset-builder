@@ -1900,3 +1900,34 @@ kbd {
         display: none !important;
     }
 }
+
+/* ====== UTILITY CLASSES ====== */
+.ml-auto {
+    margin-left: auto;
+}
+
+.ml-half {
+    margin-left: 0.5rem;
+}
+
+.mb-half {
+    margin-bottom: 0.5rem;
+}
+
+.mb-quarter {
+    margin-bottom: 0.25rem;
+}
+
+.export-filename-group {
+    margin-top: 1rem;
+}
+
+.checkbox-row {
+    display: flex;
+    gap: 1rem;
+    margin-top: 0.5rem;
+}
+
+.empty-padding {
+    padding: 2rem 1rem;
+}

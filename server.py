@@ -13,20 +13,23 @@ Provides API endpoints for:
 
 import argparse
 import hmac
+import ipaddress
 import json
 import logging
 import os
 import re
 import shutil
+import socket
 import threading
 import traceback
 import uuid
 from datetime import datetime, timezone
+from functools import wraps
 from pathlib import Path
 from typing import Generator
 from urllib.parse import urlparse
 import anthropic
-import google.genai as genai
+import google.generativeai as genai
 import openai
 from flask import Flask, Response, jsonify, request, send_from_directory
 from flask_cors import CORS
@@ -254,9 +257,6 @@ def set_api_key():
     
     if not provider:
         return jsonify({'error': 'Provider required'}), 400
-    
-    if not validate_base_url(base_url):
-        return jsonify({'error': 'Invalid base URL'}), 400
 
     config = load_config()
     
@@ -278,6 +278,9 @@ def set_base_url():
     
     if not provider:
         return jsonify({'error': 'Provider required'}), 400
+    
+    if base_url and not validate_base_url(base_url):
+        return jsonify({'error': 'Invalid base URL'}), 400
     
     config = load_config()
     
@@ -433,18 +436,73 @@ def prepare_custom_params(raw_params: dict) -> dict:
     return {k: parse_param_value(v) for k, v in raw_params.items()}
 
 
+# Default trusted API domains (can be extended via config.json server.trusted_domains)
+_DEFAULT_TRUSTED_DOMAINS = (
+    'api.openai.com',
+    'api.anthropic.com',
+    'generativelanguage.googleapis.com',
+    'openrouter.ai',
+    'api.together.xyz',
+)
+
+
+def _get_trusted_domains() -> tuple:
+    """Get trusted domains from config, falling back to defaults."""
+    config = load_config()
+    extra = config.get('server', {}).get('trusted_domains', [])
+    if extra:
+        return tuple(set(_DEFAULT_TRUSTED_DOMAINS) | set(extra))
+    return _DEFAULT_TRUSTED_DOMAINS
+
+
+def _is_private_ip(hostname: str) -> bool:
+    """Resolve hostname and check if it points to a private/reserved IP."""
+    try:
+        infos = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+        for _family, _type, _proto, _canonname, sockaddr in infos:
+            ip = ipaddress.ip_address(sockaddr[0])
+            if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast:
+                return True
+        return False
+    except (socket.gaierror, ValueError):
+        # If DNS resolution fails, treat as unsafe
+        return True
+
+
 def validate_base_url(url: str) -> bool:
-    """Basic validation for base_url to prevent obvious SSRF attempts."""
+    """Validate base_url to prevent SSRF attacks.
+
+    - Always blocks non-http(s) schemes
+    - Always allows known trusted API domains (configurable via config.json)
+    - If server.allow_local_network is true (default), allows any URL including
+      localhost and private IPs — suitable for self-hosted setups
+    - If server.allow_local_network is false, rejects private/loopback/link-local IPs
+    """
     if not url:
         return True
     try:
         parsed = urlparse(url)
         if parsed.scheme not in ('http', 'https'):
             return False
-        # Block access to common cloud metadata services
-        blocked_hosts = ('169.254.169.254', 'metadata.google.internal', 'metadata')
-        if parsed.hostname in blocked_hosts:
+        hostname = parsed.hostname
+        if not hostname:
             return False
+
+        # Always allow known trusted API domains
+        trusted = _get_trusted_domains()
+        if any(hostname == d or hostname.endswith('.' + d) for d in trusted):
+            return True
+
+        # Check config: allow_local_network defaults to true (self-hosted friendly)
+        config = load_config()
+        allow_local = config.get('server', {}).get('allow_local_network', True)
+        if allow_local:
+            return True
+
+        # Strict mode: reject private/reserved IPs
+        if _is_private_ip(hostname):
+            return False
+
         return True
     except Exception:
         return False
@@ -697,42 +755,45 @@ def list_exports():
     files.sort(key=lambda x: x['created_at'], reverse=True)
     return jsonify({'files': files})
 
+VALID_EXPORT_FORMATS = ('sharegpt', 'openai', 'alpaca')
+
+
+def validate_export_params(f):
+    """Decorator to validate export format and sanitize filename for export endpoints."""
+    @wraps(f)
+    def decorated(format, filename, *args, **kwargs):
+        if format not in VALID_EXPORT_FORMATS:
+            return jsonify({'error': 'Invalid format'}), 400
+        filename = re.sub(r'[^a-zA-Z0-9_.-]', '', filename)
+        if not filename or filename.startswith('.'):
+            return jsonify({'error': 'Invalid filename'}), 400
+        return f(format, filename, *args, **kwargs)
+    return decorated
+
+
 @app.route('/api/exports/<format>/<filename>', methods=['GET'])
+@validate_export_params
 def download_export(format: str, filename: str):
     '''Download an exported dataset.'''
-    if format not in ('sharegpt', 'openai', 'alpaca'):
-        return jsonify({'error': 'Invalid format'}), 400
-    filename = re.sub(r'[^a-zA-Z0-9_.-]', '', filename)
-    if not filename or filename.startswith('.'):
-        return jsonify({'error': 'Invalid filename'}), 400
-
     export_dir = Path('exports') / format
     return send_from_directory(str(export_dir), filename, as_attachment=True)
 
+
 @app.route('/api/exports/<format>/<filename>', methods=['DELETE'])
+@validate_export_params
 def delete_export(format: str, filename: str):
     '''Delete an exported dataset.'''
-    if format not in ('sharegpt', 'openai', 'alpaca'):
-        return jsonify({'error': 'Invalid format'}), 400
-    filename = re.sub(r'[^a-zA-Z0-9_.-]', '', filename)
-    if not filename or filename.startswith('.'):
-        return jsonify({'error': 'Invalid filename'}), 400
-
     file_path = Path('exports') / format / filename
     if file_path.exists():
         file_path.unlink()
         return jsonify({'success': True})
     return jsonify({'error': 'File not found'}), 404
 
+
 @app.route('/api/exports/<format>/<filename>', methods=['PUT'])
+@validate_export_params
 def rename_export(format: str, filename: str):
     '''Rename an exported dataset.'''
-    if format not in ('sharegpt', 'openai', 'alpaca'):
-        return jsonify({'error': 'Invalid format'}), 400
-    filename = re.sub(r'[^a-zA-Z0-9_.-]', '', filename)
-    if not filename or filename.startswith('.'):
-        return jsonify({'error': 'Invalid old filename'}), 400
-
     data = request.get_json() or {}
     new_filename = data.get('new_name', '')
     new_filename = re.sub(r'[^a-zA-Z0-9_.-]', '', new_filename)
@@ -752,7 +813,7 @@ def rename_export(format: str, filename: str):
 @app.route('/api/export/<format>', methods=['POST'])
 def export_dataset_endpoint(format: str):
     """Export dataset to specified format."""
-    if format not in ('sharegpt', 'openai', 'alpaca'):
+    if format not in VALID_EXPORT_FORMATS:
         return jsonify({'error': 'Invalid format'}), 400
     
     try:

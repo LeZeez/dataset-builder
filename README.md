@@ -9,11 +9,11 @@ A tool for creating, curating, and exporting synthetic conversation datasets usi
 - **Macros engine** — Dynamic prompt templating with `{{variables}}`, `{{random}}`, `{{list}}`, `{{roll}}`, and comment macros
 - **Prompt History** — Review and restore previously sent (resolved) prompts
 - **Bulk generation** — Generate multiple conversations in one shot with a review queue
-- **Export formats** — ShareGPT, OpenAI, Alpaca
+- **Export formats** — ShareGPT, OpenAI, Alpaca with an export management modal (rename, download, delete)
 - **Chat tab** — Interactive multi-turn chat with fork, regenerate, and continue controls
 - **Manage Files modal** — Browse, move, and delete saved conversations
 - **Keyboard shortcuts** — Fully configurable for fast workflows
-- **Security** — Optional IP whitelisting and HTTP Basic Auth
+- **Security** — Optional IP whitelisting, HTTP Basic Auth, and SSRF-safe base URL validation
 
 ---
 
@@ -213,6 +213,8 @@ dataset-builder/
 
 - **`allowed_ips`** — Array of allowed client IPs. Leave empty (`[]`) to allow all.
 - **`password`** — Enables HTTP Basic Authentication. Leave empty (`""`) to disable.
+- **`allow_local_network`** — When `true` (default), allows `localhost`, LAN IPs, and any custom base URL. Set to `false` if you expose the server publicly to enable SSRF protection.
+- **`trusted_domains`** — Array of additional trusted API domains (e.g. `["my-proxy.example.com"]`). Built-in trusted domains: OpenAI, Anthropic, Google, OpenRouter, Together AI.
 
 ### Compatible API Endpoints
 
@@ -225,6 +227,8 @@ Set a custom `base_url` under the provider to use alternative backends:
 | Ollama (local) | `http://localhost:11434/v1` |
 | OpenRouter | `https://openrouter.ai/api/v1` |
 | Together AI | `https://api.together.xyz/v1` |
+
+> **Note:** Local endpoints (Ollama, LM Studio, etc.) work by default since `allow_local_network` is `true`. If you set it to `false`, add their domains to `trusted_domains` in your config.
 
 ---
 
