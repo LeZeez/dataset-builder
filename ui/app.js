@@ -1459,10 +1459,19 @@ async function handleBulkReviewDiscard() {
                 loadFilesModal('review');
                 loadReviewQueue(); // Refresh main review tab
                 loadStats();
-            } else { toast('Failed to remove from queue after rejecting', 'error'); }
-        } else { toast('Failed to reject', 'error'); }
-    } catch (e) { toast('Failed to reject', 'error'); }
-    hideSaveIndicator('Rejected');
+                hideSaveIndicator('Rejected');
+            } else {
+                toast('Failed to remove from queue after rejecting', 'error');
+                hideSaveIndicator('Reject failed');
+            }
+        } else {
+            toast('Failed to reject', 'error');
+            hideSaveIndicator('Reject failed');
+        }
+    } catch (e) {
+        toast('Failed to reject', 'error');
+        hideSaveIndicator('Reject failed');
+    }
 }
 
 async function loadConversation(id, folder) {
