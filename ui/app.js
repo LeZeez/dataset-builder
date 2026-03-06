@@ -34,6 +34,7 @@ function toggleChatTools() {
     state.chat.showAllTools = !state.chat.showAllTools;
     if (els.chatMessages) els.chatMessages.classList.toggle('show-all-tools', state.chat.showAllTools);
     if (els.chatToggleTools) els.chatToggleTools.style.color = state.chat.showAllTools ? 'var(--accent)' : '';
+    debouncedSaveDraft();
 }
 
 
@@ -2513,7 +2514,8 @@ async function buildDraftObject() {
         chat: {
             messages: state.chat.messages.filter(m => !m.streaming),
             systemPrompt: els.chatSystemPrompt?.value || '',
-            zoomLevel: state.chat.zoomLevel
+            zoomLevel: state.chat.zoomLevel,
+            showAllTools: state.chat.showAllTools
         },
         export: {
             systemPrompt: els.exportSystemPrompt?.value || ''
@@ -2586,6 +2588,11 @@ function applyDraft(draft) {
     if (draft.chat?.zoomLevel != null) {
         state.chat.zoomLevel = draft.chat.zoomLevel;
         applyChatZoom();
+    }
+    if (draft.chat?.showAllTools != null) {
+        state.chat.showAllTools = draft.chat.showAllTools;
+        if (els.chatMessages) els.chatMessages.classList.toggle('show-all-tools', state.chat.showAllTools);
+        if (els.chatToggleTools) els.chatToggleTools.style.color = state.chat.showAllTools ? 'var(--accent)' : '';
     }
     if (draft.export?.systemPrompt && els.exportSystemPrompt) {
         els.exportSystemPrompt.value = draft.export.systemPrompt;
