@@ -488,12 +488,11 @@ def validate_base_url(url: str) -> bool:
             return False
 
         # Always allow known trusted API domains
-        trusted = _get_trusted_domains()
+        trusted = _get_trusted_domains(config)
         if any(hostname == d or hostname.endswith('.' + d) for d in trusted):
             return True
 
         # Check config: allow_local_network defaults to true (self-hosted friendly)
-        config = load_config()
         allow_local = config.get('server', {}).get('allow_local_network', True)
         if allow_local:
             return True
