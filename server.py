@@ -741,14 +741,17 @@ def list_exports():
     for fmt_dir in export_dir.iterdir():
         if not fmt_dir.is_dir(): continue
         for file in fmt_dir.glob('*.jsonl'):
-            stat = file.stat()
-            files.append({
-                'name': file.name,
-                'format': fmt_dir.name,
-                'path': f"{fmt_dir.name}/{file.name}",
-                'size': stat.st_size,
-                'created_at': stat.st_mtime * 1000
-            })
+            try:
+                stat = file.stat()
+                files.append({
+                    'name': file.name,
+                    'format': fmt_dir.name,
+                    'path': f"{fmt_dir.name}/{file.name}",
+                    'size': stat.st_size,
+                    'created_at': stat.st_mtime * 1000
+                })
+            except FileNotFoundError:
+                continue
 
     files.sort(key=lambda x: x['created_at'], reverse=True)
     return jsonify({'files': files})
