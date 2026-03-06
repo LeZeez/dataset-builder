@@ -1,6 +1,17 @@
 
+// ============ CONSTANTS ============
+const ICON_FULLSCREEN_EXIT = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3"></path></svg>';
+const ICON_FULLSCREEN_ENTER = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"></path></svg>';
+const ICON_STOP = '<svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2"/></svg>';
+const ICON_SEND = '<svg width="20" height="20" viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"></path></svg>';
+
+const CHAT_ZOOM_MIN = 0.5;
+const CHAT_ZOOM_MAX = 2;
+const CHAT_ZOOM_STEP = 0.1;
+
 function applyChatZoom() {
     if (els.chatMessages) els.chatMessages.style.setProperty('--chat-zoom', state.chat.zoomLevel);
+    if (els.chatZoomLabel) els.chatZoomLabel.textContent = Math.round(state.chat.zoomLevel * 100) + '%';
 }
 function toggleChatFullscreen() {
     state.chat.isFullscreen = !state.chat.isFullscreen;
@@ -8,24 +19,17 @@ function toggleChatFullscreen() {
     if (els.chatFullscreen) {
         els.chatFullscreen.innerHTML = state.chat.isFullscreen ? ICON_FULLSCREEN_EXIT : ICON_FULLSCREEN_ENTER;
     }
+    if (state.chat.isFullscreen) {
+        const escHandler = (e) => { if (e.key === 'Escape') { toggleChatFullscreen(); document.removeEventListener('keydown', escHandler); } };
+        document.addEventListener('keydown', escHandler);
+    }
 }
 function toggleChatTools() {
     state.chat.showAllTools = !state.chat.showAllTools;
     if (els.chatMessages) els.chatMessages.classList.toggle('show-all-tools', state.chat.showAllTools);
-    if (els.chatToggleTools) els.chatToggleTools.style.color = state.chat.showAllTools ? 'var(--accent)' : 'var(--text-secondary)';
+    if (els.chatToggleTools) els.chatToggleTools.style.color = state.chat.showAllTools ? 'var(--accent)' : '';
 }
-/**
- * Synthetic Dataset Generator v3.0
- * Full-featured frontend with IndexedDB, Smart Sync, Prompt Management,
- * Bulk Generation, Review Queue, Search & Filter
- */
 
-const ICON_FULLSCREEN_EXIT = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3v3a2 2 0 0 1-2 2H3m18 0h-3a2 2 0 0 1-2-2V3m0 18v-3a2 2 0 0 1 2-2h3M3 16h3a2 2 0 0 1 2 2v3"></path></svg>';
-const ICON_FULLSCREEN_ENTER = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"></path></svg>';
-
-const CHAT_ZOOM_MIN = 0.5;
-const CHAT_ZOOM_MAX = 2;
-const CHAT_ZOOM_STEP = 0.1;
 
 // ============ IndexedDB WRAPPER ============
 
@@ -403,7 +407,8 @@ const state = {
         abortController: null
     },
     tags: [],
-    customParams: {}
+    customParams: {},
+    promptHistory: [] // array of {text, timestamp}
 };
 
 // Throttle utility for streaming updates
@@ -477,7 +482,6 @@ async function init() {
         deletePromptBtn: $('#delete-prompt-btn'),
         refreshPromptBtn: $('#refresh-prompt-btn'),
         systemPrompt: $('#system-prompt'),
-        variablesSection: $('#variables-section'),
         variablesGrid: $('#variables-grid'),
         presetSelect: $('#preset-select'),
         savePreset: $('#save-preset'),
@@ -512,7 +516,7 @@ async function init() {
         chatTurns: $('#chat-turns'),
         clearChat: $('#clear-chat'),
         saveChatBtn: $('#save-chat-btn'),
-        forkChatBtn: $('#fork-chat-btn'),
+        chatZoomLabel: $('#chat-zoom-label'),
         chatSystemPrompt: $('#chat-system-prompt'),
         chatPresetSelect: $('#chat-preset-select'),
         saveChatPreset: $('#save-chat-preset'),
@@ -558,7 +562,24 @@ async function init() {
         customParamsList: $('#custom-params-list'),
         newParamKey: $('#new-param-key'),
         newParamValue: $('#new-param-value'),
-        addParamBtn: $('#add-param-btn')
+        addParamBtn: $('#add-param-btn'),
+
+        // Macros & History
+        openMacrosBtn: $('#open-macros-btn'),
+        macrosModal: $('#macros-modal'),
+        closeMacrosModal: $('#close-macros-modal'),
+        macrosBadge: $('#macros-badge'),
+        openHistoryBtn: $('#open-history-btn'),
+        promptHistoryList: $('#prompt-history-list'),
+        clearHistoryBtn: $('#clear-history-btn'),
+        builderType: $('#builder-type'),
+        builderItems: $('#builder-items'),
+        builderItemsSection: $('#builder-items-section'),
+        builderRollSection: $('#builder-roll-section'),
+        builderRollInput: $('#builder-roll-input'),
+        builderPreviewText: $('#builder-preview-text'),
+        builderCopy: $('#builder-copy'),
+        historyMaxSetting: $('#history-max-setting')
     };
 
     // Initialize sync engine
@@ -576,6 +597,7 @@ async function init() {
     await loadTags();
     await restoreDraft();
     await loadReviewQueue();
+    await loadPromptHistory();
 
     setupEventListeners();
     applyHotkeysToUI();
@@ -825,27 +847,35 @@ function extractVariables() {
     const matches = [...text.matchAll(regex)];
     const names = [...new Set(matches.map(m => m[1]))];
     state.generate.variableNames = names;
-    if (names.length > 0) {
-        els.variablesSection.classList.remove('hidden');
-        renderVariableInputs(names);
-    } else {
-        els.variablesSection.classList.add('hidden');
-    }
+
+    // Update the inline count badge next to token count
+    const badge = document.getElementById('var-count-badge');
+    if (badge) badge.textContent = names.length > 0 ? `· ${names.length} variable${names.length > 1 ? 's' : ''}` : '';
+
+    // Always render variables grid in macros modal
+    renderVariableInputs(names);
+    updateMacrosBadge();
     updateTokenCount();
 }
 
 function renderVariableInputs(names) {
-    els.variablesGrid.innerHTML = names.map(name => `
-        <div class="form-group">
-            <label for="var-${name}">${name}</label>
-            <input type="text" id="var-${name}" class="input var-input"
-                   data-var="${name}"
-                   value="${state.generate.variables[name] || ''}"
-                   placeholder="${name}...">
+    const grid = els.variablesGrid || document.getElementById('variables-grid');
+    if (!grid) return;
+    if (names.length === 0) {
+        grid.innerHTML = '<p class="muted small">No variables detected. Type <code>{{name}}</code> in your prompt to add one.</p>';
+        return;
+    }
+    grid.innerHTML = names.map(name => `
+        <div class="var-modal-row">
+            <label class="var-modal-label" for="var-${name}">${name}</label>
+            <textarea id="var-${name}" class="textarea var-modal-textarea var-input"
+                data-var="${name}"
+                placeholder="Value or macro, e.g. random::a::b"
+                rows="2">${escapeHtml(state.generate.variables[name] || '')}</textarea>
         </div>
     `).join('');
-    $$('.var-input').forEach(input => {
-        input.addEventListener('input', (e) => {
+    grid.querySelectorAll('.var-input').forEach(ta => {
+        ta.addEventListener('input', (e) => {
             state.generate.variables[e.target.dataset.var] = e.target.value;
             updateTokenCount();
             debouncedSaveDraft();
@@ -853,56 +883,59 @@ function renderVariableInputs(names) {
     });
 }
 
+function rollDice(notation) {
+    // Parses NdN, NdN+M, NdN-M
+    const m = notation.match(/^(\d+)d(\d+)([+-]\d+)?$/i);
+    if (!m) return NaN;
+    const count = parseInt(m[1], 10);
+    const sides = parseInt(m[2], 10);
+    const modifier = m[3] ? parseInt(m[3], 10) : 0;
+    if (count < 1 || sides < 1) return NaN;
+    let total = modifier;
+    for (let i = 0; i < count; i++) total += Math.floor(Math.random() * sides) + 1;
+    return total;
+}
+
+function _resolveInlineMacros(text, isPreview) {
+    // Strip {{// comments}}
+    text = text.replace(/\{\{\/\/[^}]*\}\}/g, '');
+    // Resolve {{roll:...}}
+    text = text.replace(/\{\{roll:([^}]+)\}\}/gi, (_, notation) => {
+        const result = rollDice(notation.trim());
+        return isNaN(result) ? `{{roll:${notation}}}` : String(result);
+    });
+    // Resolve {{random::...}} and {{list::...}}
+    text = text.replace(/\{\{(random|list)::([^}]+)\}\}/g, (_, type, rest) => {
+        const parts = rest.split('::');
+        if (type === 'random') return parts[Math.floor(Math.random() * parts.length)];
+        const k = `${type}::${rest}`;
+        if (!state.listIterators[k]) state.listIterators[k] = 0;
+        const val = parts[state.listIterators[k] % parts.length];
+        if (!isPreview) state.listIterators[k]++;
+        return val;
+    });
+    return text;
+}
+
 function applyVariables(text, isPreview = false) {
     const sessionCache = {};
+    // First strip comments and run inline macros
+    text = _resolveInlineMacros(text, isPreview);
 
-    return text.replace(/\{\{([\w:]+)\}\}/g, (_, key) => {
-        // Handle inline macros: {{random::v1::v2}} or {{list::v1::v2}}
-        if (key.startsWith('random::')) {
-            const parts = key.split('::').slice(1);
-            if (parts.length > 0) {
-                return parts[Math.floor(Math.random() * parts.length)];
-            }
-        }
-        if (key.startsWith('list::')) {
-            const parts = key.split('::').slice(1);
-            if (parts.length > 0) {
-                if (!state.listIterators[key]) state.listIterators[key] = 0;
-                const val = parts[state.listIterators[key] % parts.length];
-                if (!isPreview) state.listIterators[key]++;
-                return val;
-            }
-        }
-
-        // Standard variables from the UI grid
-        if (sessionCache[key] !== undefined) return sessionCache[key];
-
-        let val = state.generate.variables[key];
-        if (val) {
-            if (val.startsWith('random::')) {
-                const parts = val.split('::').slice(1);
-                if (parts.length > 0) {
-                    val = parts[Math.floor(Math.random() * parts.length)];
-                }
-            } else if (val.startsWith('list::')) {
-                const parts = val.split('::').slice(1);
-                if (parts.length > 0) {
-                    if (!state.listIterators[key]) state.listIterators[key] = 0;
-                    val = parts[state.listIterators[key] % parts.length];
-                    if (!isPreview) state.listIterators[key]++;
-                }
-            } else if (val.includes('::')) { // Default list iterator for named variables without prefix
-                const parts = val.split('::');
-                if (!state.listIterators[key]) state.listIterators[key] = 0;
-                val = parts[state.listIterators[key] % parts.length];
-                if (!isPreview) state.listIterators[key]++;
-            }
+    // Then resolve named variables (up to 3 levels deep to handle nesting)
+    for (let depth = 0; depth < 3; depth++) {
+        text = text.replace(/\{\{(\w+)\}\}/g, (match, key) => {
+            if (sessionCache[key] !== undefined) return sessionCache[key];
+            let val = state.generate.variables[key];
+            if (!val) return match;
+            // Resolve macros in the variable's value
+            val = _resolveInlineMacros(val, isPreview);
             sessionCache[key] = val;
             return val;
-        }
-
-        return `{{${key}}}`;
-    });
+        });
+        if (!/\{\{\w+\}\}/.test(text)) break; // No more variables to resolve
+    }
+    return text;
 }
 
 async function loadPresets() {
@@ -975,7 +1008,9 @@ function renderCustomParams() {
         <div class="custom-param-item" data-key="${escapeHtml(key)}">
             <span class="param-key">${escapeHtml(key)}</span>
             <span class="param-value" data-key="${escapeHtml(key)}" title="Click to edit">${escapeHtml(String(params[key]))}</span>
-            <button class="icon-btn param-remove" data-key="${escapeHtml(key)}" title="Remove">✕</button>
+            <button class="icon-btn param-remove" data-key="${escapeHtml(key)}" title="Remove">
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
         </div>
     `).join('');
     els.customParamsList.querySelectorAll('.param-remove').forEach(btn => {
@@ -1372,9 +1407,10 @@ async function generate() {
     state.generate.abortController = new AbortController();
     els.generateBtn.classList.add('btn-danger');
     els.generateBtn.classList.remove('btn-primary');
-    els.generateBtn.querySelector('.btn-text').textContent = '⏹ Stop';
+    els.generateBtn.textContent = 'Stop';
 
     const promptText = applyVariables(els.systemPrompt.value);
+    addToPromptHistory(promptText);
     try {
         const response = await fetch('/api/generate/stream', {
             method: 'POST',
@@ -1457,7 +1493,7 @@ async function generate() {
         els.generateBtn.disabled = false;
         els.generateBtn.classList.remove('btn-danger');
         els.generateBtn.classList.add('btn-primary');
-        els.generateBtn.querySelector('.btn-text').textContent = '🎲 Generate';
+        els.generateBtn.textContent = 'Generate';
     }
 }
 
@@ -1477,6 +1513,7 @@ async function bulkGenerate(count) {
     for (let i = 0; i < count; i++) {
         if (state.bulk.abortController.signal.aborted) break;
         const promptText = applyVariables(els.systemPrompt.value);
+        addToPromptHistory(promptText); // record each resolved prompt
         try {
             const res = await fetch('/api/generate', {
                 method: 'POST',
@@ -1768,47 +1805,52 @@ function renderChatMessages() {
     els.chatMessages.innerHTML = state.chat.messages.map((m, i) => {
         const isEditing = state.chat.editingIndex === i;
         const isStreaming = m.streaming;
+        const roleLabel = m.from === 'human' ? 'YOU' : 'GPT';
+
         if (isEditing) {
             return `<div class="bubble ${m.from} editing" data-index="${i}">
-                <span class="role-label">${m.from === 'human' ? 'YOU' : 'GPT'} (editing)</span>
+                <span class="role-label">${roleLabel} (editing)</span>
                 <textarea class="edit-textarea" id="edit-msg-${i}">${escapeHtml(m.value)}</textarea>
-                <div class="bubble-actions">
-                    <button class="bubble-btn save" onclick="saveEditMessage(${i})">✓ Save</button>
-                    <button class="bubble-btn cancel" onclick="cancelEditMessage()">✕ Cancel</button>
+                <div class="edit-actions">
+                    <button class="msg-btn msg-btn-save" onclick="saveEditMessage(${i})" title="Save">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+                    </button>
+                    <button class="msg-btn msg-btn-cancel" onclick="cancelEditMessage()" title="Cancel">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                    </button>
                 </div>
             </div>`;
         }
 
-        let actionsHtml = '';
-        if (!isStreaming) {
-            actionsHtml = `<div class="bubble-tools">
-                <button class="bubble-menu-btn" title="Tools">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="1"></circle><circle cx="12" cy="5" r="1"></circle><circle cx="12" cy="19" r="1"></circle></svg>
-                </button>
-                <div class="bubble-menu-dropdown">
-                    <button class="bubble-btn edit" onclick="startEditMessage(${i})" title="Edit">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>
-                    </button>
-                    <button class="bubble-btn delete" onclick="deleteMessage(${i})" title="Delete">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
-                    </button>
-                    <button class="bubble-btn fork" onclick="forkChat(${i})" title="Fork here">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="18" r="3"></circle><circle cx="6" cy="6" r="3"></circle><circle cx="18" cy="6" r="3"></circle><path d="M18 9v2c0 .6-.4 1-1 1H7c-.6 0-1 .4-1 1v2"></path><path d="M12 15v-3"></path></svg>
-                    </button>
-                    ${m.from === 'gpt' ? `<button class="bubble-btn regen" onclick="regenerateFrom(${i})" title="Regenerate">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2.5 2v6h6M21.5 22v-6h-6"/><path d="M22 11.5A10 10 0 0 0 3.2 7.2M2 12.5a10 10 0 0 0 18.8 4.2"/></svg>
-                    </button>` : ''}
-                    ${m.from === 'human' ? `<button class="bubble-btn continue" onclick="continueFromMessage(${i})" title="Continue from here">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
-                    </button>` : ''}
-                </div>
-            </div>`;
-        }
+        const toolsHtml = isStreaming ? '' : `<div class="bubble-tools">
+            <button class="msg-btn edit" onclick="startEditMessage(${i})" title="Edit">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+            </button>
+            <button class="msg-btn delete" onclick="deleteMessage(${i})" title="Delete">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
+            </button>
+            <button class="msg-btn fork" onclick="forkChat(${i})" title="Fork">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>
+            </button>
+            ${m.from === 'gpt' ? `<button class="msg-btn regen" onclick="regenerateFrom(${i})" title="Regenerate">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2.5 2v6h6M21.5 22v-6h-6"/><path d="M22 11.5A10 10 0 0 0 3.2 7.2M2 12.5a10 10 0 0 0 18.8 4.2"/></svg>
+            </button>` : ''}
+            ${m.from === 'human' ? `<button class="msg-btn continue" onclick="continueFromMessage(${i})" title="Continue">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+            </button>` : ''}
+        </div>`;
 
-        return `<div class="bubble ${m.from}" data-index="${i}">
-            <span class="role-label">${m.from === 'human' ? 'YOU' : 'GPT'}${isStreaming ? ' (typing...)' : ''}</span>
-            <div class="bubble-content">${escapeHtml(m.value)}</div>
-            ${actionsHtml}
+        const meatball = isStreaming ? '' : `<button class="msg-menu-btn" title="Toggle tools">
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor"><circle cx="12" cy="5" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="12" cy="19" r="2"/></svg>
+        </button>`;
+
+        return `<div class="bubble ${m.from}${isStreaming ? ' streaming' : ''}" data-index="${i}">
+            <div class="bubble-header">
+                <span class="role-label">${roleLabel}${isStreaming ? ' (typing\u2026)' : ''}</span>
+                ${toolsHtml}
+                ${meatball}
+            </div>
+            <div class="bubble-content">${escapeHtml(m.value)}${isStreaming ? '<span class="streaming-cursor"></span>' : ''}</div>
         </div>`;
     }).join('');
     els.chatMessages.scrollTop = els.chatMessages.scrollHeight;
@@ -1972,8 +2014,8 @@ async function generateAIResponse() {
     }
 }
 
-function enableChatButtons() { if (els.saveChatBtn) els.saveChatBtn.disabled = false; if (els.forkChatBtn) els.forkChatBtn.disabled = false; }
-function disableChatButtons() { if (els.saveChatBtn) els.saveChatBtn.disabled = true; if (els.forkChatBtn) els.forkChatBtn.disabled = true; }
+function enableChatButtons() { if (els.saveChatBtn) els.saveChatBtn.disabled = false; }
+function disableChatButtons() { if (els.saveChatBtn) els.saveChatBtn.disabled = true; }
 
 // ============ REVIEW QUEUE (Server-Synced) ============
 async function addToReviewQueue(item) {
@@ -2451,7 +2493,8 @@ async function buildDraftObject() {
         },
         chat: {
             messages: state.chat.messages.filter(m => !m.streaming),
-            systemPrompt: els.chatSystemPrompt?.value || ''
+            systemPrompt: els.chatSystemPrompt?.value || '',
+            zoomLevel: state.chat.zoomLevel
         },
         export: {
             systemPrompt: els.exportSystemPrompt?.value || ''
@@ -2520,6 +2563,10 @@ function applyDraft(draft) {
     if (draft.chat?.systemPrompt && els.chatSystemPrompt) {
         els.chatSystemPrompt.value = draft.chat.systemPrompt;
         state.chat.systemPrompt = draft.chat.systemPrompt;
+    }
+    if (draft.chat?.zoomLevel != null) {
+        state.chat.zoomLevel = draft.chat.zoomLevel;
+        applyChatZoom();
     }
     if (draft.export?.systemPrompt && els.exportSystemPrompt) {
         els.exportSystemPrompt.value = draft.export.systemPrompt;
@@ -2596,6 +2643,157 @@ function toast(message, type = 'info') {
     setTimeout(() => { t.classList.remove('show'); setTimeout(() => t.remove(), 300); }, 3000);
 }
 
+// ============ MACROS MODAL ============
+function openMacrosModal() {
+    if (els.macrosModal) els.macrosModal.classList.remove('hidden');
+    switchMacrosTab('variables');
+}
+
+function closeMacrosModal() {
+    if (els.macrosModal) els.macrosModal.classList.add('hidden');
+}
+
+function switchMacrosTab(tabName) {
+    $$('.macros-tab').forEach(t => t.classList.toggle('active', t.dataset.macrosTab === tabName));
+    $$('.macros-tab-content').forEach(c => c.classList.remove('active'));
+    const target = document.getElementById(`macros-${tabName}`);
+    if (target) target.classList.add('active');
+    // On switching to variables, re-render so values are fresh
+    if (tabName === 'variables') renderVariableInputs(state.generate.variableNames || []);
+    if (tabName === 'history') renderPromptHistory();
+}
+
+function updateBuilderPreview() {
+    if (!els.builderType || !els.builderPreviewText) return;
+    const type = els.builderType.value;
+    if (type === 'roll') {
+        const notation = els.builderRollInput?.value.trim() || '1d20';
+        els.builderPreviewText.textContent = `{{roll:${notation}}}`;
+    } else {
+        const raw = els.builderItems?.value || '';
+        const items = raw.split('\n').map(l => l.trim()).filter(Boolean);
+        if (items.length === 0) { els.builderPreviewText.textContent = '—'; return; }
+        els.builderPreviewText.textContent = `{{${type}::${items.join('::')}}}`;
+    }
+}
+
+function copyBuilderMacro() {
+    const text = els.builderPreviewText?.textContent;
+    if (!text || text === '—') return;
+    navigator.clipboard.writeText(text).then(() => toast('Copied to clipboard!', 'success')).catch(() => toast('Copy failed', 'error'));
+}
+
+function updateMacrosBadge() {
+    const count = Object.keys(state.generate.variables).filter(k => state.generate.variables[k]).length;
+    if (els.macrosBadge) {
+        els.macrosBadge.textContent = count;
+        els.macrosBadge.classList.toggle('hidden', count === 0);
+    }
+}
+
+// ============ PROMPT HISTORY ============
+function getHistoryMax() {
+    return parseInt(els.historyMaxSetting?.value || document.getElementById('history-max-setting')?.value || 30, 10) || 30;
+}
+
+function addToPromptHistory(resolvedText) {
+    if (!resolvedText || !resolvedText.trim()) return;
+    const max = getHistoryMax();
+    state.promptHistory.unshift({ text: resolvedText.trim(), timestamp: new Date().toISOString() });
+    if (state.promptHistory.length > max) state.promptHistory.length = max;
+    // Persist to IndexedDB
+    dbSet('settings', 'promptHistory', state.promptHistory).catch(() => { });
+}
+
+async function loadPromptHistory() {
+    try {
+        const saved = await dbGet('settings', 'promptHistory');
+        if (Array.isArray(saved)) state.promptHistory = saved;
+    } catch (e) { }
+}
+
+function renderPromptHistory() {
+    if (!els.promptHistoryList) return;
+    if (state.promptHistory.length === 0) {
+        els.promptHistoryList.innerHTML = '<div class="empty-state" style="padding:1.5rem 1rem;"><p>No history yet. Send a prompt to record it here.</p></div>';
+        return;
+    }
+    els.promptHistoryList.innerHTML = state.promptHistory.map((entry, i) => {
+        const date = new Date(entry.timestamp).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+        return `<div class="history-item" data-index="${i}" title="Click to view">
+            <div class="history-item-time">${date}</div>
+            <div class="history-item-text">${escapeHtml(entry.text)}</div>
+        </div>`;
+    }).join('');
+    els.promptHistoryList.querySelectorAll('.history-item').forEach(item => {
+        item.addEventListener('click', () => {
+            const idx = parseInt(item.dataset.index, 10);
+            showHistoryDetail(idx);
+        });
+    });
+}
+
+function showHistoryDetail(idx) {
+    const entry = state.promptHistory[idx];
+    if (!entry) return;
+    const date = new Date(entry.timestamp).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    const histTab = document.getElementById('macros-history');
+    if (!histTab) return;
+
+    let detailContainer = document.getElementById('history-detail-view');
+    if (!detailContainer) {
+        detailContainer = document.createElement('div');
+        detailContainer.id = 'history-detail-view';
+        detailContainer.style.display = 'none';
+        detailContainer.style.flexDirection = 'column';
+        detailContainer.style.gap = '0.5rem';
+        detailContainer.style.flex = '1';
+        detailContainer.style.minHeight = '0';
+        histTab.appendChild(detailContainer);
+    }
+
+    const header = histTab.querySelector('.history-header');
+    const list = els.promptHistoryList;
+
+    if (header) header.style.display = 'none';
+    if (list) list.style.display = 'none';
+    detailContainer.style.display = 'flex';
+
+    detailContainer.innerHTML = `
+        <div style="display:flex;align-items:center;gap:0.5rem;flex-shrink:0;">
+            <button id="history-back-btn" class="btn btn-sm btn-secondary">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>
+                Back
+            </button>
+            <span class="muted small">${date}</span>
+            <button id="history-copy-btn" class="btn btn-sm btn-accent" style="margin-left:auto;">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+                Copy
+            </button>
+        </div>
+        <pre style="white-space:pre-wrap;word-break:break-word;font-size:0.82rem;line-height:1.6;color:var(--text-primary);background:rgba(255,255,255,.03);border:1px solid var(--border-glass);border-radius:8px;padding:0.75rem;overflow-y:auto;flex:1;">${escapeHtml(entry.text)}</pre>
+    `;
+
+    document.getElementById('history-back-btn').addEventListener('click', () => {
+        detailContainer.style.display = 'none';
+        if (header) header.style.display = '';
+        if (list) list.style.display = '';
+    });
+    document.getElementById('history-copy-btn').addEventListener('click', () => {
+        navigator.clipboard.writeText(entry.text).then(() => toast('Copied to clipboard', 'success')).catch(() => toast('Copy failed', 'error'));
+    });
+}
+
+
+
+function clearPromptHistory() {
+    if (!confirm('Clear all prompt history?')) return;
+    state.promptHistory = [];
+    dbSet('settings', 'promptHistory', []).catch(() => { });
+    renderPromptHistory();
+    toast('History cleared', 'info');
+}
+
 // ============ EVENT LISTENERS ============
 function setupEventListeners() {
     // Sidebar
@@ -2626,21 +2824,19 @@ function setupEventListeners() {
 
     // Handle meatball menu clicks and outside clicks
     document.addEventListener('click', (e) => {
-        const toggleBtn = e.target.closest('.bubble-menu-btn');
-        if (toggleBtn) {
-            const parent = toggleBtn.parentElement;
-            const wasOpen = parent.classList.contains('open');
-            // Close all other menus
-            document.querySelectorAll('.bubble-tools.open').forEach(el => el.classList.remove('open'));
-            // Toggle the current one
-            if (!wasOpen) {
-                parent.classList.add('open');
+        const meatballBtn = e.target.closest('.msg-menu-btn');
+        if (meatballBtn) {
+            const bubble = meatballBtn.closest('.bubble');
+            if (bubble) {
+                // Close all other open bubbles
+                document.querySelectorAll('.bubble.tools-open').forEach(b => { if (b !== bubble) b.classList.remove('tools-open'); });
+                bubble.classList.toggle('tools-open');
             }
             return;
         }
-
-        if (!e.target.closest('.bubble-tools')) {
-            document.querySelectorAll('.bubble-tools.open').forEach(el => el.classList.remove('open'));
+        // Close on outside click
+        if (!e.target.closest('.bubble')) {
+            document.querySelectorAll('.bubble.tools-open').forEach(b => b.classList.remove('tools-open'));
         }
     });
     // Files Modal
@@ -2739,7 +2935,11 @@ function setupEventListeners() {
     els.refreshPromptBtn?.addEventListener('click', refreshPrompt);
 
     // Prompt change
-    els.systemPrompt.addEventListener('input', () => { state.generate.prompt = els.systemPrompt.value; extractVariables(); });
+    els.systemPrompt.addEventListener('input', () => {
+        state.generate.prompt = els.systemPrompt.value;
+        extractVariables();
+        updateMacrosBadge();
+    });
 
     // Presets
     els.presetSelect.addEventListener('change', loadPresetAction);
@@ -2785,8 +2985,8 @@ function setupEventListeners() {
     els.saveChatBtn.addEventListener('click', saveChat);
 
     // Chat header tools
-    els.chatZoomOut?.addEventListener('click', () => { state.chat.zoomLevel = Math.max(CHAT_ZOOM_MIN, Number(state.chat.zoomLevel) - CHAT_ZOOM_STEP).toFixed(2); applyChatZoom(); });
-    els.chatZoomIn?.addEventListener('click', () => { state.chat.zoomLevel = Math.min(CHAT_ZOOM_MAX, Number(state.chat.zoomLevel) + CHAT_ZOOM_STEP).toFixed(2); applyChatZoom(); });
+    els.chatZoomOut?.addEventListener('click', () => { state.chat.zoomLevel = Math.max(CHAT_ZOOM_MIN, Number(state.chat.zoomLevel) - CHAT_ZOOM_STEP).toFixed(2); applyChatZoom(); debouncedSaveDraft(); });
+    els.chatZoomIn?.addEventListener('click', () => { state.chat.zoomLevel = Math.min(CHAT_ZOOM_MAX, Number(state.chat.zoomLevel) + CHAT_ZOOM_STEP).toFixed(2); applyChatZoom(); debouncedSaveDraft(); });
     els.chatFullscreen?.addEventListener('click', toggleChatFullscreen);
     els.chatToggleTools?.addEventListener('click', toggleChatTools);
 
@@ -2830,6 +3030,31 @@ function setupEventListeners() {
         toggle.addEventListener('click', () => { toggle.parentElement.classList.toggle('collapsed'); });
     });
 
+    // Macros Modal
+    els.openMacrosBtn?.addEventListener('click', openMacrosModal);
+    els.closeMacrosModal?.addEventListener('click', closeMacrosModal);
+    $('#macros-modal .modal-backdrop')?.addEventListener('click', closeMacrosModal);
+    $$('.macros-tab').forEach(tab => {
+        tab.addEventListener('click', () => switchMacrosTab(tab.dataset.macrosTab));
+    });
+    els.builderType?.addEventListener('change', () => {
+        const isRoll = els.builderType.value === 'roll';
+        if (els.builderItemsSection) els.builderItemsSection.classList.toggle('hidden', isRoll);
+        if (els.builderRollSection) els.builderRollSection.classList.toggle('hidden', !isRoll);
+        updateBuilderPreview();
+    });
+    els.builderItems?.addEventListener('input', updateBuilderPreview);
+    els.builderRollInput?.addEventListener('input', updateBuilderPreview);
+    els.builderCopy?.addEventListener('click', copyBuilderMacro);
+
+    // History
+    els.openHistoryBtn?.addEventListener('click', () => { openMacrosModal(); switchMacrosTab('history'); });
+    els.clearHistoryBtn?.addEventListener('click', clearPromptHistory);
+    els.historyMaxSetting?.addEventListener('change', () => {
+        const max = getHistoryMax();
+        if (state.promptHistory.length > max) { state.promptHistory.length = max; dbSet('settings', 'promptHistory', state.promptHistory).catch(() => { }); }
+    });
+
     // Setup advanced features
     setupSwipeGestures();
     setupKeyboardShortcuts();
@@ -2837,3 +3062,4 @@ function setupEventListeners() {
 
 // ============ INIT ============
 document.addEventListener('DOMContentLoaded', init);
+

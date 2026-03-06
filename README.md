@@ -1,18 +1,21 @@
-# 🗂️ Synthetic Dataset Generator
+# 🗂️ Synthetic Dataset Builder
 
-A tool for creating synthetic conversation datasets using frontier LLMs.
+A tool for creating, curating, and exporting synthetic conversation datasets using frontier LLMs.
 
 ## Features
 
-- **Web UI** for generating, reviewing, and curating conversations
-- **Multi-provider support**: OpenAI, Anthropic, Google Gemini
-- **Simple input format** with multi-line message support
-- **Export to popular formats**: ShareGPT, OpenAI, Alpaca
-- **Bulk actions** (Delete, Move, Keep, Discard)
-- **Review queue** management
-- **Manage Files modal** for better organization
-- **Individual JSON files** per conversation for easy management
-- **Keyboard shortcuts** for fast workflow
+- **Web UI** — Generate, review, and curate conversations from a browser
+- **Multi-provider support** — OpenAI, Anthropic, Google Gemini (and any OpenAI-compatible API)
+- **Macros engine** — Dynamic prompt templating with `{{variables}}`, `{{random}}`, `{{list}}`, `{{roll}}`, and comment macros
+- **Prompt History** — Review and restore previously sent (resolved) prompts
+- **Bulk generation** — Generate multiple conversations in one shot with a review queue
+- **Export formats** — ShareGPT, OpenAI, Alpaca
+- **Chat tab** — Interactive multi-turn chat with fork, regenerate, and continue controls
+- **Manage Files modal** — Browse, move, and delete saved conversations
+- **Keyboard shortcuts** — Fully configurable for fast workflows
+- **Security** — Optional IP whitelisting and HTTP Basic Auth
+
+---
 
 ## Quick Start
 
@@ -22,47 +25,104 @@ A tool for creating synthetic conversation datasets using frontier LLMs.
 pip install -r requirements.txt
 ```
 
-### 2. Set your API key
+### 2. Configure
 
-**Option A: Via UI (Recommended)**
-1. Start the server
-2. Open http://localhost:5000
-3. In the left panel under "🔑 API Keys"
-4. Enter your API key and click "Save Key"
+On first run, `config.json` is created automatically from `config.example.json`. You can set your API key either via the UI or directly in `config.json`.
 
-**Option B: Via environment variable**
-```bash
-export OPENAI_API_KEY='your-key-here'
-# or
-export ANTHROPIC_API_KEY='your-key-here'
-# or
-export GOOGLE_API_KEY='your-key-here'
-```
-
-### 3. Run the server
+### 3. Run
 
 ```bash
 python server.py
 ```
 
-### 4. Open the UI
+Then open [http://localhost:5000](http://localhost:5000).
 
-Navigate to [http://localhost:5000](http://localhost:5000)
+---
 
-## Usage
+## Macros
 
-### Keyboard Shortcuts
+Macros let you create dynamic, reusable prompt templates. They are resolved **before** the prompt is sent to the API.
+
+### Variable `{{name}}`
+
+Named variables are filled in from the **Variables panel** that appears when you type `{{name}}` in your prompt.
+
+```
+Write a short story about {{topic}} for a {{age}} year old.
+```
+
+### Random `{{random::a::b::c}}`
+
+Picks one item at random each time the prompt is sent. No item limit.
+
+```
+The user's mood is {{random::happy::sad::curious::angry}}.
+```
+
+### List `{{list::a::b::c}}`
+
+Iterates through items in order (cycling back to the start). Useful with bulk generation.
+
+```
+Write a {{list::beginner::intermediate::advanced}} guide.
+```
+
+### Dice Roll `{{roll:NdN+M}}`
+
+Rolls standard tabletop dice. The modifier (`+M` or `-M`) is optional.
+
+| Macro | Result |
+|---|---|
+| `{{roll:1d20}}` | 1–20 |
+| `{{roll:2d6+3}}` | 5–15 |
+| `{{roll:1d100-5}}` | -4–95 |
+
+### Comment `{{// your note}}`
+
+Stripped from the prompt before it is sent. Useful for inline notes or disabled sections.
+
+```
+{{// TODO: make this more formal}}
+Explain {{topic}} simply.
+```
+
+### Nesting
+
+Macros resolve recursively (up to 3 levels). If a variable's value contains a macro syntax, it will also be resolved:
+
+- Variable `topic` = `random::history::science::math`
+- `{{topic}}` in the prompt → picks one of the three at random
+
+### Macros Panel
+
+Click the **Macros button** (layers icon) in the prompt toolbar to open the Macros panel, which includes:
+
+- **Reference tab** — Syntax guide for all macro types
+- **Builder tab** — Enter items one per line to auto-generate `{{random::...}}` or `{{list::...}}` macros (or build a `{{roll}}` with a notation input)
+- **History tab** — View the last N sent prompts with macros already resolved; click one to restore it to the prompt editor
+
+The history limit (default: 30) is configurable under **Auto-Sync Settings** in the sidebar.
+
+---
+
+## Keyboard Shortcuts
+
+Shortcuts are configurable in the sidebar.
 
 | Shortcut | Action |
-|----------|--------|
+|---|---|
 | `Ctrl+G` | Generate conversation |
 | `Ctrl+Enter` | Save to wanted |
 | `Ctrl+Backspace` | Reject |
-| `Ctrl+R` | Regenerate |
+| `S` | Keep (Review tab) |
+| `X` | Reject (Review tab) |
+| `J` / `K` | Next / Previous (Review tab) |
 
-### Input Format
+---
 
-Conversations use a simple format with `---` as message delimiter:
+## Input Format
+
+Conversations in the **Edit** view use `---` as turn delimiters:
 
 ```
 user: Hello, how are you?
@@ -70,31 +130,9 @@ What have you been up to lately?
 ---
 gpt: I'm doing great, thanks!
 How about yourself?
+```
+
 ---
-user: Pretty good, thanks for asking!
-```
-
-This allows multi-line messages naturally.
-
-### Base Format (Internal)
-
-Conversations are stored in ShareGPT-compatible JSON:
-
-```json
-{
-  "id": "2024-02-09_001",
-  "conversations": [
-    {"from": "human", "value": "Hello, how are you?"},
-    {"from": "gpt", "value": "I'm doing great, thanks!"}
-  ],
-  "metadata": {
-    "created_at": "2024-02-09T12:00:00Z",
-    "source": "synthetic",
-    "tags": ["greeting", "casual"],
-    "rating": 5
-  }
-}
-```
 
 ## Project Structure
 
@@ -105,18 +143,22 @@ dataset-builder/
 │   ├── app.js
 │   └── styles.css
 ├── data/
-│   ├── wanted/            # Approved conversations
-│   ├── rejected/          # Discarded conversations
-│   └── prompts/           # Generation prompts
+│   ├── wanted/             # Approved conversations
+│   ├── rejected/           # Discarded conversations
+│   └── prompts/            # Saved prompt templates
+├── defaults/               # Default prompt & config templates
 ├── scripts/
-│   ├── parser.py          # Minimal → Base format
-│   ├── exporter.py        # Base → ShareGPT/Alpaca/OpenAI
-│   └── stats.py           # Dataset statistics
-├── exports/               # Exported datasets
-├── server.py              # Flask backend
-├── config.json            # Configuration
+│   ├── parser.py           # Minimal → Base format converter
+│   ├── exporter.py         # Base → ShareGPT / Alpaca / OpenAI
+│   └── stats.py            # Dataset statistics
+├── exports/                # Exported datasets
+├── server.py               # Flask backend
+├── config.json             # Configuration (auto-created on first run)
+├── config.example.json     # Configuration template
 └── requirements.txt
 ```
+
+---
 
 ## Export Formats
 
@@ -135,52 +177,13 @@ dataset-builder/
 {"instruction": "...", "input": "", "output": "..."}
 ```
 
-## CLI Usage
-
-### Export dataset
-
-```bash
-# Export to all formats
-python scripts/exporter.py --format all
-
-# Export to specific format
-python scripts/exporter.py --format sharegpt
-```
-
-### View statistics
-
-```bash
-python scripts/stats.py
-
-# JSON output
-python scripts/stats.py --json
-```
-
-### Parse a conversation file
-
-```bash
-python scripts/parser.py
-```
+---
 
 ## Configuration
 
-### Via UI
-The left panel has settings for:
-- **Provider**: OpenAI, Anthropic, or Google
-- **Model**: Model name (auto-updates when provider changes)
-- **Temperature**: 0-2 slider
-- **API Key**: Saved per-provider, masked for security
-- **Base URL**: Customizable for proxies or compatible APIs (e.g., Azure, local LLMs)
+### `config.json`
 
-### Via config.json
-
-Copy `config.example.json` to `config.json`:
-
-```bash
-cp config.example.json config.json
-```
-
-Then edit as needed:
+`config.json` is auto-created from `config.example.json` on first run. Edit it to set defaults:
 
 ```json
 {
@@ -193,35 +196,55 @@ Then edit as needed:
     "openai": {
       "base_url": "https://api.openai.com/v1",
       "api_key": "sk-..."
-    }
+    },
+    "anthropic": { "api_key": "" },
+    "google":    { "api_key": "" }
   },
   "server": {
     "host": "127.0.0.1",
     "port": 5000,
-    "allowed_ips": ["127.0.0.1"],
-    "password": "your-secure-password"
+    "allowed_ips": [],
+    "password": ""
   }
 }
 ```
 
-### Security Configuration
+### Security
 
-You can secure the web UI by configuring the `server` block in `config.json`:
+- **`allowed_ips`** — Array of allowed client IPs. Leave empty (`[]`) to allow all.
+- **`password`** — Enables HTTP Basic Authentication. Leave empty (`""`) to disable.
 
-*   **`allowed_ips`**: An array of allowed IP addresses. If provided, only clients matching these IPs can access the server. Leave empty `[]` to allow all.
-*   **`password`**: A password for HTTP Basic Authentication. If provided, users will be prompted for this password when accessing the UI. Leave empty `""` to disable authentication.
+### Compatible API Endpoints
 
-### Custom Base URLs
+Set a custom `base_url` under the provider to use alternative backends:
 
-You can use alternative endpoints:
-
-| Use Case | Base URL |
-|----------|----------|
+| Backend | Base URL |
+|---|---|
 | OpenAI | `https://api.openai.com/v1` |
 | Azure OpenAI | `https://YOUR_RESOURCE.openai.azure.com/openai/deployments/YOUR_DEPLOYMENT` |
-| Local (Ollama) | `http://localhost:11434/v1` |
+| Ollama (local) | `http://localhost:11434/v1` |
 | OpenRouter | `https://openrouter.ai/api/v1` |
 | Together AI | `https://api.together.xyz/v1` |
+
+---
+
+## CLI Tools
+
+```bash
+# Export to all formats
+python scripts/exporter.py --format all
+
+# Export to a specific format
+python scripts/exporter.py --format sharegpt
+
+# View dataset statistics
+python scripts/stats.py
+
+# JSON output
+python scripts/stats.py --json
+```
+
+---
 
 ## License
 

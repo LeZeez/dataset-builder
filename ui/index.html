@@ -14,7 +14,7 @@
     <link
         href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700&family=Inter:wght@400;500;600&display=swap"
         rel="stylesheet">
-    <link rel="stylesheet" href="styles.css?v=3.0.0">
+    <link rel="stylesheet" href="styles.css?v=4.0.0">
 </head>
 
 <body>
@@ -29,7 +29,7 @@
                         <line x1="3" y1="18" x2="21" y2="18"></line>
                     </svg>
                 </button>
-                <h1 class="logo">🗂️ <span class="logo-text">Dataset Builder</span></h1>
+                <h1 class="logo"><span class="logo-text">Dataset Builder</span></h1>
             </div>
             <div class="header-center">
                 <!-- Sync Status Indicator -->
@@ -47,7 +47,12 @@
             </div>
             <div class="header-right">
                 <button id="manual-sync-btn" class="btn btn-sm btn-accent" title="Push all local changes to server">
-                    ☁️ Sync
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <polyline points="16 16 12 12 8 16" />
+                        <line x1="12" y1="12" x2="12" y2="21" />
+                        <path d="M20.39 18.39A5 5 0 0 0 18 9h-1.26A8 8 0 1 0 3 16.3" />
+                    </svg>
+                    Sync
                 </button>
                 <div class="header-stats">
                     <span class="stat stat-success"><span id="wanted-count">0</span> saved</span>
@@ -65,7 +70,7 @@
             <aside id="sidebar" class="sidebar">
                 <!-- Settings Section -->
                 <div class="sidebar-section">
-                    <h3 class="sidebar-title">⚙️ Settings</h3>
+                    <h3 class="sidebar-title">Settings</h3>
 
                     <div class="form-group">
                         <label for="provider">Provider</label>
@@ -105,7 +110,7 @@
                 <!-- Custom Parameters Section -->
                 <div class="sidebar-section collapsible collapsed">
                     <button class="sidebar-title collapse-toggle">
-                        ⚙️ Custom Parameters
+                        Custom Parameters
                         <svg class="chevron" width="16" height="16" viewBox="0 0 24 24" fill="none"
                             stroke="currentColor" stroke-width="2">
                             <polyline points="6 9 12 15 18 9"></polyline>
@@ -118,7 +123,13 @@
                                 placeholder="key (e.g. reasoning_effort)">
                             <input type="text" id="new-param-value" class="input input-sm"
                                 placeholder="value (e.g. high)">
-                            <button id="add-param-btn" class="icon-btn" title="Add parameter">➕</button>
+                            <button id="add-param-btn" class="icon-btn" title="Add parameter">
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                    stroke-width="2">
+                                    <line x1="12" y1="5" x2="12" y2="19" />
+                                    <line x1="5" y1="12" x2="19" y2="12" />
+                                </svg>
+                            </button>
                         </div>
                     </div>
                 </div>
@@ -126,7 +137,7 @@
                 <!-- API Keys Section -->
                 <div class="sidebar-section collapsible collapsed">
                     <button class="sidebar-title collapse-toggle">
-                        🔑 API Keys
+                        API Keys
                         <svg class="chevron" width="16" height="16" viewBox="0 0 24 24" fill="none"
                             stroke="currentColor" stroke-width="2">
                             <polyline points="6 9 12 15 18 9"></polyline>
@@ -137,7 +148,13 @@
                             <label for="api-key">API Key</label>
                             <div class="input-row">
                                 <input type="password" id="api-key" class="input" placeholder="sk-...">
-                                <button id="toggle-key" class="icon-btn">👁️</button>
+                                <button id="toggle-key" class="icon-btn">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                        stroke-width="2">
+                                        <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                                        <circle cx="12" cy="12" r="3" />
+                                    </svg>
+                                </button>
                             </div>
                             <button id="save-key" class="btn btn-sm btn-accent">Save Key</button>
                         </div>
@@ -153,7 +170,7 @@
                 <!-- Auto-Sync Settings -->
                 <div class="sidebar-section collapsible collapsed">
                     <button class="sidebar-title collapse-toggle">
-                        🔄 Auto-Sync Settings
+                        Auto-Sync Settings
                         <svg class="chevron" width="16" height="16" viewBox="0 0 24 24" fill="none"
                             stroke="currentColor" stroke-width="2">
                             <polyline points="6 9 12 15 18 9"></polyline>
@@ -181,18 +198,28 @@
                             <input type="number" id="save-interval" class="input" value="2000" min="500" max="10000"
                                 step="500">
                         </div>
+                        <div class="form-group">
+                            <label for="history-max-setting">Prompt history limit</label>
+                            <input type="number" id="history-max-setting" class="input" value="30" min="5" max="500">
+                        </div>
                     </div>
                 </div>
 
                 <!-- Manage Files Section -->
                 <div class="sidebar-section">
-                    <h3 class="sidebar-title">📂 Files</h3>
-                    <button id="open-files-btn" class="btn btn-sm btn-secondary btn-full-width">📂 Manage Files</button>
+                    <h3 class="sidebar-title">Files</h3>
+                    <button id="open-files-btn" class="btn btn-sm btn-secondary btn-full-width">
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="2">
+                            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+                        </svg>
+                        Manage Files
+                    </button>
                 </div>
 
                 <!-- Export Section -->
                 <div class="sidebar-section">
-                    <h3 class="sidebar-title">📤 Export</h3>
+                    <h3 class="sidebar-title">Export</h3>
                     <div class="export-btns">
                         <button class="btn btn-sm" data-format="sharegpt">ShareGPT</button>
                         <button class="btn btn-sm" data-format="openai">OpenAI</button>
@@ -203,7 +230,7 @@
                 <!-- Keyboard Shortcuts -->
                 <div class="sidebar-section collapsible collapsed">
                     <button class="sidebar-title collapse-toggle">
-                        ⌨️ Keyboard Shortcuts
+                        Keyboard Shortcuts
                         <svg class="chevron" width="16" height="16" viewBox="0 0 24 24" fill="none"
                             stroke="currentColor" stroke-width="2">
                             <polyline points="6 9 12 15 18 9"></polyline>
@@ -240,9 +267,9 @@
             <main class="main">
                 <!-- Tab Switcher -->
                 <div class="tabs">
-                    <button class="tab active" data-tab="generate">🎲 Generate</button>
-                    <button class="tab" data-tab="chat">💬 Chat</button>
-                    <button class="tab" data-tab="review">📋 Review <span id="review-badge"
+                    <button class="tab active" data-tab="generate">Generate</button>
+                    <button class="tab" data-tab="chat">Chat</button>
+                    <button class="tab" data-tab="review">Review <span id="review-badge"
                             class="tab-badge hidden">0</span></button>
                 </div>
 
@@ -251,76 +278,112 @@
                     <!-- Prompt Section -->
                     <section class="card prompt-card">
                         <div class="card-header">
-                            <h2>📝 Prompt Template</h2>
+                            <h2>Prompt Template</h2>
                             <div class="prompt-controls">
                                 <select id="prompt-select" class="select select-sm">
                                     <option value="">Select prompt...</option>
                                 </select>
-                                <button id="save-prompt-btn" class="icon-btn" title="Save prompt">💾</button>
-                                <button id="refresh-prompt-btn" class="icon-btn"
-                                    title="Reload prompt from server (if another session changed it)">🔄</button>
-                                <button id="new-prompt-btn" class="icon-btn" title="New prompt">➕</button>
-                                <button id="delete-prompt-btn" class="icon-btn" title="Delete prompt">🗑️</button>
-                            </div>
-                        </div>
-                        <textarea id="system-prompt" class="textarea"
-                            placeholder="Enter your prompt template with {{variables}}..."></textarea>
-
-                        <!-- Dynamic Variables -->
-                        <div id="variables-section" class="variables-section hidden">
-                            <div class="variables-header">
-                                <span>🏷️ Variables</span>
-                                <div class="preset-controls">
-                                    <select id="preset-select" class="select select-sm">
-                                        <option value="">Load preset...</option>
-                                    </select>
-                                    <button id="save-preset" class="icon-btn" title="Save as preset">💾</button>
-                                    <button id="delete-preset" class="icon-btn" title="Delete preset">🗑️</button>
-                                </div>
-                            </div>
-                            <div id="variables-grid" class="variables-grid">
-                                <!-- Variables generated dynamically -->
-                            </div>
-                        </div>
-
-                        <div class="prompt-actions">
-                            <div class="token-info">
-                                <span id="token-count">~0 tokens</span>
-                            </div>
-                            <!-- Bulk Generation Controls -->
-                            <div class="bulk-controls">
-                                <label for="bulk-count" class="bulk-label">Count:</label>
-                                <input type="number" id="bulk-count" class="input input-mini" value="1" min="1"
-                                    max="100">
-                                <button id="generate-btn" class="btn btn-primary btn-lg">
-                                    <span class="btn-text">🎲 Generate</span>
-                                    <span class="btn-loading hidden">
-                                        <svg class="spinner" viewBox="0 0 50 50">
-                                            <circle cx="25" cy="25" r="20" fill="none" stroke-width="5"></circle>
-                                        </svg>
-                                    </span>
+                                <button id="save-prompt-btn" class="icon-btn" title="Save prompt">
+                                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                        stroke-width="2">
+                                        <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
+                                        <polyline points="17 21 17 13 7 13 7 21" />
+                                        <polyline points="7 3 7 8 15 8" />
+                                    </svg>
+                                </button>
+                                <button id="refresh-prompt-btn" class="icon-btn" title="Reload from server">
+                                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                        stroke-width="2">
+                                        <path d="M23 4v6h-6M1 20v-6h6" />
+                                        <path
+                                            d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15" />
+                                    </svg>
+                                </button>
+                                <button id="new-prompt-btn" class="icon-btn" title="New prompt">
+                                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                        stroke-width="2">
+                                        <line x1="12" y1="5" x2="12" y2="19" />
+                                        <line x1="5" y1="12" x2="19" y2="12" />
+                                    </svg>
+                                </button>
+                                <button id="delete-prompt-btn" class="icon-btn" title="Delete prompt">
+                                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                        stroke-width="2">
+                                        <polyline points="3 6 5 6 21 6" />
+                                        <path
+                                            d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                                    </svg>
+                                </button>
+                                <button id="open-macros-btn" class="icon-btn macros-trigger"
+                                    title="Macros &amp; Variables">
+                                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                        stroke-width="2">
+                                        <path d="M12 2L2 7l10 5 10-5-10-5z" />
+                                        <path d="M2 17l10 5 10-5" />
+                                        <path d="M2 12l10 5 10-5" />
+                                    </svg>
+                                    <span id="macros-badge" class="macros-badge hidden">0</span>
+                                </button>
+                                <button id="open-history-btn" class="icon-btn" title="Prompt history">
+                                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                        stroke-width="2">
+                                        <circle cx="12" cy="12" r="10" />
+                                        <polyline points="12 6 12 12 16 14" />
+                                    </svg>
                                 </button>
                             </div>
                         </div>
-                        <!-- Bulk Progress -->
-                        <div id="bulk-progress" class="bulk-progress hidden">
-                            <div class="progress-bar">
-                                <div id="bulk-progress-fill" class="progress-fill"></div>
+
+                        <div class="prompt-card-inner">
+                            <textarea id="system-prompt" class="textarea"
+                                placeholder="Enter your prompt template with {{variables}}..."></textarea>
+
+                            <div class="prompt-actions">
+                                <div class="token-info">
+                                    <span id="token-count">~0 tokens</span>
+                                    <span id="var-count-badge" class="muted" style="margin-left:0.5rem;"></span>
+                                </div>
+                                <div class="bulk-controls">
+                                    <label for="bulk-count" class="bulk-label">Count:</label>
+                                    <input type="number" id="bulk-count" class="input input-mini" value="1" min="1"
+                                        max="100">
+                                    <button id="generate-btn" class="btn btn-primary btn-lg">Generate</button>
+                                </div>
                             </div>
-                            <span id="bulk-progress-text">0/0</span>
-                            <button id="bulk-cancel" class="btn btn-sm btn-danger">Cancel</button>
+
+                            <div id="bulk-progress" class="bulk-progress hidden">
+                                <div class="progress-bar">
+                                    <div id="bulk-progress-fill" class="progress-fill"></div>
+                                </div>
+                                <span id="bulk-progress-text">0/0</span>
+                                <button id="bulk-cancel" class="btn btn-sm btn-danger">Cancel</button>
+                            </div>
                         </div>
                     </section>
 
                     <!-- Conversation Preview -->
                     <section class="card conversation-card">
                         <div class="card-header">
-                            <h2>💬 Conversation</h2>
+                            <h2>Conversation</h2>
                             <div class="conv-stats">
                                 <span id="turn-count">0 turns</span>
-                                <button id="clear-gen-btn" class="btn btn-sm" title="Clear conversation">🗑️
-                                    Clear</button>
-                                <button id="edit-toggle" class="btn btn-sm">✏️ Edit</button>
+                                <button id="clear-gen-btn" class="btn btn-sm" title="Clear conversation">
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                        stroke-width="2">
+                                        <polyline points="3 6 5 6 21 6" />
+                                        <path
+                                            d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                                    </svg>
+                                    Clear
+                                </button>
+                                <button id="edit-toggle" class="btn btn-sm">
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                        stroke-width="2">
+                                        <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+                                        <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+                                    </svg>
+                                    Edit
+                                </button>
                             </div>
                         </div>
 
@@ -348,11 +411,11 @@ gpt: response"></textarea>
                                 <label for="rating">Rating</label>
                                 <select id="rating" class="select">
                                     <option value="">-</option>
-                                    <option value="5">⭐⭐⭐⭐⭐</option>
-                                    <option value="4">⭐⭐⭐⭐</option>
-                                    <option value="3">⭐⭐⭐</option>
-                                    <option value="2">⭐⭐</option>
-                                    <option value="1">⭐</option>
+                                    <option value="5">★★★★★</option>
+                                    <option value="4">★★★★</option>
+                                    <option value="3">★★★</option>
+                                    <option value="2">★★</option>
+                                    <option value="1">★</option>
                                 </select>
                             </div>
                         </div>
@@ -360,13 +423,27 @@ gpt: response"></textarea>
                         <!-- Action Buttons -->
                         <div class="action-bar">
                             <button id="save-btn" class="btn btn-success" disabled>
-                                ✅ Save
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                    stroke-width="2.5">
+                                    <polyline points="20 6 9 17 4 12" />
+                                </svg>
+                                Save
                             </button>
                             <button id="reject-btn" class="btn btn-danger" disabled>
-                                ❌ Reject
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                    stroke-width="2.5">
+                                    <line x1="18" y1="6" x2="6" y2="18" />
+                                    <line x1="6" y1="6" x2="18" y2="18" />
+                                </svg>
+                                Reject
                             </button>
                             <button id="regenerate-btn" class="btn btn-secondary" disabled>
-                                🔄 Redo
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                    stroke-width="2">
+                                    <path d="M2.5 2v6h6M21.5 22v-6h-6" />
+                                    <path d="M22 11.5A10 10 0 0 0 3.2 7.2M2 12.5a10 10 0 0 0 18.8 4.2" />
+                                </svg>
+                                Redo
                             </button>
                         </div>
                     </section>
@@ -376,19 +453,39 @@ gpt: response"></textarea>
                 <div id="chat-tab" class="tab-content">
                     <section class="card chat-card">
                         <div class="card-header">
-                            <h2>💬 Interactive Chat</h2>
+                            <h2>Interactive Chat</h2>
                             <div class="chat-controls">
                                 <button id="chat-zoom-out" class="icon-btn" title="Zoom Out">
-                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                        stroke-width="2">
+                                        <line x1="5" y1="12" x2="19" y2="12"></line>
+                                    </svg>
                                 </button>
+                                <span id="chat-zoom-label" class="zoom-label">100%</span>
                                 <button id="chat-zoom-in" class="icon-btn" title="Zoom In">
-                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                        stroke-width="2">
+                                        <line x1="12" y1="5" x2="12" y2="19"></line>
+                                        <line x1="5" y1="12" x2="19" y2="12"></line>
+                                    </svg>
                                 </button>
-                                <button id="chat-fullscreen" class="icon-btn" title="Fullscreen (Mobile)">
-                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"></path></svg>
+                                <!-- Mobile-only fullscreen button -->
+                                <button id="chat-fullscreen" class="icon-btn" title="Fullscreen">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                        stroke-width="2">
+                                        <path
+                                            d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3">
+                                        </path>
+                                    </svg>
                                 </button>
-                                <button id="chat-toggle-tools" class="icon-btn" title="Toggle Always-Visible Tools">
-                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+                                <button id="chat-toggle-tools" class="icon-btn" title="Toggle always-visible tools">
+                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                        stroke-width="2">
+                                        <circle cx="12" cy="12" r="3"></circle>
+                                        <path
+                                            d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z">
+                                        </path>
+                                    </svg>
                                 </button>
                                 <span id="chat-turns">0 turns</span>
                                 <button id="clear-chat" class="btn btn-sm btn-danger">Clear</button>
@@ -398,7 +495,7 @@ gpt: response"></textarea>
                         <!-- Chat System Prompt with Preset Manager -->
                         <div class="chat-system-prompt collapsible collapsed">
                             <button class="collapse-toggle sidebar-title">
-                                📝 System Prompt
+                                System Prompt
                                 <svg class="chevron" width="16" height="16" viewBox="0 0 24 24" fill="none"
                                     stroke="currentColor" stroke-width="2">
                                     <polyline points="6 9 12 15 18 9"></polyline>
@@ -409,8 +506,22 @@ gpt: response"></textarea>
                                     <select id="chat-preset-select" class="select select-sm">
                                         <option value="">Load preset...</option>
                                     </select>
-                                    <button id="save-chat-preset" class="icon-btn" title="Save as preset">💾</button>
-                                    <button id="delete-chat-preset" class="icon-btn" title="Delete preset">🗑️</button>
+                                    <button id="save-chat-preset" class="icon-btn" title="Save as preset">
+                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+                                            stroke="currentColor" stroke-width="2">
+                                            <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
+                                            <polyline points="17 21 17 13 7 13 7 21" />
+                                            <polyline points="7 3 7 8 15 8" />
+                                        </svg>
+                                    </button>
+                                    <button id="delete-chat-preset" class="icon-btn" title="Delete preset">
+                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+                                            stroke="currentColor" stroke-width="2">
+                                            <polyline points="3 6 5 6 21 6" />
+                                            <path
+                                                d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                                        </svg>
+                                    </button>
                                 </div>
                                 <textarea id="chat-system-prompt" class="textarea" rows="4"
                                     placeholder="System instructions for the chat...">You are a helpful and friendly conversational assistant. Keep responses natural and engaging.</textarea>
@@ -437,9 +548,12 @@ gpt: response"></textarea>
                         <!-- Chat Actions -->
                         <div class="action-bar">
                             <button id="save-chat-btn" class="btn btn-success" disabled>
-                                ✅ Save Chat
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                    stroke-width="2.5">
+                                    <polyline points="20 6 9 17 4 12" />
+                                </svg>
+                                Save Chat
                             </button>
-
                         </div>
                     </section>
                 </div>
@@ -448,7 +562,7 @@ gpt: response"></textarea>
                 <div id="review-tab" class="tab-content">
                     <section class="card review-card">
                         <div class="card-header">
-                            <h2>📋 Review Queue</h2>
+                            <h2>Review Queue</h2>
                             <div class="review-controls">
                                 <span id="review-count">0 items</span>
                                 <button id="keep-all-btn" class="btn btn-sm btn-success">Keep All</button>
@@ -459,7 +573,7 @@ gpt: response"></textarea>
 
                         <!-- Speed Review Shortcuts Info -->
                         <div class="shortcuts-info">
-                            <span>⌨️ Shortcuts:</span>
+                            <span>Shortcuts:</span>
                             <kbd>S</kbd> Keep &nbsp;
                             <kbd>X</kbd> Reject &nbsp;
                             <kbd>J</kbd> Next &nbsp;
@@ -485,13 +599,27 @@ gpt: response"></textarea>
                         <!-- Review Actions -->
                         <div class="action-bar">
                             <button id="review-keep-btn" class="btn btn-success" disabled>
-                                ✅ Keep (S)
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                    stroke-width="2.5">
+                                    <polyline points="20 6 9 17 4 12" />
+                                </svg>
+                                Keep (S)
                             </button>
                             <button id="review-reject-btn" class="btn btn-danger" disabled>
-                                ❌ Reject (X)
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                    stroke-width="2.5">
+                                    <line x1="18" y1="6" x2="6" y2="18" />
+                                    <line x1="6" y1="6" x2="18" y2="18" />
+                                </svg>
+                                Reject (X)
                             </button>
                             <button id="review-edit-btn" class="btn btn-secondary" disabled>
-                                ✏️ Edit
+                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                    stroke-width="2">
+                                    <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7" />
+                                    <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z" />
+                                </svg>
+                                Edit
                             </button>
                         </div>
                     </section>
@@ -518,13 +646,19 @@ gpt: response"></textarea>
             </div>
         </div>
 
-        <!-- Export Modal - Enhanced -->
+        <!-- Export Modal -->
         <div id="export-modal" class="modal hidden">
             <div class="modal-backdrop"></div>
             <div class="modal-content export-modal-content">
                 <div class="export-header">
-                    <h3>📤 Export Dataset</h3>
-                    <button id="close-export" class="icon-btn" title="Close">✕</button>
+                    <h3>Export Dataset</h3>
+                    <button id="close-export" class="icon-btn" title="Close">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="2">
+                            <line x1="18" y1="6" x2="6" y2="18" />
+                            <line x1="6" y1="6" x2="18" y2="18" />
+                        </svg>
+                    </button>
                 </div>
 
                 <div class="export-body">
@@ -553,8 +687,15 @@ gpt: response"></textarea>
                             <label>Custom System Prompt</label>
                             <textarea id="export-system-prompt" class="textarea" rows="4"
                                 placeholder="Enter system prompt to apply to all exports..."></textarea>
-                            <button id="save-export-prompt" class="btn btn-sm btn-accent" style="margin-top: 0.5rem;">💾
-                                Save Prompt</button>
+                            <button id="save-export-prompt" class="btn btn-sm btn-accent" style="margin-top: 0.5rem;">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                    stroke-width="2">
+                                    <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
+                                    <polyline points="17 21 17 13 7 13 7 21" />
+                                    <polyline points="7 3 7 8 15 8" />
+                                </svg>
+                                Save Prompt
+                            </button>
                         </div>
 
                         <div class="export-summary">
@@ -589,8 +730,14 @@ gpt: response"></textarea>
             <div class="modal-backdrop"></div>
             <div class="modal-content files-modal-content">
                 <div class="export-header">
-                    <h3>📂 Manage Files</h3>
-                    <button id="close-files-modal" class="icon-btn" title="Close">✕</button>
+                    <h3>Manage Files</h3>
+                    <button id="close-files-modal" class="icon-btn" title="Close">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="2">
+                            <line x1="18" y1="6" x2="6" y2="18" />
+                            <line x1="6" y1="6" x2="18" y2="18" />
+                        </svg>
+                    </button>
                 </div>
 
                 <div class="export-body flex-col">
@@ -610,11 +757,16 @@ gpt: response"></textarea>
                             <div class="export-selection-actions" id="files-bulk-actions">
                                 <button id="files-select-all" class="btn btn-sm">Select All</button>
                                 <button id="files-select-none" class="btn btn-sm">Select None</button>
-                                <button id="files-bulk-reject" class="btn btn-sm btn-secondary" data-folder="wanted" hidden>Move to Rejected</button>
-                                <button id="files-bulk-restore" class="btn btn-sm btn-secondary" data-folder="rejected" hidden>Move to Wanted</button>
-                                <button id="files-bulk-keep" class="btn btn-sm btn-success" data-folder="review" hidden>Keep Selected</button>
-                                <button id="files-bulk-discard" class="btn btn-sm btn-danger" data-folder="review" hidden>Discard Selected</button>
-                                <button id="files-bulk-delete" class="btn btn-sm btn-danger" data-folder="wanted rejected" hidden>Delete</button>
+                                <button id="files-bulk-reject" class="btn btn-sm btn-secondary" data-folder="wanted"
+                                    hidden>Move to Rejected</button>
+                                <button id="files-bulk-restore" class="btn btn-sm btn-secondary" data-folder="rejected"
+                                    hidden>Move to Wanted</button>
+                                <button id="files-bulk-keep" class="btn btn-sm btn-success" data-folder="review"
+                                    hidden>Keep Selected</button>
+                                <button id="files-bulk-discard" class="btn btn-sm btn-danger" data-folder="review"
+                                    hidden>Discard Selected</button>
+                                <button id="files-bulk-delete" class="btn btn-sm btn-danger"
+                                    data-folder="wanted rejected" hidden>Delete</button>
                             </div>
                         </div>
                         <div id="files-modal-list" class="export-file-list max-h-50vh">
@@ -625,11 +777,151 @@ gpt: response"></textarea>
             </div>
         </div>
 
+        <!-- Macros Modal -->
+        <div id="macros-modal" class="modal hidden">
+            <div class="modal-backdrop"></div>
+            <div class="modal-content macros-modal-content">
+                <div class="export-header">
+                    <h3>Macros</h3>
+                    <button id="close-macros-modal" class="icon-btn" title="Close">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="2">
+                            <line x1="18" y1="6" x2="6" y2="18" />
+                            <line x1="6" y1="6" x2="18" y2="18" />
+                        </svg>
+                    </button>
+                </div>
+
+                <div class="macros-tabs">
+                    <button class="macros-tab active" data-macros-tab="variables">Variables</button>
+                    <button class="macros-tab" data-macros-tab="reference">Reference</button>
+                    <button class="macros-tab" data-macros-tab="builder">Builder</button>
+                    <button class="macros-tab" data-macros-tab="history">History</button>
+                </div>
+
+                <!-- Variables Tab -->
+                <div id="macros-variables" class="macros-tab-content active">
+                    <div class="preset-controls" style="margin-bottom:0.25rem;">
+                        <select id="preset-select" class="select select-sm">
+                            <option value="">Load preset...</option>
+                        </select>
+                        <button id="save-preset" class="icon-btn" title="Save as preset">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                stroke-width="2">
+                                <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
+                                <polyline points="17 21 17 13 7 13 7 21" />
+                                <polyline points="7 3 7 8 15 8" />
+                            </svg>
+                        </button>
+                        <button id="delete-preset" class="icon-btn" title="Delete preset">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                stroke-width="2">
+                                <polyline points="3 6 5 6 21 6" />
+                                <path
+                                    d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                            </svg>
+                        </button>
+                    </div>
+                    <div id="variables-grid" class="macro-ref-list">
+                        <p class="muted small">No variables detected. Type <code>{{name}}</code> in your prompt to add
+                            one.</p>
+                    </div>
+                </div>
+
+                <!-- Reference Tab -->
+                <div id="macros-reference" class="macros-tab-content">
+                    <div class="macro-ref-list">
+                        <div class="macro-ref-item">
+                            <code class="macro-code">{{variable}}</code>
+                            <p>Named variable — replaced with the value set in the Variables panel.</p>
+                            <p class="macro-example">Example: <code>{{topic}}</code> → the value of the "topic" variable
+                            </p>
+                        </div>
+                        <div class="macro-ref-item">
+                            <code class="macro-code">{{random::a::b::c}}</code>
+                            <p>Picks one item at random each time the prompt is sent. No item limit.</p>
+                            <p class="macro-example">Example: <code>{{random::history::science::math}}</code></p>
+                        </div>
+                        <div class="macro-ref-item">
+                            <code class="macro-code">{{list::a::b::c}}</code>
+                            <p>Iterates through items in order, cycling back to the start. Useful for bulk generation.
+                            </p>
+                            <p class="macro-example">Example: <code>{{list::beginner::intermediate::advanced}}</code>
+                            </p>
+                        </div>
+                        <div class="macro-ref-item">
+                            <code class="macro-code">{{roll:NdN+M}}</code>
+                            <p>Rolls dice. Supports standard dice notation. The modifier (+M or -M) is optional.</p>
+                            <p class="macro-example">Examples: <code>{{roll:1d20}}</code>, <code>{{roll:2d6+3}}</code>,
+                                <code>{{roll:1d100-5}}</code>
+                            </p>
+                        </div>
+                        <div class="macro-ref-item">
+                            <code class="macro-code">{{// comment}}</code>
+                            <p>Comment macro — stripped from the prompt before it is sent to the API. Useful for notes.
+                            </p>
+                            <p class="macro-example">Example: <code>{{// This is a note, not sent}}</code></p>
+                        </div>
+                        <div class="macro-ref-item macro-ref-tip">
+                            <strong>Nesting:</strong> Macros inside variable values also resolve. For example, if
+                            variable <code>topic</code> is set to <code>random::history::science</code>, then
+                            <code>{{topic}}</code> will pick one randomly.
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Builder Tab -->
+                <div id="macros-builder" class="macros-tab-content">
+                    <div class="form-group">
+                        <label for="builder-type">Macro Type</label>
+                        <select id="builder-type" class="select">
+                            <option value="random">{{random}} — pick one randomly</option>
+                            <option value="list">{{list}} — iterate in order</option>
+                            <option value="roll">{{roll}} — dice roll</option>
+                        </select>
+                    </div>
+
+                    <div id="builder-items-section" class="form-group">
+                        <label for="builder-items">Items (one per line)</label>
+                        <textarea id="builder-items" class="textarea builder-textarea"
+                            placeholder="item one&#10;item two&#10;item three" rows="6"></textarea>
+                    </div>
+
+                    <div id="builder-roll-section" class="form-group hidden">
+                        <label for="builder-roll-input">Dice notation</label>
+                        <input type="text" id="builder-roll-input" class="input" placeholder="e.g. 2d6+3">
+                        <p class="small muted">Format: <code>NdN</code> or <code>NdN+M</code> or <code>NdN-M</code></p>
+                    </div>
+
+                    <div class="builder-preview">
+                        <label>Generated macro</label>
+                        <div class="builder-output-row">
+                            <code id="builder-preview-text" class="builder-preview-code">—</code>
+                            <button id="builder-copy" class="btn btn-sm btn-accent">Copy</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- History Tab -->
+                <div id="macros-history" class="macros-tab-content">
+                    <div class="history-header">
+                        <span class="muted small">Last sent prompts with macros resolved</span>
+                        <button id="clear-history-btn" class="btn btn-sm">Clear</button>
+                    </div>
+                    <div id="prompt-history-list" class="prompt-history-list">
+                        <div class="empty-state" style="padding: 2rem 1rem;">
+                            <p>No history yet. Send a prompt to record it here.</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <!-- Toast Container -->
         <div id="toast-container" class="toast-container"></div>
     </div>
 
-    <script src="app.js?v=3.0.0"></script>
+    <script src="app.js?v=4.0.0"></script>
 </body>
 
 </html>

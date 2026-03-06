@@ -19,7 +19,7 @@ import threading
 import argparse
 import shutil
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, Generator
 
 from flask import Flask, request, jsonify, send_from_directory, Response
@@ -145,7 +145,7 @@ def serve_static(path):
 @app.route('/api/health', methods=['GET'])
 def health_check():
     """Health check endpoint for sync engine connectivity detection."""
-    return jsonify({'status': 'ok', 'timestamp': datetime.utcnow().isoformat() + 'Z'})
+    return jsonify({'status': 'ok', 'timestamp': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')})
 
 
 # ============ CONFIG ============
@@ -514,7 +514,7 @@ def save_conversation_endpoint():
         'id': conv_id,
         'conversations': conversation.get('conversations', []),
         'metadata': {
-            'created_at': datetime.utcnow().isoformat() + 'Z',
+            'created_at': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
             'source': 'synthetic',
             **metadata
         }
@@ -567,7 +567,7 @@ def save_bulk_conversations():
                 'id': conv_id,
                 'conversations': conversation.get('conversations', []),
                 'metadata': {
-                    'created_at': datetime.utcnow().isoformat() + 'Z',
+                    'created_at': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
                     'source': 'synthetic',
                     **metadata
                 }
@@ -1121,7 +1121,7 @@ def save_draft_endpoint():
         drafts[key] = value
     
     # Add timestamp
-    drafts['_updated'] = datetime.utcnow().isoformat() + 'Z'
+    drafts['_updated'] = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
     
     save_drafts(drafts)
     return jsonify({'success': True, 'updated': drafts['_updated']})
@@ -1133,7 +1133,7 @@ def save_draft_key(key: str):
     data = request.get_json() or {}
     drafts = load_drafts()
     drafts[key] = data.get('value')
-    drafts['_updated'] = datetime.utcnow().isoformat() + 'Z'
+    drafts['_updated'] = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
     save_drafts(drafts)
     return jsonify({'success': True})
 
@@ -1258,7 +1258,7 @@ def add_to_review_queue():
                 'conversations': item.get('conversations', []),
                 'rawText': item.get('rawText', ''),
                 'metadata': item.get('metadata', {}),
-                'createdAt': datetime.utcnow().isoformat() + 'Z'
+                'createdAt': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
             }
             queue.append(entry)
             added.append(entry)
@@ -1331,7 +1331,7 @@ def bulk_keep_from_review_queue():
                     'id': conv_id,
                     'conversations': item.get('conversations', []),
                     'metadata': {
-                        'created_at': datetime.utcnow().isoformat() + 'Z',
+                        'created_at': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
                         'source': 'synthetic',
                         **item.get('metadata', {})
                     }
