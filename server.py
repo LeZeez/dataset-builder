@@ -36,18 +36,18 @@ CONFIG_PATH = Path('config.json')
 DATA_DIR = Path('data')
 
 def setup_defaults():
-    # Copy Default.txt
-    defaults_prompt = os.path.join(os.path.dirname(__file__), "defaults", "Default.txt")
+    # Setup prompt directories
+    prompts_dir = DATA_DIR / 'prompts'
+    prompts_dir.mkdir(parents=True, exist_ok=True)
+
+    # Copy Generate.txt to Default.txt
+    defaults_prompt = os.path.join(os.path.dirname(__file__), "defaults", "Generate.txt")
     default_destination = os.path.join(os.path.dirname(__file__), "data", "prompts", "Default.txt")
-    if not os.path.exists(default_destination):
+    if not os.path.exists(default_destination) and os.path.exists(defaults_prompt):
         try:
-            os.makedirs(os.path.dirname(default_destination), exist_ok=True)
             shutil.copy2(defaults_prompt, default_destination)
-        except FileNotFoundError:
-            print(f"[Warning] Source file not found: {defaults_prompt}\n",
-                   "Either the repository wasn't fully cloned, or the file was moved/deleted. Proceeding anyway...")
         except PermissionError:
-            print(f"[Warning] Permission denied when copying Default.txt")
+            print(f"[Warning] Permission denied when copying Generate.txt")
 
     # Copy config.example.json to config.json
     config_example = os.path.join(os.path.dirname(__file__), "config.example.json")
@@ -55,10 +55,42 @@ def setup_defaults():
         try:
             shutil.copy2(config_example, CONFIG_PATH)
         except FileNotFoundError:
-            print(f"[Warning] Source file not found: {config_example}\n",
-                   "Proceeding with an empty configuration.")
+            pass
         except PermissionError:
             print(f"[Warning] Permission denied when copying config.example.json")
+
+    # Load config to setup default presets if empty
+    if CONFIG_PATH.exists():
+        try:
+            with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
+                config = json.load(f)
+
+            changed = False
+
+            # Setup Chat default preset
+            if 'chat_presets' not in config or not config['chat_presets']:
+                chat_prompt_path = os.path.join(os.path.dirname(__file__), "defaults", "Chat.txt")
+                if os.path.exists(chat_prompt_path):
+                    with open(chat_prompt_path, 'r', encoding='utf-8') as cf:
+                        chat_content = cf.read()
+                    config['chat_presets'] = [{'name': 'Default', 'prompt': chat_content}]
+                    changed = True
+
+            # Setup Export default preset
+            if 'export_presets' not in config or not config['export_presets']:
+                export_prompt_path = os.path.join(os.path.dirname(__file__), "defaults", "Export.txt")
+                if os.path.exists(export_prompt_path):
+                    with open(export_prompt_path, 'r', encoding='utf-8') as ef:
+                        export_content = ef.read()
+                    config['export_presets'] = [{'name': 'Default', 'prompt': export_content}]
+                    changed = True
+
+            if changed:
+                with open(CONFIG_PATH, 'w', encoding='utf-8') as f:
+                    json.dump(config, f, indent=2, ensure_ascii=False)
+
+        except Exception as e:
+            print(f"[Warning] Failed to setup default presets: {e}")
 
 setup_defaults()
 
@@ -1135,6 +1167,47 @@ def save_draft_key(key: str):
     drafts[key] = data.get('value')
     drafts['_updated'] = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
     save_drafts(drafts)
+    return jsonify({'success': True})
+
+
+# ============ EXPORT PRESETS ============
+
+@app.route('/api/export-presets', methods=['GET'])
+def get_export_presets():
+    """Get export system prompt presets."""
+    config = load_config()
+    return jsonify({'presets': config.get('export_presets', [])})
+
+@app.route('/api/export-presets', methods=['POST'])
+def save_export_preset():
+    """Save an export system prompt preset."""
+    data = request.get_json() or {}
+    name = data.get('name', '').strip()
+    prompt = data.get('prompt', '')
+
+    if not name:
+        return jsonify({'error': 'Name required'}), 400
+
+    config = load_config()
+    if 'export_presets' not in config:
+        config['export_presets'] = []
+
+    # Update existing or add new
+    existing = next((p for p in config['export_presets'] if p['name'] == name), None)
+    if existing:
+        existing['prompt'] = prompt
+    else:
+        config['export_presets'].append({'name': name, 'prompt': prompt})
+
+    save_config(config)
+    return jsonify({'success': True, 'presets': config['export_presets']})
+
+@app.route('/api/export-presets/<name>', methods=['DELETE'])
+def delete_export_preset(name: str):
+    """Delete an export preset."""
+    config = load_config()
+    config['export_presets'] = [p for p in config.get('export_presets', []) if p['name'] != name]
+    save_config(config)
     return jsonify({'success': True})
 
 

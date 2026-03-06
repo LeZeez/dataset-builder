@@ -510,6 +510,12 @@ gpt: response"></textarea>
                                             <polyline points="7 3 7 8 15 8" />
                                         </svg>
                                     </button>
+                                    <button id="new-chat-preset" class="icon-btn" title="New preset">
+                                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                            <line x1="12" y1="5" x2="12" y2="19" />
+                                            <line x1="5" y1="12" x2="19" y2="12" />
+                                        </svg>
+                                    </button>
                                     <button id="delete-chat-preset" class="icon-btn" title="Delete preset">
                                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
                                             stroke="currentColor" stroke-width="2">
@@ -662,27 +668,45 @@ gpt: response"></textarea>
 
                         <div class="form-group">
                             <label>System Prompt Source</label>
-                            <select id="export-prompt-source" class="select">
-                                <option value="none">None (use original)</option>
-                                <option value="generate">From Generate Tab</option>
-                                <option value="chat">From Chat Tab</option>
-                                <option value="custom">Custom</option>
-                            </select>
+                            <div class="checkbox-group" style="display: flex; gap: 1rem; margin-top: 0.5rem;">
+                                <label class="toggle-label">
+                                    <input type="checkbox" id="export-prompt-source-chat">
+                                    <span>Chat Tab</span>
+                                </label>
+                                <label class="toggle-label">
+                                    <input type="checkbox" id="export-prompt-source-generate">
+                                    <span>Generate Tab</span>
+                                </label>
+                            </div>
                         </div>
 
-                        <div class="form-group" id="export-custom-prompt-group" style="display: none;">
-                            <label>Custom System Prompt</label>
+                        <div class="form-group" id="export-custom-prompt-group">
+                            <div class="preset-controls" style="margin-bottom: 0.5rem;">
+                                <select id="export-preset-select" class="select select-sm">
+                                    <option value="">Load preset...</option>
+                                </select>
+                                <button id="save-export-preset" class="icon-btn" title="Save as preset">
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
+                                        <polyline points="17 21 17 13 7 13 7 21"/>
+                                        <polyline points="7 3 7 8 15 8"/>
+                                    </svg>
+                                </button>
+                                <button id="new-export-preset" class="icon-btn" title="New preset">
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <line x1="12" y1="5" x2="12" y2="19" />
+                                        <line x1="5" y1="12" x2="19" y2="12" />
+                                    </svg>
+                                </button>
+                                <button id="delete-export-preset" class="icon-btn" title="Delete preset">
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <polyline points="3 6 5 6 21 6"/>
+                                        <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                                    </svg>
+                                </button>
+                            </div>
                             <textarea id="export-system-prompt" class="textarea" rows="4"
                                 placeholder="Enter system prompt to apply to all exports..."></textarea>
-                            <button id="save-export-prompt" class="btn btn-sm btn-accent" style="margin-top: 0.5rem;">
-                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                                    stroke-width="2">
-                                    <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
-                                    <polyline points="17 21 17 13 7 13 7 21" />
-                                    <polyline points="7 3 7 8 15 8" />
-                                </svg>
-                                Save Prompt
-                            </button>
                         </div>
 
                         <div class="export-summary">

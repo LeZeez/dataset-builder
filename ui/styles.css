@@ -1205,6 +1205,11 @@ kbd {
     color: var(--danger);
 }
 
+.disabled-group {
+    opacity: 0.5;
+    pointer-events: none;
+}
+
 /* Export / Files / Macros modals */
 .export-modal-content,
 .files-modal-content,
