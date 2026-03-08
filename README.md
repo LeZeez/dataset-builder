@@ -1,254 +1,134 @@
-# 🗂️ Synthetic Dataset Builder
+# Synthetic Dataset Builder
 
-A tool for creating, curating, and exporting synthetic conversation datasets using frontier LLMs.
+Synthetic Dataset Builder is a local web app for generating, reviewing, curating, and exporting conversational datasets.
+
+It is built around a simple model:
+
+- the browser UI is the primary workspace
+- SQLite is the single source of truth for dataset state
+- prompt templates stay as plain text files in `data/prompts/`
+- exports are written as JSONL files in `exports/`
 
 ## Features
 
-- **Web UI** — Generate, review, and curate conversations from a browser
-- **Multi-provider support** — OpenAI, Anthropic, Google Gemini (and any OpenAI-compatible API)
-- **Macros engine** — Dynamic prompt templating with `{{variables}}`, `{{random}}`, `{{list}}`, `{{roll}}`, and comment macros
-- **Prompt History** — Review and restore previously sent (resolved) prompts
-- **Bulk generation** — Generate multiple conversations in one shot with a review queue
-- **Export formats** — ShareGPT, OpenAI, Alpaca with an export management modal (rename, download, delete)
-- **Chat tab** — Interactive multi-turn chat with fork, regenerate, and continue controls
-- **Manage Files modal** — Browse, move, and delete saved conversations
-- **Keyboard shortcuts** — Fully configurable for fast workflows
-- **Security** — Optional IP whitelisting, HTTP Basic Auth, and SSRF-safe base URL validation
-
----
+- Generate conversations with OpenAI, Anthropic, Google, and OpenAI-compatible APIs
+- Review generated items in a queue before keeping or rejecting them
+- Edit review items inline before saving them
+- Manage saved conversations with search, tags, preview, move, and delete flows
+- Export selected conversations as ShareGPT, OpenAI, or Alpaca
+- Save chat and export presets in SQLite
+- Use prompt macros such as `{{variable}}`, `{{random}}`, `{{list}}`, `{{roll}}`, and comments
+- Work with local-first drafts and offline-safe review queue syncing
+- Configure hotkeys, sync behavior, and provider defaults from the UI
 
 ## Quick Start
 
-### 1. Install dependencies
+### 1. Install
 
 ```bash
-pip install -r requirements.txt
+python3 -m pip install -r requirements.txt
 ```
 
 ### 2. Configure
 
-On first run, `config.json` is created automatically from `config.example.json`. You can set your API key either via the UI or directly in `config.json`.
+Create `config.yaml` from `config.example.yaml` if you want to customize host, auth, or trusted domains before first run.
+
+Default server config:
+
+```yaml
+server:
+  host: "127.0.0.1"
+  port: 5000
+  allowed_ips: []
+  password: ""
+  allow_local_network: true
+  trusted_domains: []
+```
+
+API keys and model/base URL settings are managed from the app UI and stored in SQLite.
 
 ### 3. Run
 
 ```bash
-python server.py
+python3 server.py
 ```
 
-Then open [http://localhost:5000](http://localhost:5000).
+Then open `http://127.0.0.1:5000`.
 
----
+## Storage
 
-## Macros
+```text
+data/
+├── dataset.db          # conversations, review queue, drafts, presets, provider settings
+└── prompts/            # prompt template .txt files
 
-Macros let you create dynamic, reusable prompt templates. They are resolved **before** the prompt is sent to the API.
-
-### Variable `{{name}}`
-
-Named variables are filled in from the **Variables panel** that appears when you type `{{name}}` in your prompt.
-
+defaults/               # built-in prompt and preset seed files
+exports/                # generated dataset files
+ui/                     # frontend
+scripts/                # storage, export, parser, stats helpers
 ```
-Write a short story about {{topic}} for a {{age}} year old.
-```
-
-### Random `{{random::a::b::c}}`
-
-Picks one item at random each time the prompt is sent. No item limit.
-
-```
-The user's mood is {{random::happy::sad::curious::angry}}.
-```
-
-### List `{{list::a::b::c}}`
-
-Iterates through items in order (cycling back to the start). Useful with bulk generation.
-
-```
-Write a {{list::beginner::intermediate::advanced}} guide.
-```
-
-### Dice Roll `{{roll:NdN+M}}`
-
-Rolls standard tabletop dice. The modifier (`+M` or `-M`) is optional.
-
-| Macro | Result |
-|---|---|
-| `{{roll:1d20}}` | 1–20 |
-| `{{roll:2d6+3}}` | 5–15 |
-| `{{roll:1d100-5}}` | -4–95 |
-
-### Comment `{{// your note}}`
-
-Stripped from the prompt before it is sent. Useful for inline notes or disabled sections.
-
-```
-{{// TODO: make this more formal}}
-Explain {{topic}} simply.
-```
-
-### Nesting
-
-Macros resolve recursively (up to 3 levels). If a variable's value contains a macro syntax, it will also be resolved:
-
-- Variable `topic` = `random::history::science::math`
-- `{{topic}}` in the prompt → picks one of the three at random
-
-### Macros Panel
-
-Click the **Macros button** (layers icon) in the prompt toolbar to open the Macros panel, which includes:
-
-- **Reference tab** — Syntax guide for all macro types
-- **Builder tab** — Enter items one per line to auto-generate `{{random::...}}` or `{{list::...}}` macros (or build a `{{roll}}` with a notation input)
-- **History tab** — View the last N sent prompts with macros already resolved; click one to restore it to the prompt editor
-
-The history limit (default: 30) is configurable under **Auto-Sync Settings** in the sidebar.
-
----
-
-## Keyboard Shortcuts
-
-Shortcuts are configurable in the sidebar.
-
-| Shortcut | Action |
-|---|---|
-| `Ctrl+G` | Generate conversation |
-| `Ctrl+Enter` | Save to wanted |
-| `Ctrl+Backspace` | Reject |
-| `S` | Keep (Review tab) |
-| `X` | Reject (Review tab) |
-| `J` / `K` | Next / Previous (Review tab) |
-
----
-
-## Input Format
-
-Conversations in the **Edit** view use `---` as turn delimiters:
-
-```
-user: Hello, how are you?
-What have you been up to lately?
----
-gpt: I'm doing great, thanks!
-How about yourself?
-```
-
----
-
-## Project Structure
-
-```
-dataset-builder/
-├── ui/                     # Web interface
-│   ├── index.html
-│   ├── app.js
-│   └── styles.css
-├── data/
-│   ├── wanted/             # Approved conversations
-│   ├── rejected/           # Discarded conversations
-│   └── prompts/            # Saved prompt templates
-├── defaults/               # Default prompt & config templates
-├── scripts/
-│   ├── parser.py           # Minimal → Base format converter
-│   ├── exporter.py         # Base → ShareGPT / Alpaca / OpenAI
-│   └── stats.py            # Dataset statistics
-├── exports/                # Exported datasets
-├── server.py               # Flask backend
-├── config.json             # Configuration (auto-created on first run)
-├── config.example.json     # Configuration template
-└── requirements.txt
-```
-
----
 
 ## Export Formats
 
-### ShareGPT (LLaMA-Factory)
+### ShareGPT
+
 ```json
-{"conversations": [{"role": "human", "content": "..."}, {"role": "gpt", "content": "..."}]}
+{"conversations":[{"role":"human","content":"..."},{"role":"gpt","content":"..."}]}
 ```
 
 ### OpenAI
+
 ```json
-{"messages": [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}]}
+{"messages":[{"role":"user","content":"..."},{"role":"assistant","content":"..."}]}
 ```
 
 ### Alpaca
-```json
-{"instruction": "...", "input": "", "output": "..."}
-```
-
----
-
-## Configuration
-
-### `config.json`
-
-`config.json` is auto-created from `config.example.json` on first run. Edit it to set defaults:
 
 ```json
-{
-  "api": {
-    "provider": "openai",
-    "model": "gpt-4o",
-    "temperature": 0.9
-  },
-  "providers": {
-    "openai": {
-      "base_url": "https://api.openai.com/v1",
-      "api_key": "sk-..."
-    },
-    "anthropic": { "api_key": "" },
-    "google":    { "api_key": "" }
-  },
-  "server": {
-    "host": "127.0.0.1",
-    "port": 5000,
-    "allowed_ips": [],
-    "password": ""
-  }
-}
+{"instruction":"...","input":"","output":"..."}
 ```
 
-### Security
+## Macros
 
-- **`allowed_ips`** — Array of allowed client IPs. Leave empty (`[]`) to allow all.
-- **`password`** — Enables HTTP Basic Authentication. Leave empty (`""`) to disable.
-- **`allow_local_network`** — When `true` (default), allows `localhost`, LAN IPs, and any custom base URL. Set to `false` if you expose the server publicly to enable SSRF protection.
-- **`trusted_domains`** — Array of additional trusted API domains (e.g. `["my-proxy.example.com"]`). Built-in trusted domains: OpenAI, Anthropic, Google, OpenRouter, Together AI.
+Macros are resolved before prompt submission.
 
-### Compatible API Endpoints
+- `{{name}}` inserts a named variable
+- `{{random::a::b::c}}` picks one option randomly
+- `{{list::a::b::c}}` iterates options across generations
+- `{{roll:2d6+3}}` rolls dice notation
+- `{{// note}}` is removed before sending
 
-Set a custom `base_url` under the provider to use alternative backends:
+## CLI
 
-| Backend | Base URL |
-|---|---|
-| OpenAI | `https://api.openai.com/v1` |
-| Azure OpenAI | `https://YOUR_RESOURCE.openai.azure.com/openai/deployments/YOUR_DEPLOYMENT` |
-| Ollama (local) | `http://localhost:11434/v1` |
-| OpenRouter | `https://openrouter.ai/api/v1` |
-| Together AI | `https://api.together.xyz/v1` |
-
-> **Note:** Local endpoints (Ollama, LM Studio, etc.) work by default since `allow_local_network` is `true`. If you set it to `false`, add their domains to `trusted_domains` in your config.
-
----
-
-## CLI Tools
+Export all wanted conversations:
 
 ```bash
-# Export to all formats
-python scripts/exporter.py --format all
-
-# Export to a specific format
-python scripts/exporter.py --format sharegpt
-
-# View dataset statistics
-python scripts/stats.py
-
-# JSON output
-python scripts/stats.py --json
+python3 scripts/exporter.py --format all
 ```
 
----
+Export rejected conversations as OpenAI JSONL:
+
+```bash
+python3 scripts/exporter.py --format openai --folder rejected
+```
+
+Print dataset stats:
+
+```bash
+python3 scripts/stats.py
+```
+
+Print dataset stats as JSON:
+
+```bash
+python3 scripts/stats.py --json
+```
+
+## Notes
+
+- `exports/` is created automatically if missing.
+- `data/prompts/Default.txt` is created automatically from `defaults/Generate.txt` on first run.
+- The app does not depend on JSON conversation folders or alternate config formats.
 
 ## License
 

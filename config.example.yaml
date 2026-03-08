@@ -1,0 +1,10 @@
+# Synthetic Dataset Builder server configuration.
+# Provider credentials and model defaults are stored in SQLite by the app.
+
+server:
+  host: "127.0.0.1"
+  port: 5000
+  allowed_ips: []
+  password: ""
+  allow_local_network: true
+  trusted_domains: []

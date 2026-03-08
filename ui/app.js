@@ -14,6 +14,9 @@ const ICON_EMPTY_QUEUE = '<svg width="32" height="32" viewBox="0 0 24 24" fill="
 const CHAT_ZOOM_MIN = 0.5;
 const CHAT_ZOOM_MAX = 2;
 const CHAT_ZOOM_STEP = 0.1;
+const MODAL_PAGE_SIZE = 100;
+const UI_PREFS_KEY = 'uiPrefs';
+const hydratedFields = { model: false, temperature: false };
 
 function applyChatZoom() {
     if (els.chatMessages) els.chatMessages.style.setProperty('--chat-zoom', state.chat.zoomLevel);
@@ -34,7 +37,7 @@ function toggleChatTools() {
     state.chat.showAllTools = !state.chat.showAllTools;
     if (els.chatMessages) els.chatMessages.classList.toggle('show-all-tools', state.chat.showAllTools);
     if (els.chatToggleTools) els.chatToggleTools.style.color = state.chat.showAllTools ? 'var(--accent)' : '';
-    debouncedSaveDraft();
+    saveUiPrefs();
 }
 
 
@@ -154,11 +157,12 @@ const syncEngine = {
         document.addEventListener('visibilitychange', () => {
             if (!document.hidden && this.pendingChanges) this.push();
         });
-        window.addEventListener('beforeunload', () => {
+        window.addEventListener('beforeunload', async () => {
             if (this.pendingChanges) {
                 try {
-                    const draft = JSON.stringify({ _sessionId: SESSION_ID, _localTime: new Date().toISOString() });
-                    navigator.sendBeacon('/api/drafts', new Blob([draft], { type: 'application/json' }));
+                    // Send actual draft content, not just session metadata
+                    const draft = await buildDraftObject();
+                    navigator.sendBeacon('/api/drafts', new Blob([JSON.stringify(draft)], { type: 'application/json' }));
                 } catch (e) { }
             }
         });
@@ -264,7 +268,7 @@ const syncEngine = {
 
     async pull() {
         try {
-            const res = await fetch('/api/drafts');
+            const res = await fetch(`/api/drafts?session_id=${encodeURIComponent(SESSION_ID)}`);
             if (res.ok) {
                 const data = await res.json();
                 this.lastSync = data._updated;
@@ -352,6 +356,36 @@ function applyHotkeysToUI() {
     });
 }
 
+async function loadUiPrefs() {
+    try {
+        const saved = await dbGet('settings', UI_PREFS_KEY);
+        if (!saved) return;
+        state.uiPrefs = { ...state.uiPrefs, ...saved };
+        state.currentTab = state.uiPrefs.currentTab || 'generate';
+        state.chat.zoomLevel = state.uiPrefs.chatZoom ?? 1;
+        state.chat.showAllTools = !!state.uiPrefs.showAllTools;
+        applyChatZoom();
+        if (els.chatMessages) els.chatMessages.classList.toggle('show-all-tools', state.chat.showAllTools);
+        if (els.chatToggleTools) els.chatToggleTools.style.color = state.chat.showAllTools ? 'var(--accent)' : '';
+        const chatPrompt = document.querySelector('.chat-system-prompt');
+        if (chatPrompt) chatPrompt.classList.toggle('collapsed', state.uiPrefs.chatPromptCollapsed !== false);
+        if (els.settingsSearchInput && state.uiPrefs.settingsSearch) {
+            els.settingsSearchInput.value = state.uiPrefs.settingsSearch;
+        }
+        updateSidebarExportButton();
+    } catch (e) { }
+}
+
+function saveUiPrefs() {
+    state.uiPrefs.currentTab = state.currentTab;
+    state.uiPrefs.chatZoom = Number(state.chat.zoomLevel) || 1;
+    state.uiPrefs.showAllTools = !!state.chat.showAllTools;
+    state.uiPrefs.chatPromptCollapsed = document.querySelector('.chat-system-prompt')?.classList.contains('collapsed') ?? true;
+    state.uiPrefs.settingsSearch = els.settingsSearchInput?.value || '';
+    state.uiPrefs.lastExportFormat = normalizeExportFormat(state.uiPrefs.lastExportFormat);
+    dbSet('settings', UI_PREFS_KEY, state.uiPrefs).catch(() => { });
+}
+
 function matchesHotkey(e, hotkeyStr) {
     const parts = hotkeyStr.toLowerCase().split('+');
     const key = parts.pop();
@@ -398,17 +432,43 @@ const state = {
     filesModal: {
         currentFolder: 'wanted',
         files: [],
-        selectedIds: new Set()
+        selectedIds: new Set(),
+        anchorId: null,
+        previewId: null,
+        previewConversation: null,
+        offset: 0,
+        total: 0,
+        hasMore: false,
+        isLoading: false
     },
     export: {
-        selectedConversations: new Set(),
         selectedIds: new Set(),
+        anchorId: null,
+        previewId: null,
+        previewConversation: null,
         files: [],
-        systemPrompt: ''
+        systemPrompt: '',
+        offset: 0,
+        total: 0,
+        hasMore: false,
+        isLoading: false
     },
+    exportedDatasets: [],
     review: {
         queue: [],
-        currentIndex: 0
+        currentIndex: 0,
+        isEditing: false
+    },
+    reviewBrowser: {
+        items: [],
+        selectedIds: new Set(),
+        anchorId: null,
+        previewId: null,
+        previewConversation: null,
+        offset: 0,
+        total: 0,
+        hasMore: false,
+        isLoading: false
     },
     bulk: {
         isRunning: false,
@@ -418,7 +478,15 @@ const state = {
     },
     tags: [],
     customParams: {},
-    promptHistory: [] // array of {text, timestamp}
+    promptHistory: [], // array of {text, timestamp}
+    uiPrefs: {
+        currentTab: 'generate',
+        chatZoom: 1,
+        showAllTools: false,
+        chatPromptCollapsed: true,
+        settingsSearch: '',
+        lastExportFormat: 'sharegpt'
+    }
 };
 
 // Throttle utility for streaming updates
@@ -454,6 +522,9 @@ async function init() {
         // Sidebar
         sidebar: $('#sidebar'),
         sidebarOverlay: $('#sidebar-overlay'),
+        openSettingsBtn: $('#open-settings-btn'),
+        openExportBtn: $('#open-export-btn'),
+        sidebarExportFormat: $('#sidebar-export-format'),
         provider: $('#provider'),
         model: $('#model'),
         modelInput: $('#model-input'),
@@ -461,6 +532,7 @@ async function init() {
         refreshModels: $('#refresh-models'),
         temperature: $('#temperature'),
         tempValue: $('#temp-value'),
+        maxOutputTokens: $('#max-output-tokens'),
         apiKey: $('#api-key'),
         toggleKey: $('#toggle-key'),
         saveKey: $('#save-key'),
@@ -474,8 +546,11 @@ async function init() {
         filesSearchInput: $('#files-search-input'),
         filesModalList: $('#files-modal-list'),
         filesModalCount: $('#files-modal-count'),
-        filesSelectAll: $('#files-select-all'),
-        filesSelectNone: $('#files-select-none'),
+        filesSelectToggle: $('#files-select-toggle'),
+        filesClearSelection: $('#files-clear-selection'),
+        filesSelectionChip: $('#files-selection-chip'),
+        filesLoadAll: $('#files-load-all'),
+        filesPreview: $('#files-preview'),
         filesBulkActions: $('#files-bulk-actions'),
 
         // Tabs
@@ -507,9 +582,6 @@ async function init() {
         conversationEdit: $('#conversation-edit'),
         editToggle: $('#edit-toggle'),
         turnCount: $('#turn-count'),
-        tags: $('#tags'),
-        tagSuggestions: $('#tag-suggestions'),
-        rating: $('#rating'),
         saveBtn: $('#save-btn'),
         rejectBtn: $('#reject-btn'),
         regenerateBtn: $('#regenerate-btn'),
@@ -542,6 +614,9 @@ async function init() {
         reviewKeepBtn: $('#review-keep-btn'),
         reviewRejectBtn: $('#review-reject-btn'),
         reviewEditBtn: $('#review-edit-btn'),
+        reviewEditInput: $('#review-edit'),
+        reviewEditCancelBtn: $('#review-edit-cancel-btn'),
+        openReviewBrowserBtn: $('#open-review-browser-btn'),
         keepAllBtn: $('#keep-all-btn'),
         rejectAllBtn: $('#reject-all-btn'),
         clearQueueBtn: $('#clear-queue-btn'),
@@ -549,8 +624,13 @@ async function init() {
         // Modals
         rejectModal: $('#reject-modal'),
         cancelReject: $('#cancel-reject'),
+        settingsModal: $('#settings-modal'),
+        closeSettingsModal: $('#close-settings-modal'),
+        settingsSearchInput: $('#settings-search-input'),
         exportModal: $('#export-modal'),
+        exportSearchInput: $('#export-search-input'),
         exportFormat: $('#export-format'),
+        exportPromptSourceCustom: $('#export-prompt-source-custom'),
         exportPromptSourceChat: $('#export-prompt-source-chat'),
         exportPromptSourceGenerate: $('#export-prompt-source-generate'),
         exportCustomPromptGroup: $('#export-custom-prompt-group'),
@@ -561,11 +641,18 @@ async function init() {
         deleteExportPreset: $('#delete-export-preset'),
         exportFileCount: $('#export-file-count'),
         exportFileList: $('#export-file-list'),
-        exportSelectAll: $('#export-select-all'),
-        exportSelectNone: $('#export-select-none'),
+        exportSelectToggle: $('#export-select-toggle'),
+        exportClearSelection: $('#export-clear-selection'),
+        exportSelectionChip: $('#export-selection-chip'),
+        exportLoadAll: $('#export-load-all'),
+        exportPreview: $('#export-preview'),
+        exportLoadMore: $('#export-load-more'),
+        exportPaginationStatus: $('#export-pagination-status'),
         closeExport: $('#close-export'),
         confirmExport: $('#confirm-export'),
         cancelExport: $('#cancel-export'),
+        filesLoadMore: $('#files-load-more'),
+        filesPaginationStatus: $('#files-pagination-status'),
 
         // Toast
         toastContainer: $('#toast-container'),
@@ -575,9 +662,14 @@ async function init() {
 
         // Custom Parameters
         customParamsList: $('#custom-params-list'),
-        newParamKey: $('#new-param-key'),
-        newParamValue: $('#new-param-value'),
-        addParamBtn: $('#add-param-btn'),
+        openCustomParamsBtn: $('#open-custom-params-btn'),
+        customParamsModal: $('#custom-params-modal'),
+        closeCustomParamsModal: $('#close-custom-params-modal'),
+        customParamsSearchInput: $('#custom-params-search-input'),
+        customParamsModalList: $('#custom-params-modal-list'),
+        customParamKey: $('#custom-param-key'),
+        customParamValue: $('#custom-param-value'),
+        customParamAddBtn: $('#custom-param-add-btn'),
 
         // Macros & History
         openMacrosBtn: $('#open-macros-btn'),
@@ -587,7 +679,22 @@ async function init() {
         exportedDatasetsModal: $('#exported-datasets-modal'),
         closeExportedDatasetsModal: $('#close-exported-datasets-modal'),
         exportedDatasetsList: $('#exported-datasets-list'),
+        exportedDatasetsSearchInput: $('#exported-datasets-search-input'),
         exportFilename: $('#export-filename'),
+        reviewBrowserModal: $('#review-browser-modal'),
+        closeReviewBrowserModal: $('#close-review-browser-modal'),
+        reviewBrowserSearchInput: $('#review-browser-search-input'),
+        reviewBrowserList: $('#review-browser-list'),
+        reviewBrowserPreview: $('#review-browser-preview'),
+        reviewBrowserCount: $('#review-browser-count'),
+        reviewBrowserSelectionChip: $('#review-browser-selection-chip'),
+        reviewBrowserClearSelection: $('#review-browser-clear-selection'),
+        reviewBrowserSelectToggle: $('#review-browser-select-toggle'),
+        reviewBrowserLoadAll: $('#review-browser-load-all'),
+        reviewBrowserBulkKeep: $('#review-browser-bulk-keep'),
+        reviewBrowserBulkReject: $('#review-browser-bulk-reject'),
+        reviewBrowserPaginationStatus: $('#review-browser-pagination-status'),
+        reviewBrowserLoadMore: $('#review-browser-load-more'),
         macrosBadge: $('#macros-badge'),
         openHistoryBtn: $('#open-history-btn'),
         promptHistoryList: $('#prompt-history-list'),
@@ -606,6 +713,9 @@ async function init() {
     syncEngine.init();
     await loadSyncSettings();
     await loadHotkeys();
+    await loadUiPrefs();
+    updateSidebarExportButton();
+    await restoreDraft();
 
     // Load data
     await loadConfig();
@@ -615,8 +725,6 @@ async function init() {
     await loadPresets();
     await loadChatPresets();
     await loadExportPresets();
-    await loadTags();
-    await restoreDraft();
     await loadReviewQueue();
     await loadPromptHistory();
 
@@ -624,6 +732,7 @@ async function init() {
     applyHotkeysToUI();
     setupAutoSaveTimer();
     syncEngine.startAutoSync();
+    switchTab(state.uiPrefs.currentTab || state.currentTab);
 
     // Initial renders
     renderConversation([]);
@@ -657,12 +766,22 @@ async function loadConfig() {
         const res = await fetch('/api/config');
         if (res.ok) {
             state.config = await res.json();
-            els.provider.value = state.config.api?.provider || 'openai';
-            const model = state.config.api?.model || 'gpt-4o';
-            els.modelInput.value = model;
-            els.model.value = model;
-            els.temperature.value = state.config.api?.temperature || 0.9;
-            els.tempValue.textContent = els.temperature.value;
+            // API settings now come directly from DB (no 'api' wrapper)
+            els.provider.value = state.config.provider || 'openai';
+            if (!hydratedFields.model) {
+                const model = state.config.model || '';
+                els.modelInput.value = model;
+                els.model.value = model;
+            }
+            if (!hydratedFields.temperature) {
+                const temp = state.config.temperature ?? 0.9;
+                els.temperature.value = temp;
+                els.tempValue.textContent = temp;
+            }
+            if (els.maxOutputTokens) {
+                const mt = state.config.max_tokens || 2048;
+                els.maxOutputTokens.value = mt;
+            }
             updateProviderUI();
         }
     } catch (e) { console.error('Failed to load config:', e); }
@@ -683,43 +802,26 @@ async function loadModels() {
         if (res.ok) {
             const data = await res.json();
             if (data.error) console.warn('Model fetch warning:', data.error);
-            populateModelSelect(data.models, data.history);
+            populateModelSelect(data.models);
         }
     } catch (e) { console.error('Failed to load models:', e); }
 }
 
-function populateModelSelect(models, history) {
+function populateModelSelect(models) {
     const current = els.modelInput?.value || els.model.value;
-    const defaultModel = state.config?.api?.model;
+    const defaultModel = state.config?.model;
     els.model.innerHTML = '';
     if (els.modelDatalist) els.modelDatalist.innerHTML = '';
 
     const allModels = [];
 
-    if (history && history.length > 0) {
-        const optgroup = document.createElement('optgroup');
-        optgroup.label = 'Recent';
-        history.forEach(m => {
+    if (models && models.length > 0) {
+        models.forEach(m => {
             const opt = document.createElement('option');
             opt.value = m; opt.textContent = m;
-            optgroup.appendChild(opt);
+            els.model.appendChild(opt);
             allModels.push(m);
         });
-        els.model.appendChild(optgroup);
-    }
-
-    if (models && models.length > 0) {
-        const optgroup = document.createElement('optgroup');
-        optgroup.label = 'All Models';
-        models.forEach(m => {
-            if (!history?.includes(m)) {
-                const opt = document.createElement('option');
-                opt.value = m; opt.textContent = m;
-                optgroup.appendChild(opt);
-                allModels.push(m);
-            }
-        });
-        els.model.appendChild(optgroup);
     }
 
     // Populate datalist for the text input
@@ -741,7 +843,7 @@ function populateModelSelect(models, history) {
 }
 
 function getModelValue() {
-    return els.modelInput?.value?.trim() || els.model.value || 'gpt-4o';
+    return els.modelInput?.value?.trim() || els.model.value || '';
 }
 
 async function refreshModels() {
@@ -772,6 +874,10 @@ function renderPromptSelect() {
         els.promptSelect.appendChild(opt);
     });
     if (state.currentPromptName) els.promptSelect.value = state.currentPromptName;
+}
+
+function sanitizePromptName(name) {
+    return (name || '').replace(/[^a-zA-Z0-9_-]/g, '');
 }
 
 function selectPrompt() {
@@ -818,7 +924,9 @@ async function savePrompt() {
             body: JSON.stringify({ name, content })
         });
         if (res.ok) {
-            state.currentPromptName = name;
+            const data = await res.json();
+            // Use the sanitized name from server, not the raw client name
+            state.currentPromptName = data.name || name;
             await loadPrompts();
             toast('Prompt saved!', 'success');
         }
@@ -829,25 +937,27 @@ async function newPrompt() {
     const name = prompt('New prompt template name:');
     if (!name) return;
 
-    // 1. Check for duplicates FIRST, before clearing anything
-    if (state.prompts.some(p => p.name === name)) {
-        toast(`A prompt with the name "${name}" already exists. Please use a unique name.`, 'error');
-        return; // Exit immediately
+    const safeName = sanitizePromptName(name);
+    if (!safeName) {
+        toast('Prompt name must contain letters, numbers, underscores, or hyphens', 'error');
+        return;
     }
 
-    // 2. Now it's safe to clear the UI and state for the new prompt
-    state.currentPromptName = name;
+    if (state.prompts.some(p => sanitizePromptName(p.name) === safeName)) {
+        toast(`A prompt with the name "${safeName}" already exists. Please use a unique name.`, 'error');
+        return;
+    }
+
+    state.currentPromptName = safeName;
     els.systemPrompt.value = '';
     state.generate.prompt = '';
     extractVariables();
 
-    // 3. Save and reload
     await savePrompt();
     await loadPrompts();
 
-    // Select the new prompt
     if (els.promptSelect) {
-        els.promptSelect.value = name;
+        els.promptSelect.value = safeName;
     }
 }
 
@@ -1028,14 +1138,33 @@ async function deletePresetAction() {
 
 // ============ CUSTOM PARAMETERS ============
 function renderCustomParams() {
-    if (!els.customParamsList) return;
     const params = state.customParams || {};
     const keys = Object.keys(params);
-    if (keys.length === 0) {
-        els.customParamsList.innerHTML = '<div class="empty-params">No custom parameters</div>';
+    if (els.customParamsList) {
+        els.customParamsList.innerHTML = keys.length === 0
+            ? '<div class="empty-params">No custom parameters added</div>'
+            : keys.map(key => `
+                <div class="custom-param-item" data-key="${escapeHtml(key)}">
+                    <span class="param-key">${escapeHtml(key)}</span>
+                    <span class="param-value">${escapeHtml(String(params[key]))}</span>
+                </div>
+            `).join('');
+    }
+
+    if (!els.customParamsModalList) return;
+    const search = els.customParamsSearchInput?.value?.trim().toLowerCase() || '';
+    const filteredKeys = keys.filter(key =>
+        !search ||
+        key.toLowerCase().includes(search) ||
+        String(params[key]).toLowerCase().includes(search)
+    );
+
+    if (filteredKeys.length === 0) {
+        els.customParamsModalList.innerHTML = '<div class="empty-params">No matching parameters</div>';
         return;
     }
-    els.customParamsList.innerHTML = keys.map(key => `
+
+    els.customParamsModalList.innerHTML = filteredKeys.map(key => `
         <div class="custom-param-item" data-key="${escapeHtml(key)}">
             <span class="param-key">${escapeHtml(key)}</span>
             <span class="param-value" data-key="${escapeHtml(key)}" title="Click to edit">${escapeHtml(String(params[key]))}</span>
@@ -1044,10 +1173,10 @@ function renderCustomParams() {
             </button>
         </div>
     `).join('');
-    els.customParamsList.querySelectorAll('.param-remove').forEach(btn => {
+    els.customParamsModalList.querySelectorAll('.param-remove').forEach(btn => {
         btn.addEventListener('click', () => removeCustomParam(btn.dataset.key));
     });
-    els.customParamsList.querySelectorAll('.param-value').forEach(span => {
+    els.customParamsModalList.querySelectorAll('.param-value').forEach(span => {
         span.addEventListener('click', () => startEditParam(span.dataset.key, span));
     });
 }
@@ -1074,12 +1203,12 @@ function startEditParam(key, span) {
 }
 
 function addCustomParam() {
-    const key = els.newParamKey?.value?.trim();
-    const value = els.newParamValue?.value?.trim();
+    const key = els.customParamKey?.value?.trim();
+    const value = els.customParamValue?.value?.trim();
     if (!key) { toast('Parameter key is required', 'info'); return; }
     state.customParams[key] = value || '';
-    if (els.newParamKey) els.newParamKey.value = '';
-    if (els.newParamValue) els.newParamValue.value = '';
+    if (els.customParamKey) els.customParamKey.value = '';
+    if (els.customParamValue) els.customParamValue.value = '';
     renderCustomParams();
     debouncedSaveDraft();
 }
@@ -1251,42 +1380,156 @@ async function loadStats() {
 // ============ FILES MODAL ============
 function openFilesModal() {
     els.filesModal.classList.remove('hidden');
-    loadFilesModal(state.filesModal.currentFolder);
+    loadFilesModal(state.filesModal.currentFolder, { reset: true });
 }
 
 function closeFilesModal() {
     els.filesModal.classList.add('hidden');
 }
 
-async function loadFilesModal(folder = 'wanted') {
+function mergeUniqueById(existing, incoming) {
+    const seen = new Set(existing.map(item => item.id));
+    const merged = existing.slice();
+    incoming.forEach(item => {
+        if (!seen.has(item.id)) {
+            merged.push(item);
+            seen.add(item.id);
+        }
+    });
+    return merged;
+}
+
+async function loadAllPages(loadNextPage, hasMore) {
+    let guard = 0;
+    while (hasMore() && guard < 200) {
+        await loadNextPage();
+        guard++;
+    }
+}
+
+function renderConversationMarkup(messages = []) {
+    if (!messages.length) {
+        return '<div class="empty-files">Nothing to preview</div>';
+    }
+    return messages.map(m => `
+        <div class="bubble ${m.from}">
+            <div class="bubble-header">
+                <span class="role-label">${m.from === 'human' ? 'USER' : 'GPT'}</span>
+            </div>
+            <div class="bubble-content">${escapeHtml(m.value)}</div>
+        </div>
+    `).join('');
+}
+
+function updateSelectionToolbar({ selectedIds, files, toggleButton, chip, countEl }) {
+    const selectedCount = selectedIds.size;
+    if (countEl) countEl.textContent = `${selectedCount} selected`;
+    if (chip) chip.classList.toggle('hidden', selectedCount === 0);
+    if (toggleButton) {
+        const shouldClear = selectedCount > 0;
+        toggleButton.textContent = shouldClear ? 'Clear Selection' : 'Select All';
+        toggleButton.classList.toggle('btn-danger', shouldClear);
+        toggleButton.classList.toggle('btn-secondary', !shouldClear);
+    }
+}
+
+function clearSelectableSelection(slice) {
+    slice.selectedIds.clear();
+    slice.anchorId = null;
+}
+
+function handleSelectableInteraction(slice, items, id, event, onPreview) {
+    const orderedIds = items.map(item => item.id);
+    const wantsSelection = !!event.shiftKey || !!event.ctrlKey || !!event.metaKey || event.target.closest('input[type="checkbox"]');
+
+    if (!wantsSelection) {
+        slice.previewId = id;
+        slice.anchorId = id;
+        onPreview?.(id);
+        return;
+    }
+
+    if (event.shiftKey && slice.anchorId && orderedIds.includes(slice.anchorId)) {
+        const anchorIndex = orderedIds.indexOf(slice.anchorId);
+        const currentIndex = orderedIds.indexOf(id);
+        const [start, end] = anchorIndex < currentIndex ? [anchorIndex, currentIndex] : [currentIndex, anchorIndex];
+        if (!(event.ctrlKey || event.metaKey)) slice.selectedIds.clear();
+        orderedIds.slice(start, end + 1).forEach(rangeId => slice.selectedIds.add(rangeId));
+    } else {
+        if (slice.selectedIds.has(id)) slice.selectedIds.delete(id);
+        else slice.selectedIds.add(id);
+    }
+
+    slice.anchorId = id;
+}
+
+async function fetchConversationPreview(id, folder) {
+    const res = await fetch(`/api/conversation/${encodeURIComponent(id)}?folder=${encodeURIComponent(folder)}`);
+    if (!res.ok) throw new Error('Failed to load conversation preview');
+    return res.json();
+}
+
+function renderFilesPreview() {
+    if (!els.filesPreview) return;
+    const conv = state.filesModal.previewConversation;
+    if (!conv?.conversations?.length) {
+        els.filesPreview.innerHTML = '<div class="empty-files">Select a conversation to preview it here</div>';
+        return;
+    }
+
+    els.filesPreview.innerHTML = `
+        <div class="selection-toolbar">
+            <button id="files-open-previewed" class="btn btn-sm btn-secondary">Open in Generate</button>
+        </div>
+        ${renderConversationMarkup(conv.conversations)}
+    `;
+}
+
+function updateFilesPaginationUI() {
+    if (els.filesPaginationStatus) {
+        const loaded = state.filesModal.files.length;
+        const total = state.filesModal.total || 0;
+        els.filesPaginationStatus.textContent = total > 0 ? `Showing ${loaded} of ${total}` : '';
+    }
+    if (els.filesLoadMore) {
+        els.filesLoadMore.classList.toggle('hidden', !state.filesModal.hasMore);
+        els.filesLoadMore.disabled = state.filesModal.isLoading;
+    }
+}
+
+async function loadFilesModal(folder = 'wanted', { reset = false } = {}) {
     state.filesModal.currentFolder = folder;
     const search = els.filesSearchInput?.value?.trim() || '';
+    if (reset) {
+        state.filesModal.files = [];
+        clearSelectableSelection(state.filesModal);
+        state.filesModal.offset = 0;
+        state.filesModal.total = 0;
+        state.filesModal.hasMore = false;
+        state.filesModal.previewId = null;
+        state.filesModal.previewConversation = null;
+    }
+    state.filesModal.isLoading = true;
 
     // Update active tab styling
     $$('#files-modal .file-tab').forEach(t => t.classList.toggle('active', t.dataset.folder === folder));
 
     try {
-        if (folder === 'review') {
-            const res = await fetch('/api/review-queue');
-            if (res.ok) {
-                const data = await res.json();
-                state.filesModal.files = data.queue || [];
-                if (search) {
-                    const s = search.toLowerCase();
-                    state.filesModal.files = state.filesModal.files.filter(f =>
-                        (f.rawText && f.rawText.toLowerCase().includes(s)) ||
-                        (f.conversations && f.conversations.some(c => c.value && c.value.toLowerCase().includes(s)))
-                    );
-                }
-            }
-        } else {
-            let url = `/api/conversations?folder=${folder}`;
-            if (search) url += `&search=${encodeURIComponent(search)}`;
-            const res = await fetch(url);
-            if (res.ok) {
-                const data = await res.json();
-                state.filesModal.files = Array.isArray(data) ? data : (data.conversations || []);
-            }
+        const params = new URLSearchParams({
+            folder,
+            limit: String(MODAL_PAGE_SIZE),
+            offset: String(state.filesModal.offset)
+        });
+        if (search) params.set('search', search);
+        const url = `/api/conversations?${params.toString()}`;
+        const res = await fetch(url);
+        if (res.ok) {
+            const data = await res.json();
+            const items = Array.isArray(data) ? data : (data.conversations || []);
+            state.filesModal.files = reset ? items : mergeUniqueById(state.filesModal.files, items);
+            state.filesModal.total = Array.isArray(data) ? items.length : (data.total || items.length);
+            state.filesModal.offset = state.filesModal.files.length;
+            state.filesModal.hasMore = state.filesModal.files.length < state.filesModal.total;
         }
 
         // Clean up selected IDs that no longer exist
@@ -1294,14 +1537,34 @@ async function loadFilesModal(folder = 'wanted') {
         for (let id of state.filesModal.selectedIds) {
             if (!currentIds.has(id)) state.filesModal.selectedIds.delete(id);
         }
+        if (state.filesModal.previewId && !currentIds.has(state.filesModal.previewId)) {
+            state.filesModal.previewId = null;
+            state.filesModal.previewConversation = null;
+        }
 
         renderFilesModalList();
         updateFilesModalCount();
+        renderFilesPreview();
+        updateFilesPaginationUI();
     } catch (e) { console.error('Failed to load files:', e); }
+    state.filesModal.isLoading = false;
+    updateFilesPaginationUI();
+}
+
+function loadMoreFilesModal() {
+    if (state.filesModal.hasMore && !state.filesModal.isLoading) {
+        loadFilesModal(state.filesModal.currentFolder);
+    }
 }
 
 function updateFilesModalCount() {
-    if (els.filesModalCount) els.filesModalCount.textContent = state.filesModal.selectedIds.size;
+    updateSelectionToolbar({
+        selectedIds: state.filesModal.selectedIds,
+        files: state.filesModal.files,
+        toggleButton: els.filesSelectToggle,
+        chip: els.filesSelectionChip,
+        countEl: els.filesModalCount
+    });
 }
 
 function renderFilesModalList() {
@@ -1321,53 +1584,31 @@ function renderFilesModalList() {
 
     if (state.filesModal.files.length === 0) {
         els.filesModalList.innerHTML = '<div class="empty-files">No items found</div>';
+        updateFilesPaginationUI();
         return;
     }
 
     els.filesModalList.innerHTML = state.filesModal.files.map(f => {
         const isSelected = state.filesModal.selectedIds.has(f.id);
+        const isPreviewing = state.filesModal.previewId === f.id;
 
-        let preview = '';
-        let metaStr = '';
-
-        if (folder === 'review') {
-            const firstMsg = f.conversations?.find(c => c.from === 'human') || f.conversations?.[0];
-            preview = firstMsg ? firstMsg.value : 'Empty conversation';
-            preview = preview.length > 80 ? preview.substring(0, 80) + '...' : preview;
-            metaStr = f.createdAt ? formatDate(f.createdAt) : '';
-        } else {
-            preview = f.preview || f.id || 'No preview';
-            const meta = [];
-            if (f.created_at) meta.push(formatDate(f.created_at));
-            if (f.turns) meta.push(`${f.turns} msgs`);
-            if (f.tags?.length) meta.push(f.tags.map(t => escapeHtml(t)).join(', '));
-            metaStr = meta.join(' • ');
-        }
+        const preview = f.preview || f.id || 'No preview';
+        const meta = [];
+        if (f.created_at) meta.push(formatDate(f.created_at));
+        if (f.turns) meta.push(`${f.turns} msgs`);
+        const metaStr = meta.join(' • ');
 
         return `
-            <div class="export-file-item ${isSelected ? 'selected' : ''}" data-id="${escapeHtml(f.id)}">
+            <div class="export-file-item ${isSelected ? 'selected' : ''} ${isPreviewing ? 'active-preview' : ''}" data-id="${escapeHtml(f.id)}">
                 <input type="checkbox" class="file-checkbox" ${isSelected ? 'checked' : ''}>
                 <div class="export-file-info">
                     <div class="export-file-preview">${escapeHtml(preview)}</div>
                     <div class="export-file-meta">${metaStr ? metaStr : escapeHtml(f.id)}</div>
                 </div>
-                ${folder !== 'review' ? `
-                <div class="file-actions">
-                    <button class="icon-btn load-btn" data-id="${escapeHtml(f.id)}" title="Load in Generate Tab">${ICON_LOAD} Load</button>
-                </div>
-                ` : ''}
             </div>
         `;
     }).join('');
-}
-
-function toggleFilesModalSelection(id, selected) {
-    if (selected) state.filesModal.selectedIds.add(id);
-    else state.filesModal.selectedIds.delete(id);
-
-    const item = els.filesModalList.querySelector(`[data-id="${id}"]`);
-    if (item) item.classList.toggle('selected', selected);
-    updateFilesModalCount();
+    updateFilesPaginationUI();
 }
 
 // Bulk Actions Handlers
@@ -1384,8 +1625,8 @@ async function handleBulkMove(from, to) {
         });
         if (res.ok) {
             toast(`Moved ${ids.length} items to ${to}`, 'success');
-            state.filesModal.selectedIds.clear();
-            loadFilesModal(from);
+            clearSelectableSelection(state.filesModal);
+            loadFilesModal(from, { reset: true });
             loadStats();
         } else { toast('Failed to move', 'error'); }
     } catch (e) { toast('Failed to move', 'error'); }
@@ -1406,88 +1647,12 @@ async function handleBulkDelete(folder) {
         });
         if (res.ok) {
             toast(`Deleted ${ids.length} items`, 'success');
-            state.filesModal.selectedIds.clear();
-            loadFilesModal(folder);
+            clearSelectableSelection(state.filesModal);
+            loadFilesModal(folder, { reset: true });
             loadStats();
         } else { toast('Failed to delete', 'error'); }
     } catch (e) { toast('Failed to delete', 'error'); }
     hideSaveIndicator('Deleted');
-}
-
-async function handleBulkReviewKeep() {
-    const ids = Array.from(state.filesModal.selectedIds);
-    if (ids.length === 0) return;
-
-    showSaveIndicator('Saving...');
-    try {
-        const res = await fetch('/api/review-queue/bulk-keep', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ ids })
-        });
-
-        if (res.ok) {
-            const data = await res.json();
-            if (data.error_count > 0) {
-                toast(`Kept ${data.saved_count} items. Failed to save ${data.error_count} items.`, 'warning');
-            } else {
-                toast(`Kept ${data.saved_count} items`, 'success');
-            }
-            state.filesModal.selectedIds.clear();
-            loadFilesModal('review');
-            loadReviewQueue(); // Refresh main review tab
-            loadStats();
-        } else { toast('Failed to keep items', 'error'); }
-    } catch (e) { toast('Failed to keep items', 'error'); }
-    hideSaveIndicator('Saved');
-}
-
-async function handleBulkReviewDiscard() {
-    const ids = Array.from(state.filesModal.selectedIds);
-    if (ids.length === 0) return;
-
-    showSaveIndicator('Rejecting...');
-    try {
-        // Find the items
-        const itemsToReject = state.filesModal.files.filter(f => ids.includes(f.id)).map(item => ({
-            conversation: { conversations: item.conversations },
-            metadata: item.metadata || {}
-        }));
-
-        // First save to rejected
-        const saveRes = await fetch('/api/save/bulk', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ items: itemsToReject, folder: 'rejected' })
-        });
-
-        if (saveRes.ok) {
-            // Then delete from queue
-            const delRes = await fetch('/api/review-queue/bulk-delete', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ ids })
-            });
-
-            if (delRes.ok) {
-                toast(`Rejected ${ids.length} items`, 'info');
-                state.filesModal.selectedIds.clear();
-                loadFilesModal('review');
-                loadReviewQueue(); // Refresh main review tab
-                loadStats();
-                hideSaveIndicator('Rejected');
-            } else {
-                toast('Failed to remove from queue after rejecting', 'error');
-                hideSaveIndicator('Reject failed');
-            }
-        } else {
-            toast('Failed to reject', 'error');
-            hideSaveIndicator('Reject failed');
-        }
-    } catch (e) {
-        toast('Failed to reject', 'error');
-        hideSaveIndicator('Reject failed');
-    }
 }
 
 async function loadConversation(id, folder) {
@@ -1507,6 +1672,39 @@ async function loadConversation(id, folder) {
 
 function conversationToRaw(messages) {
     return messages.map(m => `${m.from === 'human' ? 'user' : 'gpt'}: ${m.value}`).join('\n---\n');
+}
+
+async function readSSEStream(reader, onMessage) {
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const rawLine of lines) {
+            const line = rawLine.trim();
+            if (!line.startsWith('data: ')) continue;
+
+            const payload = line.slice(6);
+            if (!payload) continue;
+
+            const data = JSON.parse(payload);
+            await onMessage(data);
+        }
+    }
+
+    const finalLine = buffer.trim();
+    if (finalLine.startsWith('data: ')) {
+        const payload = finalLine.slice(6);
+        if (payload) {
+            await onMessage(JSON.parse(payload));
+        }
+    }
 }
 
 // ============ GENERATION (Single & Bulk) ============
@@ -1542,30 +1740,20 @@ async function generate() {
         if (!response.ok) throw new Error('Generation failed');
 
         const reader = response.body.getReader();
-        const decoder = new TextDecoder();
         let fullText = '';
         let thinkingShown = true;
         els.conversationView.innerHTML = '<div class="thinking-indicator"><div class="thinking-dots"><span></span><span></span><span></span></div> Thinking...</div><div class="streaming-text" style="display:none;"></div>';
         const thinkingEl = els.conversationView.querySelector('.thinking-indicator');
         const streamingEl = els.conversationView.querySelector('.streaming-text');
 
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            const chunk = decoder.decode(value);
-            for (const line of chunk.split('\n')) {
-                if (line.startsWith('data: ')) {
-                    try {
-                        const data = JSON.parse(line.slice(6));
-                        if (data.content) {
-                            if (thinkingShown) { thinkingEl.style.display = 'none'; streamingEl.style.display = ''; thinkingShown = false; }
-                            fullText += data.content; streamingEl.textContent = fullText;
-                        }
-                        if (data.error) throw new Error(data.error);
-                    } catch (e) { if (e.message && !e.message.includes('JSON')) throw e; }
-                }
+        await readSSEStream(reader, async (data) => {
+            if (data.content) {
+                if (thinkingShown) { thinkingEl.style.display = 'none'; streamingEl.style.display = ''; thinkingShown = false; }
+                fullText += data.content;
+                streamingEl.textContent = fullText;
             }
-        }
+            if (data.error) throw new Error(data.error);
+        });
 
         const extractedText = extractOutput(fullText);
 
@@ -1592,13 +1780,11 @@ async function generate() {
             els.conversationEdit.value = '';
             parseAndRender();
             disableActionButtons();
-            addModelToHistory();
         } else {
             state.generate.rawText = extractedText;
             els.conversationEdit.value = extractedText;
             parseAndRender();
             enableActionButtons();
-            addModelToHistory();
         }
     } catch (e) {
         if (e.name !== 'AbortError') toast(e.message || 'Generation failed', 'error');
@@ -1672,7 +1858,6 @@ async function bulkGenerate(count) {
     state.bulk.isRunning = false;
     state.bulk.abortController = null;
     els.bulkProgress.classList.add('hidden');
-    addModelToHistory();
     toast(`Generated ${state.bulk.completed}/${count} conversations`, 'success');
     updateReviewBadge();
     if (state.bulk.completed > 0) switchTab('review');
@@ -1682,16 +1867,6 @@ function updateBulkProgress() {
     const pct = state.bulk.total > 0 ? (state.bulk.completed / state.bulk.total * 100) : 0;
     if (els.bulkProgressFill) els.bulkProgressFill.style.width = pct + '%';
     if (els.bulkProgressText) els.bulkProgressText.textContent = `${state.bulk.completed}/${state.bulk.total}`;
-}
-
-async function addModelToHistory() {
-    try {
-        await fetch('/api/models/history', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ provider: els.provider.value, model: getModelValue() })
-        });
-    } catch (e) { }
 }
 
 function parseAndRender() {
@@ -1757,8 +1932,6 @@ async function saveConversation(folder, reason = null) {
 
     showSaveIndicator('Saving...');
     const metadata = {
-        tags: els.tags.value.split(',').map(t => t.trim()).filter(Boolean),
-        rating: els.rating.value ? parseInt(els.rating.value) : null,
         model: getModelValue(),
         variables: state.generate.variables
     };
@@ -1775,7 +1948,6 @@ async function saveConversation(folder, reason = null) {
             hideSaveIndicator('Saved ✓');
             resetGenerateTab();
             loadStats();
-            loadTags();
         } else {
             toast('Failed to save', 'error');
             hideSaveIndicator('Save failed');
@@ -1796,8 +1968,6 @@ function resetGenerateTab() {
     state.generate.conversation = null;
     state.generate.rawText = '';
     els.conversationEdit.value = '';
-    els.tags.value = '';
-    els.rating.value = '';
     renderConversation([]);
     disableActionButtons();
 }
@@ -1885,33 +2055,26 @@ async function sendChatMessage() {
             signal: state.chat.abortController.signal
         });
         const reader = response.body.getReader();
-        const decoder = new TextDecoder();
         let fullText = '';
         state.chat.messages.push(streamingMsg);
         renderChatMessages();
 
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            const chunk = decoder.decode(value);
-            for (const line of chunk.split('\n')) {
-                if (line.startsWith('data: ')) {
-                    try {
-                        const data = JSON.parse(line.slice(6));
-                        if (data.error) { toast(data.error, 'error'); break; }
-                        if (data.done) break;
-                        if (data.content) { fullText += data.content; streamingMsg.value = fullText; throttledRenderChat(); }
-                    } catch (e) { }
-                }
+        await readSSEStream(reader, async (data) => {
+            if (data.error) throw new Error(data.error);
+            if (data.done) return;
+            if (data.content) {
+                fullText += data.content;
+                streamingMsg.value = fullText;
+                throttledRenderChat();
             }
-        }
+        });
         streamingMsg.streaming = false;
         renderChatMessages();
         updateChatTurns();
         enableChatButtons();
     } catch (e) {
         if (e.name !== 'AbortError') {
-            toast('Failed to send message', 'error');
+            toast(e.message || 'Failed to send message', 'error');
             const idx = state.chat.messages.indexOf(streamingMsg);
             if (idx > -1) state.chat.messages.splice(idx, 1);
         } else {
@@ -2099,31 +2262,24 @@ async function generateAIResponse() {
             signal: state.chat.abortController.signal
         });
         const reader = response.body.getReader();
-        const decoder = new TextDecoder();
         let fullText = '';
 
-        while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            const chunk = decoder.decode(value);
-            for (const line of chunk.split('\n')) {
-                if (line.startsWith('data: ')) {
-                    try {
-                        const data = JSON.parse(line.slice(6));
-                        if (data.error) { toast(data.error, 'error'); break; }
-                        if (data.done) break;
-                        if (data.content) { fullText += data.content; streamingMsg.value = fullText; throttledRenderChat(); }
-                    } catch (e) { }
-                }
+        await readSSEStream(reader, async (data) => {
+            if (data.error) throw new Error(data.error);
+            if (data.done) return;
+            if (data.content) {
+                fullText += data.content;
+                streamingMsg.value = fullText;
+                throttledRenderChat();
             }
-        }
+        });
         streamingMsg.streaming = false;
         renderChatMessages();
         updateChatTurns();
         enableChatButtons();
     } catch (e) {
         if (e.name !== 'AbortError') {
-            toast('Failed to generate response', 'error');
+            toast(e.message || 'Failed to generate response', 'error');
             const idx = state.chat.messages.indexOf(streamingMsg);
             if (idx > -1) state.chat.messages.splice(idx, 1);
         } else {
@@ -2193,28 +2349,117 @@ async function addToReviewQueue(item) {
     renderReviewItem();
 }
 
+function remapSelectableSliceIds(slice, syncedEntries) {
+    if (!slice) return;
+    if (slice.selectedIds instanceof Set) {
+        slice.selectedIds = new Set(Array.from(slice.selectedIds).map(id => syncedEntries.get(id)?.id || id));
+    }
+    if (slice.anchorId && syncedEntries.has(slice.anchorId)) {
+        slice.anchorId = syncedEntries.get(slice.anchorId).id;
+    }
+    if (slice.previewId && syncedEntries.has(slice.previewId)) {
+        slice.previewId = syncedEntries.get(slice.previewId).id;
+    }
+}
+
+function remapReviewQueueState(syncedEntries) {
+    if (!syncedEntries?.size) return;
+
+    state.review.queue = state.review.queue.map(item => {
+        const synced = syncedEntries.get(item.id);
+        return synced ? { ...item, ...synced } : item;
+    });
+
+    state.reviewBrowser.items = state.reviewBrowser.items.map(item => {
+        const synced = syncedEntries.get(item.id);
+        return synced ? { ...item, ...synced } : item;
+    });
+
+    if (state.reviewBrowser.previewConversation?.id && syncedEntries.has(state.reviewBrowser.previewConversation.id)) {
+        state.reviewBrowser.previewConversation = {
+            ...state.reviewBrowser.previewConversation,
+            ...syncedEntries.get(state.reviewBrowser.previewConversation.id)
+        };
+    }
+
+    remapSelectableSliceIds(state.reviewBrowser, syncedEntries);
+}
+
+async function createReviewQueueItemOnServer(item) {
+    const res = await fetch('/api/review-queue', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            conversations: item.conversations,
+            rawText: item.rawText,
+            metadata: item.metadata || {}
+        })
+    });
+    if (!res.ok) throw new Error('Failed to sync review queue item');
+    const data = await res.json();
+    return data.added?.[0] || null;
+}
+
+async function syncReviewQueueItemsToServer(ids = null) {
+    const requestedIds = ids ? new Set(ids.map(String).filter(id => id.startsWith('local-'))) : null;
+    if (requestedIds && requestedIds.size === 0) return new Map();
+
+    const localItems = await dbGetAll('reviewQueue');
+    const mergedLocalItems = new Map((localItems || []).map(item => [String(item.id), item]));
+    [...state.review.queue, ...state.reviewBrowser.items].forEach(item => {
+        if (item?.id && String(item.id).startsWith('local-') && !mergedLocalItems.has(String(item.id))) {
+            mergedLocalItems.set(String(item.id), item);
+        }
+    });
+
+    const pendingItems = Array.from(mergedLocalItems.values()).filter(item =>
+        String(item.id).startsWith('local-') &&
+        (!requestedIds || requestedIds.has(String(item.id)))
+    );
+
+    if (pendingItems.length === 0) return new Map();
+
+    const syncedEntries = new Map();
+    for (const item of pendingItems) {
+        const synced = await createReviewQueueItemOnServer(item);
+        if (!synced?.id) continue;
+        syncedEntries.set(item.id, synced);
+        await dbDelete('reviewQueue', item.id);
+    }
+
+    remapReviewQueueState(syncedEntries);
+    return new Map(Array.from(syncedEntries.entries()).map(([oldId, synced]) => [oldId, synced.id]));
+}
+
+async function ensureReviewQueueIdsSynced(ids) {
+    const idMap = await syncReviewQueueItemsToServer(ids);
+    return ids.map(id => idMap.get(id) || id);
+}
+
 async function loadReviewQueue() {
+    const currentItemId = state.review.queue[state.review.currentIndex]?.id;
+    let nextCurrentItemId = currentItemId;
     try {
         const res = await fetch('/api/review-queue');
         if (res.ok) {
             const data = await res.json();
             state.review.queue = data.queue || [];
-            state.review.currentIndex = 0;
+            state.review.currentIndex = Math.max(0, state.review.queue.findIndex(item => item.id === nextCurrentItemId));
+            if (state.review.currentIndex === -1) state.review.currentIndex = 0;
             // Sync local IndexedDB items to server if any exist
             try {
-                const localItems = await dbGetAll('reviewQueue');
-                if (localItems && localItems.length > 0) {
-                    for (const item of localItems) {
-                        if (String(item.id).startsWith('local-')) {
-                            await addToReviewQueue(item);
-                        }
+                const synced = await syncReviewQueueItemsToServer();
+                if (synced.size > 0) {
+                    if (nextCurrentItemId && synced.has(nextCurrentItemId)) {
+                        nextCurrentItemId = synced.get(nextCurrentItemId);
                     }
-                    await dbClear('reviewQueue');
                     // Re-fetch after sync
                     const res2 = await fetch('/api/review-queue');
                     if (res2.ok) {
                         const data2 = await res2.json();
                         state.review.queue = data2.queue || [];
+                        state.review.currentIndex = Math.max(0, state.review.queue.findIndex(item => item.id === nextCurrentItemId));
+                        if (state.review.currentIndex === -1) state.review.currentIndex = 0;
                     }
                 }
             } catch (e) { }
@@ -2229,7 +2474,8 @@ async function loadReviewQueue() {
     try {
         const items = await dbGetAll('reviewQueue');
         state.review.queue = items || [];
-        state.review.currentIndex = 0;
+        state.review.currentIndex = Math.max(0, state.review.queue.findIndex(item => item.id === nextCurrentItemId));
+        if (state.review.currentIndex === -1) state.review.currentIndex = 0;
         updateReviewBadge();
         renderReviewItem();
     } catch (e) { console.error('Failed to load review queue:', e); }
@@ -2250,23 +2496,25 @@ function renderReviewItem() {
 
     if (queue.length === 0) {
         els.reviewConversation.innerHTML = `<div class="empty-state"><div class="empty-icon">${ICON_EMPTY_QUEUE}</div><p>No items in review queue</p><p class="small">Generate conversations in bulk to fill the queue</p></div>`;
+        els.reviewEditInput.classList.add('hidden');
         els.reviewKeepBtn.disabled = true;
         els.reviewRejectBtn.disabled = true;
         els.reviewEditBtn.disabled = true;
+        els.reviewEditCancelBtn.classList.add('hidden');
         els.reviewPrev.disabled = true;
         els.reviewNext.disabled = true;
         els.reviewPosition.textContent = '0/0';
+        state.review.isEditing = false;
         return;
     }
 
     const item = queue[idx];
-    els.reviewConversation.innerHTML = (item.conversations || []).map(m => `
-        <div class="bubble ${m.from}">
-            <span class="role-label">${m.from === 'human' ? 'USER' : 'GPT'}</span>
-            <div class="bubble-content">${escapeHtml(m.value)}</div>
-        </div>
-    `).join('');
+    els.reviewConversation.innerHTML = renderConversationMarkup(item.conversations || []);
     els.reviewConversation.scrollTop = 0;
+    els.reviewEditInput.value = item.rawText || conversationToRaw(item.conversations || []);
+    els.reviewConversation.classList.toggle('hidden', state.review.isEditing);
+    els.reviewEditInput.classList.toggle('hidden', !state.review.isEditing);
+    els.reviewEditCancelBtn.classList.toggle('hidden', !state.review.isEditing);
 
     els.reviewKeepBtn.disabled = false;
     els.reviewRejectBtn.disabled = false;
@@ -2274,16 +2522,62 @@ function renderReviewItem() {
     els.reviewPrev.disabled = idx <= 0;
     els.reviewNext.disabled = idx >= queue.length - 1;
     els.reviewPosition.textContent = `${idx + 1}/${queue.length}`;
+    els.reviewEditBtn.textContent = state.review.isEditing ? 'Apply Edit' : 'Edit';
 }
 
-function reviewNext() {
+async function persistCurrentReviewEdits() {
+    if (!state.review.isEditing) return true;
+    const item = state.review.queue[state.review.currentIndex];
+    if (!item) return false;
+
+    const rawText = els.reviewEditInput.value.trim();
+    const conversations = parseMinimalFormat(rawText);
+    if (!conversations.length) {
+        toast('Review item cannot be empty', 'error');
+        return false;
+    }
+
+    item.rawText = rawText;
+    item.conversations = conversations;
+
+    try {
+        if (String(item.id).startsWith('local-')) {
+            await dbPut('reviewQueue', item);
+        } else {
+            await fetch(`/api/review-queue/${encodeURIComponent(item.id)}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    conversations,
+                    raw_text: rawText,
+                    metadata: item.metadata || {}
+                })
+            });
+        }
+    } catch (e) {
+        console.warn('Failed to persist inline review edit:', e);
+    }
+
+    state.review.isEditing = false;
+    renderReviewItem();
+    return true;
+}
+
+function cancelReviewEdit() {
+    state.review.isEditing = false;
+    renderReviewItem();
+}
+
+async function reviewNext() {
+    if (!(await persistCurrentReviewEdits())) return;
     if (state.review.currentIndex < state.review.queue.length - 1) {
         state.review.currentIndex++;
         renderReviewItem();
     }
 }
 
-function reviewPrev() {
+async function reviewPrev() {
+    if (!(await persistCurrentReviewEdits())) return;
     if (state.review.currentIndex > 0) {
         state.review.currentIndex--;
         renderReviewItem();
@@ -2293,19 +2587,23 @@ function reviewPrev() {
 async function reviewKeep() {
     const item = state.review.queue[state.review.currentIndex];
     if (!item) return;
+    if (!(await persistCurrentReviewEdits())) return;
     showSaveIndicator('Saving...');
     try {
-        const res = await fetch('/api/save', {
+        const [syncedId] = await ensureReviewQueueIdsSynced([item.id]);
+        const res = await fetch('/api/review-queue/bulk-keep', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                conversation: { conversations: item.conversations },
-                folder: 'wanted',
-                metadata: item.metadata || {}
-            })
+            body: JSON.stringify({ ids: [syncedId] })
         });
         if (res.ok) {
-            await removeFromReviewQueue(state.review.currentIndex);
+            const data = await res.json();
+            if (data.error_count > 0 || data.saved_count < 1) {
+                toast('Failed to save item', 'error');
+                hideSaveIndicator('Save failed');
+                return;
+            }
+            await loadReviewQueue();
             toast('Kept!', 'success');
             hideSaveIndicator('Saved ✓');
             loadStats();
@@ -2316,19 +2614,23 @@ async function reviewKeep() {
 async function reviewReject() {
     const item = state.review.queue[state.review.currentIndex];
     if (!item) return;
+    if (!(await persistCurrentReviewEdits())) return;
     showSaveIndicator('Rejecting...');
     try {
-        const res = await fetch('/api/save', {
+        const [syncedId] = await ensureReviewQueueIdsSynced([item.id]);
+        const res = await fetch('/api/review-queue/bulk-reject', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                conversation: { conversations: item.conversations },
-                folder: 'rejected',
-                metadata: item.metadata || {}
-            })
+            body: JSON.stringify({ ids: [syncedId] })
         });
         if (res.ok) {
-            await removeFromReviewQueue(state.review.currentIndex);
+            const data = await res.json();
+            if (data.error_count > 0 || data.saved_count < 1) {
+                toast('Failed to reject', 'error');
+                hideSaveIndicator('Reject failed');
+                return;
+            }
+            await loadReviewQueue();
             toast('Rejected', 'info');
             hideSaveIndicator('Rejected ✓');
             loadStats();
@@ -2352,48 +2654,44 @@ async function removeFromReviewQueue(idx) {
     if (state.review.currentIndex >= state.review.queue.length && state.review.currentIndex > 0) {
         state.review.currentIndex--;
     }
+    state.review.isEditing = false;
     updateReviewBadge();
     renderReviewItem();
 }
 
-function reviewEdit() {
+async function reviewEdit() {
     const item = state.review.queue[state.review.currentIndex];
     if (!item) return;
-    state.generate.rawText = item.rawText || conversationToRaw(item.conversations);
-    state.generate.conversation = { conversations: item.conversations };
-    els.conversationEdit.value = state.generate.rawText;
-    renderConversation(item.conversations);
-    enableActionButtons();
-    switchTab('generate');
-    removeFromReviewQueue(state.review.currentIndex);
+    if (state.review.isEditing) {
+        await persistCurrentReviewEdits();
+        return;
+    }
+    state.review.isEditing = true;
+    els.reviewEditInput.value = item.rawText || conversationToRaw(item.conversations);
+    renderReviewItem();
 }
 
 async function keepAllReview() {
     if (state.review.queue.length === 0) return;
     if (!confirm(`Save all ${state.review.queue.length} conversations?`)) return;
     showSaveIndicator('Saving all...');
-    const items = state.review.queue.map(item => ({
-        conversation: { conversations: item.conversations },
-        metadata: item.metadata || {}
-    }));
     try {
-        const res = await fetch('/api/save/bulk', {
+        const ids = await ensureReviewQueueIdsSynced(state.review.queue.map(item => item.id));
+        const res = await fetch('/api/review-queue/bulk-keep', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ items, folder: 'wanted' })
+            body: JSON.stringify({ ids })
         });
         if (res.ok) {
             const data = await res.json();
-            toast(`Saved ${data.saved_count} conversations`, 'success');
-            hideSaveIndicator('Saved ✓');
-            // Clear server review queue
-            try { await fetch('/api/review-queue', { method: 'DELETE' }); } catch (e) { }
-            await dbClear('reviewQueue');
-            state.review.queue = [];
-            state.review.currentIndex = 0;
-            updateReviewBadge();
-            renderReviewItem();
+            if (data.error_count > 0) {
+                toast(`Saved ${data.saved_count} conversations. ${data.error_count} failed and stayed in queue.`, 'warning');
+            } else {
+                toast(`Saved ${data.saved_count} conversations`, 'success');
+            }
+            await loadReviewQueue();
             loadStats();
+            hideSaveIndicator('Saved ✓');
         }
     } catch (e) { toast('Bulk save failed', 'error'); hideSaveIndicator('Save failed'); }
 }
@@ -2402,26 +2700,22 @@ async function rejectAllReview() {
     if (state.review.queue.length === 0) return;
     if (!confirm(`Reject all ${state.review.queue.length} conversations?`)) return;
     showSaveIndicator('Rejecting all...');
-    const items = state.review.queue.map(item => ({
-        conversation: { conversations: item.conversations },
-        metadata: item.metadata || {}
-    }));
     try {
-        const res = await fetch('/api/save/bulk', {
+        const ids = await ensureReviewQueueIdsSynced(state.review.queue.map(item => item.id));
+        const res = await fetch('/api/review-queue/bulk-reject', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ items, folder: 'rejected' })
+            body: JSON.stringify({ ids })
         });
         if (res.ok) {
             const data = await res.json();
-            toast(`Rejected ${data.saved_count} conversations`, 'info');
+            if (data.error_count > 0) {
+                toast(`Rejected ${data.saved_count} conversations. ${data.error_count} failed and stayed in queue.`, 'warning');
+            } else {
+                toast(`Rejected ${data.saved_count} conversations`, 'info');
+            }
             hideSaveIndicator('Rejected ✓');
-            try { await fetch('/api/review-queue', { method: 'DELETE' }); } catch (e) { }
-            await dbClear('reviewQueue');
-            state.review.queue = [];
-            state.review.currentIndex = 0;
-            updateReviewBadge();
-            renderReviewItem();
+            await loadReviewQueue();
             loadStats();
         } else {
             toast('Bulk reject failed', 'error'); hideSaveIndicator('Reject failed');
@@ -2430,7 +2724,169 @@ async function rejectAllReview() {
 }
 
 async function clearReviewQueue() {
-    await rejectAllReview();
+    if (state.review.queue.length === 0) return;
+    if (!confirm(`Discard all ${state.review.queue.length} conversations from the queue? This will NOT save them anywhere.`)) return;
+    showSaveIndicator('Clearing...');
+    try {
+        await fetch('/api/review-queue', { method: 'DELETE' });
+        await dbClear('reviewQueue');
+        state.review.queue = [];
+        state.review.currentIndex = 0;
+        updateReviewBadge();
+        renderReviewItem();
+        hideSaveIndicator('Cleared');
+        toast('Queue cleared', 'info');
+    } catch (e) {
+        toast('Failed to clear queue', 'error');
+        hideSaveIndicator('Clear failed');
+    }
+}
+
+function openReviewBrowserModal() {
+    const currentItem = state.review.queue[state.review.currentIndex];
+    state.reviewBrowser.previewId = currentItem?.id || null;
+    state.reviewBrowser.previewConversation = currentItem || null;
+    els.reviewBrowserModal.classList.remove('hidden');
+    loadReviewBrowser({ reset: true });
+}
+
+function closeReviewBrowserModal() {
+    els.reviewBrowserModal.classList.add('hidden');
+}
+
+function updateReviewBrowserPaginationUI() {
+    if (els.reviewBrowserPaginationStatus) {
+        const loaded = state.reviewBrowser.items.length;
+        const total = state.reviewBrowser.total || 0;
+        els.reviewBrowserPaginationStatus.textContent = total > 0 ? `Showing ${loaded} of ${total}` : '';
+    }
+    if (els.reviewBrowserLoadMore) {
+        els.reviewBrowserLoadMore.classList.toggle('hidden', !state.reviewBrowser.hasMore);
+        els.reviewBrowserLoadMore.disabled = state.reviewBrowser.isLoading;
+    }
+}
+
+function updateReviewBrowserCount() {
+    updateSelectionToolbar({
+        selectedIds: state.reviewBrowser.selectedIds,
+        files: state.reviewBrowser.items,
+        toggleButton: els.reviewBrowserSelectToggle,
+        chip: els.reviewBrowserSelectionChip,
+        countEl: els.reviewBrowserCount
+    });
+}
+
+function renderReviewBrowserPreview() {
+    if (!els.reviewBrowserPreview) return;
+    const item = state.reviewBrowser.previewConversation;
+    if (!item?.conversations?.length) {
+        els.reviewBrowserPreview.innerHTML = '<div class="empty-files">Click a queue item to load it into the review tab</div>';
+        return;
+    }
+    els.reviewBrowserPreview.innerHTML = renderConversationMarkup(item.conversations);
+}
+
+function renderReviewBrowserList() {
+    if (!els.reviewBrowserList) return;
+    if (!state.reviewBrowser.items.length) {
+        els.reviewBrowserList.innerHTML = '<div class="empty-files">No queued items found</div>';
+        updateReviewBrowserCount();
+        updateReviewBrowserPaginationUI();
+        return;
+    }
+
+    els.reviewBrowserList.innerHTML = state.reviewBrowser.items.map(item => {
+        const isSelected = state.reviewBrowser.selectedIds.has(item.id);
+        const isPreviewing = state.reviewBrowser.previewId === item.id;
+        const firstMsg = item.conversations?.find(msg => msg.from === 'human') || item.conversations?.[0];
+        const preview = firstMsg?.value || 'Empty conversation';
+        const meta = item.createdAt ? formatDate(item.createdAt) : '';
+        return `
+            <div class="export-file-item ${isSelected ? 'selected' : ''} ${isPreviewing ? 'active-preview' : ''}" data-id="${escapeHtml(item.id)}">
+                <input type="checkbox" class="file-checkbox" ${isSelected ? 'checked' : ''}>
+                <div class="export-file-info">
+                    <div class="export-file-preview">${escapeHtml(preview)}</div>
+                    <div class="export-file-meta">${escapeHtml(meta)}</div>
+                </div>
+            </div>
+        `;
+    }).join('');
+
+    updateReviewBrowserCount();
+    updateReviewBrowserPaginationUI();
+}
+
+async function loadReviewBrowser({ reset = false } = {}) {
+    if (reset) {
+        state.reviewBrowser.items = [];
+        clearSelectableSelection(state.reviewBrowser);
+        state.reviewBrowser.offset = 0;
+        state.reviewBrowser.total = 0;
+        state.reviewBrowser.hasMore = false;
+    }
+
+    state.reviewBrowser.isLoading = true;
+    try {
+        const params = new URLSearchParams({
+            limit: String(MODAL_PAGE_SIZE),
+            offset: String(state.reviewBrowser.offset)
+        });
+        const search = els.reviewBrowserSearchInput?.value?.trim() || '';
+        if (search) params.set('search', search);
+        const res = await fetch(`/api/review-queue?${params.toString()}`);
+        if (res.ok) {
+            const data = await res.json();
+            const items = data.queue || [];
+            state.reviewBrowser.items = reset ? items : mergeUniqueById(state.reviewBrowser.items, items);
+            state.reviewBrowser.total = data.count || items.length;
+            state.reviewBrowser.offset += items.length;
+            state.reviewBrowser.hasMore = state.reviewBrowser.offset < state.reviewBrowser.total;
+        }
+    } catch (e) {
+        state.reviewBrowser.items = [];
+    }
+    state.reviewBrowser.isLoading = false;
+    renderReviewBrowserList();
+    renderReviewBrowserPreview();
+    updateReviewBrowserPaginationUI();
+}
+
+function loadMoreReviewBrowser() {
+    if (state.reviewBrowser.hasMore && !state.reviewBrowser.isLoading) {
+        loadReviewBrowser();
+    }
+}
+
+function toggleAllReviewBrowser() {
+    if (state.reviewBrowser.selectedIds.size > 0) clearSelectableSelection(state.reviewBrowser);
+    else state.reviewBrowser.selectedIds = new Set(state.reviewBrowser.items.map(item => item.id));
+    renderReviewBrowserList();
+}
+
+async function handleReviewBrowserBulk(action) {
+    const ids = await ensureReviewQueueIdsSynced(Array.from(state.reviewBrowser.selectedIds));
+    if (!ids.length) return;
+    showSaveIndicator(action === 'keep' ? 'Saving...' : 'Rejecting...');
+    try {
+        const res = await fetch(`/api/review-queue/bulk-${action}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ids })
+        });
+        if (res.ok) {
+            clearSelectableSelection(state.reviewBrowser);
+            await loadReviewQueue();
+            await loadReviewBrowser({ reset: true });
+            loadStats();
+            hideSaveIndicator(action === 'keep' ? 'Saved ✓' : 'Rejected ✓');
+        } else {
+            hideSaveIndicator('Action failed');
+            toast('Bulk review action failed', 'error');
+        }
+    } catch (e) {
+        hideSaveIndicator('Action failed');
+        toast('Bulk review action failed', 'error');
+    }
 }
 
 // ============ TABS ============
@@ -2441,6 +2897,7 @@ function switchTab(tabName) {
     els.chatTab.classList.toggle('active', tabName === 'chat');
     els.reviewTab.classList.toggle('active', tabName === 'review');
     if (tabName === 'review') loadReviewQueue();
+    saveUiPrefs();
     debouncedSaveDraft();
 }
 
@@ -2457,17 +2914,83 @@ function closeSidebar() {
     els.sidebarOverlay?.classList.remove('active');
 }
 
+function setActiveGroupedNav(selector, activeButton) {
+    document.querySelectorAll(selector).forEach(btn => btn.classList.toggle('active', btn === activeButton));
+}
+
+function scrollSidebarToSection(sectionId, trigger = null) {
+    const target = document.getElementById(sectionId);
+    if (!target) return;
+    target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    if (trigger) setActiveGroupedNav('.sidebar-nav-btn', trigger);
+}
+
+function scrollSettingsSection(sectionId, trigger = null) {
+    const target = document.getElementById(sectionId);
+    if (!target) return;
+    target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    if (trigger) setActiveGroupedNav('.settings-category-btn', trigger);
+}
+
+function openSettingsModal() {
+    els.settingsModal?.classList.remove('hidden');
+    filterSettingsSections();
+}
+
+function closeSettingsModal() {
+    els.settingsModal?.classList.add('hidden');
+}
+
+function filterSettingsSections() {
+    const query = els.settingsSearchInput?.value?.trim().toLowerCase() || '';
+    document.querySelectorAll('.settings-section').forEach(section => {
+        const haystack = (section.dataset.settingsSearch || '').toLowerCase();
+        section.classList.toggle('hidden-by-search', !!query && !haystack.includes(query));
+    });
+    document.querySelectorAll('.settings-category-btn').forEach(btn => {
+        const target = document.getElementById(btn.dataset.settingsTarget || '');
+        const hidden = !target || target.classList.contains('hidden-by-search');
+        btn.classList.toggle('hidden', hidden);
+        if (hidden && btn.classList.contains('active')) btn.classList.remove('active');
+    });
+    const firstVisibleCategory = document.querySelector('.settings-category-btn:not(.hidden)');
+    if (firstVisibleCategory && !document.querySelector('.settings-category-btn.active')) {
+        firstVisibleCategory.classList.add('active');
+    }
+    saveUiPrefs();
+}
+
+function openCustomParamsModal() {
+    renderCustomParams();
+    els.customParamsModal?.classList.remove('hidden');
+    els.customParamKey?.focus();
+}
+
+function closeCustomParamsModal() {
+    els.customParamsModal?.classList.add('hidden');
+}
+
 // ============ API SETTINGS ============
 async function saveApiKey() {
     const key = els.apiKey.value.trim();
     if (key.startsWith('•')) { toast('Enter a new key', 'info'); return; }
+    // Preserve the current base URL value before config reload wipes it
+    const currentBaseUrl = els.baseUrl.value;
     try {
         const res = await fetch('/api/config/key', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ provider: els.provider.value, api_key: key })
         });
-        if (res.ok) { toast('API key saved!', 'success'); loadConfig(); }
+        if (res.ok) {
+            toast('API key saved!', 'success');
+            await loadConfig();
+            // Restore base URL that loadConfig() overwrote from disk
+            els.baseUrl.value = currentBaseUrl;
+        } else {
+            const data = await res.json().catch(() => ({}));
+            toast(data.error || 'Failed to save key', 'error');
+        }
     } catch (e) { toast('Failed to save key', 'error'); }
 }
 
@@ -2479,6 +3002,10 @@ async function saveBaseUrl() {
             body: JSON.stringify({ provider: els.provider.value, base_url: els.baseUrl.value.trim() })
         });
         if (res.ok) toast('Base URL saved!', 'success');
+        else {
+            const data = await res.json().catch(() => ({}));
+            toast(data.error || 'Failed to save URL', 'error');
+        }
     } catch (e) { toast('Failed to save URL', 'error'); }
 }
 
@@ -2494,7 +3021,53 @@ async function saveDefaultModel() {
     } catch (e) { console.error('Failed to save default model:', e); }
 }
 
+async function saveDefaultTemperature() {
+    const temperature = parseFloat(els.temperature?.value || '0');
+    if (Number.isNaN(temperature)) return;
+    try {
+        await fetch('/api/config', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ default_temperature: temperature })
+        });
+    } catch (e) { console.error('Failed to save default temperature:', e); }
+}
+
+async function saveDefaultMaxTokens() {
+    const maxTokens = parseInt(els.maxOutputTokens?.value || '0', 10);
+    if (!maxTokens) return;
+    try {
+        await fetch('/api/config', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ default_max_tokens: maxTokens })
+        });
+    } catch (e) { console.error('Failed to save max output tokens:', e); }
+}
+
 // ============ EXPORT ============
+function normalizeExportFormat(format) {
+    return ['sharegpt', 'openai', 'alpaca'].includes(format) ? format : 'sharegpt';
+}
+
+function updateSidebarExportButton() {
+    const format = normalizeExportFormat(state.uiPrefs.lastExportFormat);
+    if (els.sidebarExportFormat) {
+        const labels = {
+            sharegpt: 'ShareGPT',
+            openai: 'OpenAI',
+            alpaca: 'Alpaca'
+        };
+        els.sidebarExportFormat.textContent = labels[format] || 'ShareGPT';
+    }
+}
+
+function setLastExportFormat(format) {
+    state.uiPrefs.lastExportFormat = normalizeExportFormat(format);
+    updateSidebarExportButton();
+    saveUiPrefs();
+}
+
 // ============ EXPORT PRESETS ============
 async function loadExportPresets() { await loadSystemPresets('export'); }
 function loadExportPreset() { loadSystemPreset('export'); }
@@ -2503,38 +3076,36 @@ async function newExportPreset() { await newSystemPreset('export'); }
 async function deleteExportPreset() { await deleteSystemPreset('export'); }
 
 async function openExportModal(format) {
-    els.exportFormat.value = format || 'sharegpt';
+    const selectedFormat = normalizeExportFormat(format || state.uiPrefs.lastExportFormat || els.exportFormat?.value);
+    els.exportFormat.value = selectedFormat;
+    setLastExportFormat(selectedFormat);
 
-    // Set checkboxes based on current tab if no draft
+    // Set prompt source based on current tab if no custom export draft exists
     if (!state.export.systemPrompt) {
-        els.exportPromptSourceChat.checked = false;
-        els.exportPromptSourceGenerate.checked = false;
-
         if (state.currentTab === 'chat') {
             els.exportPromptSourceChat.checked = true;
         } else if (state.currentTab === 'generate') {
             els.exportPromptSourceGenerate.checked = true;
+        } else {
+            els.exportPromptSourceCustom.checked = true;
         }
         updateExportPromptState();
     } else {
+        els.exportPromptSourceCustom.checked = true;
         if (els.exportSystemPrompt) els.exportSystemPrompt.value = state.export.systemPrompt;
     }
 
-    await loadExportFiles();
+    await loadExportFiles({ reset: true });
+    renderExportPreview();
     els.exportModal.classList.remove('hidden');
 }
 
+function getSelectedExportPromptSource() {
+    return document.querySelector('input[name="export-prompt-source"]:checked')?.value || 'custom';
+}
+
 function updateExportPromptState() {
-    const useChat = els.exportPromptSourceChat?.checked;
-    const useGenerate = els.exportPromptSourceGenerate?.checked;
-
-    // Mutual exclusivity
-    if (useChat && useGenerate) {
-        if (this === els.exportPromptSourceChat) els.exportPromptSourceGenerate.checked = false;
-        else els.exportPromptSourceChat.checked = false;
-    }
-
-    if (els.exportPromptSourceChat?.checked || els.exportPromptSourceGenerate?.checked) {
+    if (getSelectedExportPromptSource() !== 'custom') {
         els.exportCustomPromptGroup.classList.add('disabled-group');
         els.exportSystemPrompt.disabled = true;
         els.exportPresetSelect.disabled = true;
@@ -2545,65 +3116,116 @@ function updateExportPromptState() {
     }
 }
 
-async function loadExportFiles() {
+function updateExportPaginationUI() {
+    if (els.exportPaginationStatus) {
+        const loaded = state.export.files.length;
+        const total = state.export.total || 0;
+        els.exportPaginationStatus.textContent = total > 0 ? `Showing ${loaded} of ${total}` : '';
+    }
+    if (els.exportLoadMore) {
+        els.exportLoadMore.classList.toggle('hidden', !state.export.hasMore);
+        els.exportLoadMore.disabled = state.export.isLoading;
+    }
+}
+
+async function loadExportFiles({ reset = false } = {}) {
+    if (reset) {
+        state.export.files = [];
+        clearSelectableSelection(state.export);
+        state.export.offset = 0;
+        state.export.total = 0;
+        state.export.hasMore = false;
+        state.export.previewId = null;
+        state.export.previewConversation = null;
+    }
+    state.export.isLoading = true;
     try {
-        const res = await fetch('/api/conversations?folder=wanted');
+        const params = new URLSearchParams({
+            folder: 'wanted',
+            limit: String(MODAL_PAGE_SIZE),
+            offset: String(state.export.offset)
+        });
+        const search = els.exportSearchInput?.value?.trim() || '';
+        if (search) params.set('search', search);
+        const res = await fetch(`/api/conversations?${params.toString()}`);
         if (res.ok) {
             const data = await res.json();
-            state.export.files = Array.isArray(data) ? data : (data.conversations || []);
-            state.export.selectedIds = new Set(state.export.files.map(f => f.id));
+            const items = Array.isArray(data) ? data : (data.conversations || []);
+            state.export.files = reset ? items : mergeUniqueById(state.export.files, items);
+            state.export.total = Array.isArray(data) ? items.length : (data.total || items.length);
+            state.export.offset = state.export.files.length;
+            state.export.hasMore = state.export.files.length < state.export.total;
             renderExportFileList();
             updateExportCount();
+            renderExportPreview();
+            updateExportPaginationUI();
         }
-    } catch (e) { state.export.files = []; renderExportFileList(); }
+    } catch (e) { state.export.files = []; renderExportFileList(); renderExportPreview(); }
+    state.export.isLoading = false;
+    updateExportPaginationUI();
+}
+
+function loadMoreExportFiles() {
+    if (state.export.hasMore && !state.export.isLoading) {
+        loadExportFiles();
+    }
 }
 
 function renderExportFileList() {
     if (!els.exportFileList) return;
     if (!state.export.files || state.export.files.length === 0) {
         els.exportFileList.innerHTML = '<div class="empty-files">No conversations to export</div>';
+        updateExportPaginationUI();
         return;
     }
     els.exportFileList.innerHTML = state.export.files.map(file => {
         const isSelected = state.export.selectedIds.has(file.id);
+        const isPreviewing = state.export.previewId === file.id;
         const preview = file.preview || file.id || 'No preview';
-        const meta = [file.created_at ? formatDate(file.created_at) : '', file.turns ? `${file.turns} msgs` : '', file.tags?.length ? file.tags.join(', ') : ''].filter(Boolean).join(' • ');
-        return `<div class="export-file-item ${isSelected ? 'selected' : ''}" data-id="${file.id}">
-            <input type="checkbox" ${isSelected ? 'checked' : ''}>
+        const meta = [file.created_at ? formatDate(file.created_at) : '', file.turns ? `${file.turns} msgs` : ''].filter(Boolean).join(' • ');
+        return `<div class="export-file-item ${isSelected ? 'selected' : ''} ${isPreviewing ? 'active-preview' : ''}" data-id="${file.id}">
+            <input type="checkbox" class="file-checkbox" ${isSelected ? 'checked' : ''}>
             <div class="export-file-info">
                 <div class="export-file-preview">${escapeHtml(preview)}</div>
                 <div class="export-file-meta">${meta || file.id}</div>
             </div>
         </div>`;
     }).join('');
-    els.exportFileList.querySelectorAll('.export-file-item').forEach(item => {
-        item.addEventListener('click', (e) => {
-            if (e.target.type === 'checkbox') return;
-            const cb = item.querySelector('input[type="checkbox"]');
-            cb.checked = !cb.checked;
-            toggleExportFile(item.dataset.id, cb.checked);
-        });
-        item.querySelector('input[type="checkbox"]').addEventListener('change', (e) => { toggleExportFile(item.dataset.id, e.target.checked); });
+    updateExportPaginationUI();
+}
+
+function renderExportPreview() {
+    if (!els.exportPreview) return;
+    const conv = state.export.previewConversation;
+    if (!conv?.conversations?.length) {
+        els.exportPreview.innerHTML = '<div class="empty-files">Select a conversation to preview it here</div>';
+        return;
+    }
+    els.exportPreview.innerHTML = renderConversationMarkup(conv.conversations);
+}
+
+function updateExportCount() {
+    updateSelectionToolbar({
+        selectedIds: state.export.selectedIds,
+        files: state.export.files,
+        toggleButton: els.exportSelectToggle,
+        chip: els.exportSelectionChip,
+        countEl: els.exportFileCount
     });
 }
 
-function toggleExportFile(id, selected) {
-    if (selected) state.export.selectedIds.add(id);
-    else state.export.selectedIds.delete(id);
-    const item = els.exportFileList.querySelector(`[data-id="${id}"]`);
-    if (item) item.classList.toggle('selected', selected);
+function toggleAllExportFiles() {
+    if (state.export.selectedIds.size > 0) clearSelectableSelection(state.export);
+    else state.export.selectedIds = new Set(state.export.files.map(f => f.id));
+    renderExportFileList();
     updateExportCount();
 }
 
-function updateExportCount() { if (els.exportFileCount) els.exportFileCount.textContent = state.export.selectedIds.size; }
-
-function selectAllExportFiles() { state.export.selectedIds = new Set(state.export.files.map(f => f.id)); renderExportFileList(); updateExportCount(); }
-function selectNoneExportFiles() { state.export.selectedIds.clear(); renderExportFileList(); updateExportCount(); }
-
 function getExportSystemPrompt() {
-    if (els.exportPromptSourceChat?.checked) {
+    const source = getSelectedExportPromptSource();
+    if (source === 'chat') {
         return els.chatSystemPrompt?.value || state.chat.systemPrompt || '';
-    } else if (els.exportPromptSourceGenerate?.checked) {
+    } else if (source === 'generate') {
         return els.systemPrompt?.value || '';
     } else {
         return els.exportSystemPrompt?.value || '';
@@ -2659,6 +3281,8 @@ function setupAutoSaveTimer() {
 function onDraftInput() { debouncedSaveDraft(); }
 
 function debouncedSaveDraft() {
+    // Respect the autoSave setting
+    if (!syncSettings.autoSaveEnabled) return;
     if (saveDraftTimer) clearTimeout(saveDraftTimer);
     const delay = syncSettings.saveInterval || 2000;
     saveDraftTimer = setTimeout(async () => {
@@ -2676,8 +3300,6 @@ async function saveDraftToLocal() {
     try {
         const draft = await buildDraftObject();
         await dbSet('drafts', SESSION_ID, draft);
-        // Also keep localStorage as fallback
-        localStorage.setItem('dataset-builder-draft', JSON.stringify(draft));
         hideSaveIndicator('Saved ✓');
     } catch (e) {
         console.error('Failed to save draft locally:', e);
@@ -2700,9 +3322,7 @@ async function buildDraftObject() {
         chat: {
             messages: state.chat.messages.filter(m => !m.streaming),
             systemPrompt: els.chatSystemPrompt?.value || '',
-            presetName: els.chatPresetSelect?.value || '',
-            zoomLevel: state.chat.zoomLevel,
-            showAllTools: state.chat.showAllTools
+            presetName: els.chatPresetSelect?.value || ''
         },
         export: {
             systemPrompt: els.exportSystemPrompt?.value || '',
@@ -2713,22 +3333,10 @@ async function buildDraftObject() {
 }
 
 async function restoreDraft() {
-    // Try session-specific draft from IndexedDB first
     try {
         const sessionDraft = await dbGet('drafts', SESSION_ID);
         if (sessionDraft) { applyDraft(sessionDraft); return; }
     } catch (e) { }
-    // Fallback: try global draft (legacy)
-    try {
-        const localDraft = await dbGet('drafts', 'currentDraft');
-        if (localDraft) { applyDraft(localDraft); return; }
-    } catch (e) { }
-    // Fallback to localStorage
-    try {
-        const saved = localStorage.getItem('dataset-builder-draft');
-        if (saved) applyDraft(JSON.parse(saved));
-    } catch (e) { }
-    // Then try server (only shared prefs, not tab state)
     try {
         const serverDraft = await syncEngine.pull();
         if (serverDraft) {
@@ -2746,10 +3354,12 @@ function applyDraft(draft) {
     }
     if (draft.model && els.modelInput) {
         els.modelInput.value = draft.model;
+        hydratedFields.model = true;
     }
     if (draft.temperature != null && els.temperature) {
         els.temperature.value = draft.temperature;
         if (els.tempValue) els.tempValue.textContent = draft.temperature;
+        hydratedFields.temperature = true;
     }
     if (draft.customParams) {
         state.customParams = draft.customParams;
@@ -2775,15 +3385,6 @@ function applyDraft(draft) {
     }
     if (draft.chat?.presetName && els.chatPresetSelect) {
         els.chatPresetSelect.value = draft.chat.presetName;
-    }
-    if (draft.chat?.zoomLevel != null) {
-        state.chat.zoomLevel = draft.chat.zoomLevel;
-        applyChatZoom();
-    }
-    if (draft.chat?.showAllTools != null) {
-        state.chat.showAllTools = draft.chat.showAllTools;
-        if (els.chatMessages) els.chatMessages.classList.toggle('show-all-tools', state.chat.showAllTools);
-        if (els.chatToggleTools) els.chatToggleTools.style.color = state.chat.showAllTools ? 'var(--accent)' : '';
     }
     if (draft.export?.systemPrompt && els.exportSystemPrompt) {
         els.exportSystemPrompt.value = draft.export.systemPrompt;
@@ -3019,18 +3620,31 @@ function setupEventListeners() {
     // Sidebar
     els.sidebarToggle.addEventListener('click', toggleSidebar);
     els.sidebarOverlay?.addEventListener('click', closeSidebar);
+    document.querySelectorAll('.sidebar-nav-btn').forEach(btn => {
+        btn.addEventListener('click', () => scrollSidebarToSection(btn.dataset.sidebarScroll, btn));
+    });
 
     // Manual sync
     els.manualSyncBtn?.addEventListener('click', manualSync);
 
     // Provider change
-    els.provider.addEventListener('change', () => { updateProviderUI(); loadModels(); });
+    els.provider.addEventListener('change', () => {
+        updateProviderUI();
+        loadModels();
+        // Save provider choice to DB
+        fetch('/api/config', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ default_provider: els.provider.value })
+        }).catch(() => {});
+    });
     els.refreshModels.addEventListener('click', refreshModels);
     els.modelInput?.addEventListener('change', saveDefaultModel);
     els.modelInput?.addEventListener('input', () => { debouncedSaveDraft(); });
 
     // Temperature
     els.temperature.addEventListener('input', (e) => { els.tempValue.textContent = e.target.value; debouncedSaveDraft(); });
+    els.temperature.addEventListener('change', saveDefaultTemperature);
 
     // API settings
     els.toggleKey.addEventListener('click', () => { els.apiKey.type = els.apiKey.type === 'password' ? 'text' : 'password'; });
@@ -3060,7 +3674,10 @@ function setupEventListeners() {
         }
     });
     // Files Modal
-    els.openFilesBtn?.addEventListener('click', openFilesModal);
+    els.openFilesBtn?.addEventListener('click', () => {
+        openFilesModal();
+        closeSidebar();
+    });
     els.closeFilesModal?.addEventListener('click', closeFilesModal);
     $('#files-modal .modal-backdrop')?.addEventListener('click', closeFilesModal);
 
@@ -3068,78 +3685,99 @@ function setupEventListeners() {
     let filesSearchTimer = null;
     els.filesSearchInput?.addEventListener('input', () => {
         if (filesSearchTimer) clearTimeout(filesSearchTimer);
-        filesSearchTimer = setTimeout(() => loadFilesModal(state.filesModal.currentFolder), 300);
+        filesSearchTimer = setTimeout(() => loadFilesModal(state.filesModal.currentFolder, { reset: true }), 300);
     });
 
     // Files Modal Tabs
     $$('#files-modal .file-tab').forEach(tab => {
         tab.addEventListener('click', (e) => {
-            loadFilesModal(e.target.dataset.folder);
+            loadFilesModal(e.target.dataset.folder, { reset: true });
         });
     });
 
+    // Settings modal
+    els.openSettingsBtn?.addEventListener('click', () => {
+        openSettingsModal();
+        closeSidebar();
+    });
+    els.closeSettingsModal?.addEventListener('click', closeSettingsModal);
+    $('#settings-modal .modal-backdrop')?.addEventListener('click', closeSettingsModal);
+    els.settingsSearchInput?.addEventListener('input', filterSettingsSections);
+    document.querySelectorAll('.settings-category-btn').forEach(btn => {
+        btn.addEventListener('click', () => scrollSettingsSection(btn.dataset.settingsTarget, btn));
+    });
+
     // Files Modal Bulk Actions Static Listeners
-    $('#files-select-all')?.addEventListener('click', () => {
-        state.filesModal.selectedIds = new Set(state.filesModal.files.map(f => f.id));
+    els.filesSelectToggle?.addEventListener('click', () => {
+        if (state.filesModal.selectedIds.size > 0) clearSelectableSelection(state.filesModal);
+        else state.filesModal.selectedIds = new Set(state.filesModal.files.map(f => f.id));
         renderFilesModalList();
         updateFilesModalCount();
     });
-    $('#files-select-none')?.addEventListener('click', () => {
-        state.filesModal.selectedIds.clear();
+    els.filesClearSelection?.addEventListener('click', () => {
+        clearSelectableSelection(state.filesModal);
         renderFilesModalList();
         updateFilesModalCount();
     });
+    els.filesLoadAll?.addEventListener('click', () => loadAllPages(
+        () => loadFilesModal(state.filesModal.currentFolder),
+        () => state.filesModal.hasMore && !state.filesModal.isLoading
+    ));
+    els.filesLoadMore?.addEventListener('click', loadMoreFilesModal);
     $('#files-bulk-reject')?.addEventListener('click', () => handleBulkMove('wanted', 'rejected'));
     $('#files-bulk-restore')?.addEventListener('click', () => handleBulkMove('rejected', 'wanted'));
     $('#files-bulk-delete')?.addEventListener('click', () => handleBulkDelete(state.filesModal.currentFolder));
-    $('#files-bulk-keep')?.addEventListener('click', () => handleBulkReviewKeep());
-    $('#files-bulk-discard')?.addEventListener('click', () => handleBulkReviewDiscard());
 
     // Event Delegation for Files Modal List Items
     els.filesModalList?.addEventListener('click', (e) => {
         const item = e.target.closest('.export-file-item');
         if (!item) return;
-
         const id = item.dataset.id;
-        const loadBtn = e.target.closest('.load-btn');
-        const checkbox = e.target.closest('.file-checkbox');
-
-        if (loadBtn) {
-            e.stopPropagation();
-            loadConversation(id, state.filesModal.currentFolder);
+        handleSelectableInteraction(state.filesModal, state.filesModal.files, id, e, (previewId) => {
+            fetchConversationPreview(previewId, state.filesModal.currentFolder)
+                .then(conv => {
+                    state.filesModal.previewConversation = conv;
+                    renderFilesModalList();
+                    renderFilesPreview();
+                })
+                .catch(() => toast('Failed to preview conversation', 'error'));
+        });
+        renderFilesModalList();
+        updateFilesModalCount();
+    });
+    els.filesPreview?.addEventListener('click', (e) => {
+        if (e.target.id === 'files-open-previewed' && state.filesModal.previewId) {
+            loadConversation(state.filesModal.previewId, state.filesModal.currentFolder);
             closeFilesModal();
-        } else if (checkbox) {
-            e.stopPropagation();
-            toggleFilesModalSelection(id, checkbox.checked);
-        } else if (!e.target.closest('.file-actions')) {
-            const cb = item.querySelector('.file-checkbox');
-            if (cb) {
-                cb.checked = !cb.checked;
-                toggleFilesModalSelection(id, cb.checked);
-            }
         }
     });
 
-    // Export buttons
-    $$('.export-btns .btn').forEach(btn => {
-        btn.addEventListener('click', () => openExportModal(btn.dataset.format));
+    // Export button
+    els.openExportBtn?.addEventListener('click', () => {
+        openExportModal();
+        closeSidebar();
     });
 
     // Export Modal
     els.confirmExport?.addEventListener('click', () => {
         const format = els.exportFormat.value;
         const systemPrompt = getExportSystemPrompt();
-        const selectedIds = state.export.selectedIds.size > 0 ? Array.from(state.export.selectedIds) : null;
-        if (selectedIds && selectedIds.length === 0) { toast('Please select at least one conversation to export', 'error'); return; }
+        const selectedIds = Array.from(state.export.selectedIds);
+        // Fix: zero selected means nothing selected, NOT "export all"
+        if (selectedIds.length === 0) {
+            toast('Please select at least one conversation to export', 'error');
+            return;
+        }
         exportDataset(format, selectedIds, systemPrompt);
         closeExportModal();
     });
     els.cancelExport?.addEventListener('click', closeExportModal);
     els.closeExport?.addEventListener('click', closeExportModal);
 
-    // Checkbox events
-    els.exportPromptSourceChat?.addEventListener('change', updateExportPromptState.bind(els.exportPromptSourceChat));
-    els.exportPromptSourceGenerate?.addEventListener('change', updateExportPromptState.bind(els.exportPromptSourceGenerate));
+    document.querySelectorAll('input[name="export-prompt-source"]').forEach(input => {
+        input.addEventListener('change', updateExportPromptState);
+    });
+    els.exportFormat?.addEventListener('change', (e) => setLastExportFormat(e.target.value));
 
     // Export Presets
     els.exportPresetSelect?.addEventListener('change', loadExportPreset);
@@ -3147,8 +3785,34 @@ function setupEventListeners() {
     els.newExportPreset?.addEventListener('click', newExportPreset);
     els.deleteExportPreset?.addEventListener('click', deleteExportPreset);
 
-    els.exportSelectAll?.addEventListener('click', selectAllExportFiles);
-    els.exportSelectNone?.addEventListener('click', selectNoneExportFiles);
+    els.exportSearchInput?.addEventListener('input', () => loadExportFiles({ reset: true }));
+    els.exportSelectToggle?.addEventListener('click', toggleAllExportFiles);
+    els.exportClearSelection?.addEventListener('click', () => {
+        clearSelectableSelection(state.export);
+        renderExportFileList();
+        updateExportCount();
+    });
+    els.exportLoadAll?.addEventListener('click', () => loadAllPages(
+        () => loadExportFiles(),
+        () => state.export.hasMore && !state.export.isLoading
+    ));
+    els.exportLoadMore?.addEventListener('click', loadMoreExportFiles);
+    els.exportFileList?.addEventListener('click', (e) => {
+        const item = e.target.closest('.export-file-item');
+        if (!item) return;
+        const id = item.dataset.id;
+        handleSelectableInteraction(state.export, state.export.files, id, e, (previewId) => {
+            fetchConversationPreview(previewId, 'wanted')
+                .then(conv => {
+                    state.export.previewConversation = conv;
+                    renderExportFileList();
+                    renderExportPreview();
+                })
+                .catch(() => toast('Failed to preview conversation', 'error'));
+        });
+        renderExportFileList();
+        updateExportCount();
+    });
     $('#export-modal .modal-backdrop')?.addEventListener('click', closeExportModal);
 
     // Tabs
@@ -3174,9 +3838,13 @@ function setupEventListeners() {
     els.deletePreset?.addEventListener('click', deletePresetAction);
 
     // Custom Parameters
-    els.addParamBtn?.addEventListener('click', addCustomParam);
-    els.newParamKey?.addEventListener('keydown', (e) => { if (e.key === 'Enter') addCustomParam(); });
-    els.newParamValue?.addEventListener('keydown', (e) => { if (e.key === 'Enter') addCustomParam(); });
+    els.openCustomParamsBtn?.addEventListener('click', openCustomParamsModal);
+    els.closeCustomParamsModal?.addEventListener('click', closeCustomParamsModal);
+    $('#custom-params-modal .modal-backdrop')?.addEventListener('click', closeCustomParamsModal);
+    els.customParamsSearchInput?.addEventListener('input', renderCustomParams);
+    els.customParamAddBtn?.addEventListener('click', addCustomParam);
+    els.customParamKey?.addEventListener('keydown', (e) => { if (e.key === 'Enter') addCustomParam(); });
+    els.customParamValue?.addEventListener('keydown', (e) => { if (e.key === 'Enter') addCustomParam(); });
 
     // Generate
     els.generateBtn.addEventListener('click', generate);
@@ -3212,8 +3880,8 @@ function setupEventListeners() {
     els.saveChatBtn.addEventListener('click', saveChat);
 
     // Chat header tools
-    els.chatZoomOut?.addEventListener('click', () => { state.chat.zoomLevel = Math.max(CHAT_ZOOM_MIN, Number(state.chat.zoomLevel) - CHAT_ZOOM_STEP).toFixed(2); applyChatZoom(); debouncedSaveDraft(); });
-    els.chatZoomIn?.addEventListener('click', () => { state.chat.zoomLevel = Math.min(CHAT_ZOOM_MAX, Number(state.chat.zoomLevel) + CHAT_ZOOM_STEP).toFixed(2); applyChatZoom(); debouncedSaveDraft(); });
+    els.chatZoomOut?.addEventListener('click', () => { state.chat.zoomLevel = Math.max(CHAT_ZOOM_MIN, Number(state.chat.zoomLevel) - CHAT_ZOOM_STEP).toFixed(2); applyChatZoom(); saveUiPrefs(); });
+    els.chatZoomIn?.addEventListener('click', () => { state.chat.zoomLevel = Math.min(CHAT_ZOOM_MAX, Number(state.chat.zoomLevel) + CHAT_ZOOM_STEP).toFixed(2); applyChatZoom(); saveUiPrefs(); });
     els.chatFullscreen?.addEventListener('click', toggleChatFullscreen);
     els.chatToggleTools?.addEventListener('click', toggleChatTools);
 
@@ -3229,9 +3897,46 @@ function setupEventListeners() {
     els.reviewKeepBtn?.addEventListener('click', reviewKeep);
     els.reviewRejectBtn?.addEventListener('click', reviewReject);
     els.reviewEditBtn?.addEventListener('click', reviewEdit);
+    els.reviewEditCancelBtn?.addEventListener('click', cancelReviewEdit);
+    els.openReviewBrowserBtn?.addEventListener('click', openReviewBrowserModal);
     els.keepAllBtn?.addEventListener('click', keepAllReview);
     els.rejectAllBtn?.addEventListener('click', rejectAllReview);
     els.clearQueueBtn?.addEventListener('click', clearReviewQueue);
+
+    // Review browser modal
+    els.closeReviewBrowserModal?.addEventListener('click', closeReviewBrowserModal);
+    $('#review-browser-modal .modal-backdrop')?.addEventListener('click', closeReviewBrowserModal);
+    els.reviewBrowserSearchInput?.addEventListener('input', () => loadReviewBrowser({ reset: true }));
+    els.reviewBrowserSelectToggle?.addEventListener('click', toggleAllReviewBrowser);
+    els.reviewBrowserClearSelection?.addEventListener('click', () => {
+        clearSelectableSelection(state.reviewBrowser);
+        renderReviewBrowserList();
+    });
+    els.reviewBrowserLoadAll?.addEventListener('click', () => loadAllPages(
+        () => loadReviewBrowser(),
+        () => state.reviewBrowser.hasMore && !state.reviewBrowser.isLoading
+    ));
+    els.reviewBrowserLoadMore?.addEventListener('click', loadMoreReviewBrowser);
+    els.reviewBrowserBulkKeep?.addEventListener('click', () => handleReviewBrowserBulk('keep'));
+    els.reviewBrowserBulkReject?.addEventListener('click', () => handleReviewBrowserBulk('reject'));
+    els.reviewBrowserList?.addEventListener('click', (e) => {
+        const item = e.target.closest('.export-file-item');
+        if (!item) return;
+        const id = item.dataset.id;
+        handleSelectableInteraction(state.reviewBrowser, state.reviewBrowser.items, id, e, (previewId) => {
+            const queueIndex = state.review.queue.findIndex(entry => entry.id === previewId);
+            if (queueIndex !== -1) {
+                state.review.currentIndex = queueIndex;
+                state.review.isEditing = false;
+                renderReviewItem();
+            }
+            state.reviewBrowser.previewId = previewId;
+            state.reviewBrowser.previewConversation = state.reviewBrowser.items.find(entry => entry.id === previewId) || null;
+            renderReviewBrowserList();
+            renderReviewBrowserPreview();
+        });
+        renderReviewBrowserList();
+    });
 
     // Clear generate tab
     els.clearGenBtn?.addEventListener('click', resetGenerateTab);
@@ -3255,7 +3960,10 @@ function setupEventListeners() {
 
     // Collapsible sections
     $$('.collapse-toggle').forEach(toggle => {
-        toggle.addEventListener('click', () => { toggle.parentElement.classList.toggle('collapsed'); });
+        toggle.addEventListener('click', () => {
+            toggle.parentElement.classList.toggle('collapsed');
+            saveUiPrefs();
+        });
     });
 
     // Macros Modal
@@ -3265,6 +3973,7 @@ function setupEventListeners() {
     $('#exported-datasets-modal .modal-backdrop')?.addEventListener('click', closeExportedDatasetsModal);
     els.viewExportedDatasetsBtn?.addEventListener('click', openExportedDatasetsModal);
     els.closeExportedDatasetsModal?.addEventListener('click', closeExportedDatasetsModal);
+    els.exportedDatasetsSearchInput?.addEventListener('input', renderExportedDatasets);
     $$('.macros-tab').forEach(tab => {
         tab.addEventListener('click', () => switchMacrosTab(tab.dataset.macrosTab));
     });
@@ -3285,6 +3994,8 @@ function setupEventListeners() {
         const max = getHistoryMax();
         if (state.promptHistory.length > max) { state.promptHistory.length = max; dbSet('settings', 'promptHistory', state.promptHistory).catch(() => { }); }
     });
+    els.maxOutputTokens?.addEventListener('change', saveDefaultMaxTokens);
+    els.maxOutputTokens?.addEventListener('input', debouncedSaveDraft);
 
     // Setup advanced features
     setupSwipeGestures();
@@ -3310,7 +4021,8 @@ async function loadExportedDatasets() {
         const res = await fetch('/api/exports');
         if (res.ok) {
             const data = await res.json();
-            renderExportedDatasets(data.files || []);
+            state.exportedDatasets = data.files || [];
+            renderExportedDatasets();
         }
     } catch (e) {
         console.error('Failed to load exported datasets:', e);
@@ -3323,9 +4035,15 @@ function formatSize(bytes) {
     return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 }
 
-function renderExportedDatasets(files) {
+function renderExportedDatasets() {
     const listEl = els.exportedDatasetsList;
     if (!listEl) return;
+    const search = els.exportedDatasetsSearchInput?.value?.trim().toLowerCase() || '';
+    const files = state.exportedDatasets.filter(file =>
+        !search ||
+        file.name.toLowerCase().includes(search) ||
+        file.format.toLowerCase().includes(search)
+    );
     listEl.innerHTML = '';
 
     if (files.length === 0) {

@@ -68,204 +68,126 @@
 
             <!-- Sidebar -->
             <aside id="sidebar" class="sidebar">
-                <!-- Settings Section -->
-                <div class="sidebar-section">
-                    <h3 class="sidebar-title">Settings</h3>
-
-                    <div class="form-group">
-                        <label for="provider">Provider</label>
-                        <select id="provider" class="select">
-                            <option value="openai">OpenAI</option>
-                            <option value="anthropic">Anthropic</option>
-                            <option value="google">Google</option>
-                        </select>
-                    </div>
-
-                    <div class="form-group">
-                        <label for="model">Model</label>
-                        <div class="model-select">
-                            <input type="text" id="model-input" class="input" list="model-datalist"
-                                placeholder="Type or select model...">
-                            <datalist id="model-datalist"></datalist>
-                            <select id="model" class="select" style="display:none;">
-                                <option value="gpt-4o">gpt-4o</option>
-                            </select>
-                            <button id="refresh-models" class="icon-btn" title="Refresh models">
-                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                                    stroke-width="2">
-                                    <path d="M23 4v6h-6M1 20v-6h6"></path>
-                                    <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15">
-                                    </path>
-                                </svg>
-                            </button>
-                        </div>
-                    </div>
-
-                    <div class="form-group">
-                        <label for="temperature">Temperature: <span id="temp-value">0.9</span></label>
-                        <input type="range" id="temperature" class="slider" min="0" max="2" step="0.1" value="0.9">
-                    </div>
+                <div class="sidebar-nav">
+                    <button class="sidebar-nav-btn active" type="button" data-sidebar-scroll="sidebar-provider-section">Provider</button>
+                    <button class="sidebar-nav-btn" type="button" data-sidebar-scroll="sidebar-parameters-section">Parameters</button>
+                    <button class="sidebar-nav-btn" type="button" data-sidebar-scroll="sidebar-workspace-section">Misc</button>
                 </div>
-
-                <!-- Custom Parameters Section -->
-                <div class="sidebar-section collapsible collapsed">
-                    <button class="sidebar-title collapse-toggle">
-                        Custom Parameters
-                        <svg class="chevron" width="16" height="16" viewBox="0 0 24 24" fill="none"
-                            stroke="currentColor" stroke-width="2">
-                            <polyline points="6 9 12 15 18 9"></polyline>
-                        </svg>
-                    </button>
-                    <div class="collapse-content">
-                        <div id="custom-params-list" class="custom-params-list"></div>
-                        <div class="custom-param-add">
-                            <input type="text" id="new-param-key" class="input input-sm"
-                                placeholder="key (e.g. reasoning_effort)">
-                            <input type="text" id="new-param-value" class="input input-sm"
-                                placeholder="value (e.g. high)">
-                            <button id="add-param-btn" class="icon-btn" title="Add parameter">
-                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                                    stroke-width="2">
-                                    <line x1="12" y1="5" x2="12" y2="19" />
-                                    <line x1="5" y1="12" x2="19" y2="12" />
-                                </svg>
-                            </button>
+                <div class="sidebar-scroll">
+                    <section id="sidebar-provider-section" class="sidebar-panel">
+                        <div class="sidebar-panel-header">
+                            <h3 class="sidebar-panel-title">Provider</h3>
+                            <div class="sidebar-panel-copy">Connection and model defaults</div>
                         </div>
-                    </div>
-                </div>
-
-                <!-- API Keys Section -->
-                <div class="sidebar-section collapsible collapsed">
-                    <button class="sidebar-title collapse-toggle">
-                        API Keys
-                        <svg class="chevron" width="16" height="16" viewBox="0 0 24 24" fill="none"
-                            stroke="currentColor" stroke-width="2">
-                            <polyline points="6 9 12 15 18 9"></polyline>
-                        </svg>
-                    </button>
-                    <div class="collapse-content">
-                        <div class="form-group">
-                            <label for="api-key">API Key</label>
-                            <div class="input-row">
-                                <input type="password" id="api-key" class="input" placeholder="sk-...">
-                                <button id="toggle-key" class="icon-btn">
-                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                                        stroke-width="2">
-                                        <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
-                                        <circle cx="12" cy="12" r="3" />
-                                    </svg>
-                                </button>
+                        <div class="sidebar-field-stack">
+                            <div class="form-group">
+                                <label for="provider">Provider</label>
+                                <select id="provider" class="select">
+                                    <option value="openai">OpenAI</option>
+                                    <option value="anthropic">Anthropic</option>
+                                    <option value="google">Google</option>
+                                </select>
                             </div>
-                            <button id="save-key" class="btn btn-sm btn-accent">Save Key</button>
+                            <div class="form-group">
+                                <label for="model-input">Model</label>
+                                <div class="model-select">
+                                    <input type="text" id="model-input" class="input" list="model-datalist"
+                                        placeholder="Type or select model...">
+                                    <datalist id="model-datalist"></datalist>
+                                    <select id="model" class="select hidden">
+                                        <option value=""></option>
+                                    </select>
+                                    <button id="refresh-models" class="icon-btn" title="Refresh models">
+                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                            stroke-width="2">
+                                            <path d="M23 4v6h-6M1 20v-6h6"></path>
+                                            <path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15">
+                                            </path>
+                                        </svg>
+                                    </button>
+                                </div>
+                            </div>
                         </div>
-                        <div class="form-group">
-                            <label for="base-url">Base URL</label>
-                            <input type="text" id="base-url" class="input" placeholder="https://api.openai.com/v1">
-                            <button id="save-url" class="btn btn-sm btn-accent">Save URL</button>
+                        <div class="sidebar-subsection-label">Provider Options</div>
+                        <div class="sidebar-field-stack">
+                            <div class="form-group">
+                                <label for="base-url">Base URL</label>
+                                <input type="text" id="base-url" class="input" placeholder="https://api.openai.com/v1">
+                                <button id="save-url" class="btn btn-sm btn-accent btn-full-width">Save URL</button>
+                            </div>
+                            <div class="form-group">
+                                <label for="api-key">API Key</label>
+                                <div class="input-row">
+                                    <input type="password" id="api-key" class="input" placeholder="sk-...">
+                                    <button id="toggle-key" class="icon-btn" title="Show API key">
+                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                            stroke-width="2">
+                                            <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                                            <circle cx="12" cy="12" r="3" />
+                                        </svg>
+                                    </button>
+                                </div>
+                                <button id="save-key" class="btn btn-sm btn-accent btn-full-width">Save Key</button>
+                            </div>
                         </div>
                         <div id="api-status" class="status-msg"></div>
-                    </div>
-                </div>
+                    </section>
 
-                <!-- Auto-Sync Settings -->
-                <div class="sidebar-section collapsible collapsed">
-                    <button class="sidebar-title collapse-toggle">
-                        Auto-Sync Settings
-                        <svg class="chevron" width="16" height="16" viewBox="0 0 24 24" fill="none"
-                            stroke="currentColor" stroke-width="2">
-                            <polyline points="6 9 12 15 18 9"></polyline>
-                        </svg>
-                    </button>
-                    <div class="collapse-content">
-                        <div class="form-group">
-                            <label class="toggle-label">
-                                <input type="checkbox" id="auto-sync-enabled" checked>
-                                <span>Auto-sync when online</span>
-                            </label>
+                    <section id="sidebar-parameters-section" class="sidebar-panel">
+                        <div class="sidebar-panel-header">
+                            <h3 class="sidebar-panel-title">Parameters</h3>
+                            <div class="sidebar-panel-copy">Generation defaults and custom fields</div>
                         </div>
-                        <div class="form-group">
-                            <label for="sync-interval">Sync interval (seconds)</label>
-                            <input type="number" id="sync-interval" class="input" value="30" min="5" max="300">
+                        <div class="sidebar-field-stack">
+                            <div class="form-group">
+                                <label for="temperature">Temperature: <span id="temp-value"></span></label>
+                                <input type="range" id="temperature" class="slider" min="0" max="2" step="0.1" value="">
+                            </div>
+                            <div class="form-group">
+                                <label for="max-output-tokens">Max Output Tokens</label>
+                                <input type="number" id="max-output-tokens" class="input" min="1" max="131072" value="">
+                            </div>
                         </div>
-                        <div class="form-group">
-                            <label class="toggle-label">
-                                <input type="checkbox" id="auto-save-enabled" checked>
-                                <span>Auto-save drafts locally</span>
-                            </label>
-                        </div>
-                        <div class="form-group">
-                            <label for="save-interval">Save interval (ms)</label>
-                            <input type="number" id="save-interval" class="input" value="2000" min="500" max="10000"
-                                step="500">
-                        </div>
-                        <div class="form-group">
-                            <label class="toggle-label">
-                                <input type="checkbox" id="ask-reject-reason" checked>
-                                <span>Ask for reject reason</span>
-                            </label>
-                        </div>
-                        <div class="form-group">
-                            <label for="history-max-setting">Prompt history limit</label>
-                            <input type="number" id="history-max-setting" class="input" value="30" min="5" max="500">
-                        </div>
-                    </div>
-                </div>
+                        <div class="sidebar-subsection-label">Custom Parameters</div>
+                        <button id="open-custom-params-btn" class="btn btn-sm btn-secondary btn-full-width">Manage Custom Parameters</button>
+                        <div id="custom-params-list" class="custom-params-list custom-params-summary sidebar-custom-params"></div>
+                    </section>
 
-                <!-- Manage Files Section -->
-                <div class="sidebar-section">
-                    <h3 class="sidebar-title">Files</h3>
-                    <button id="open-files-btn" class="btn btn-sm btn-secondary btn-full-width">
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                            stroke-width="2">
-                            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-                        </svg>
-                        Manage Files
-                    </button>
-                </div>
-
-                <!-- Export Section -->
-                <div class="sidebar-section">
-                    <h3 class="sidebar-title">Export</h3>
-                    <div class="export-btns">
-                        <button class="btn btn-sm" data-format="sharegpt">ShareGPT</button>
-                        <button class="btn btn-sm" data-format="openai">OpenAI</button>
-                        <button class="btn btn-sm" data-format="alpaca">Alpaca</button>
-                    </div>
-                </div>
-
-                <!-- Keyboard Shortcuts -->
-                <div class="sidebar-section collapsible collapsed">
-                    <button class="sidebar-title collapse-toggle">
-                        Keyboard Shortcuts
-                        <svg class="chevron" width="16" height="16" viewBox="0 0 24 24" fill="none"
-                            stroke="currentColor" stroke-width="2">
-                            <polyline points="6 9 12 15 18 9"></polyline>
-                        </svg>
-                    </button>
-                    <div class="collapse-content">
-                        <div class="hotkey-grid">
-                            <label>Keep (Review)</label>
-                            <input class="input input-sm hotkey-input" data-action="reviewKeep" value="s" readonly>
-                            <label>Reject (Review)</label>
-                            <input class="input input-sm hotkey-input" data-action="reviewReject" value="x" readonly>
-                            <label>Next (Review)</label>
-                            <input class="input input-sm hotkey-input" data-action="reviewNext" value="j" readonly>
-                            <label>Prev (Review)</label>
-                            <input class="input input-sm hotkey-input" data-action="reviewPrev" value="k" readonly>
-                            <label>Generate</label>
-                            <input class="input input-sm hotkey-input" data-action="generate" value="ctrl+g" readonly>
-                            <label>Save</label>
-                            <input class="input input-sm hotkey-input" data-action="save" value="ctrl+Enter" readonly>
-                            <label>Reject</label>
-                            <input class="input input-sm hotkey-input" data-action="reject" value="ctrl+Backspace"
-                                readonly>
+                    <section id="sidebar-workspace-section" class="sidebar-panel">
+                        <div class="sidebar-panel-header">
+                            <h3 class="sidebar-panel-title">Misc</h3>
+                            <div class="sidebar-panel-copy">Files, export, and advanced controls</div>
                         </div>
-                        <div class="hotkey-actions">
-                            <button id="save-hotkeys-btn" class="btn btn-sm btn-accent">Save</button>
-                            <button id="reset-hotkeys-btn" class="btn btn-sm">Reset</button>
+                        <div class="sidebar-actions">
+                            <button id="open-files-btn" class="btn btn-sm btn-secondary btn-full-width sidebar-action-btn">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                    stroke-width="2">
+                                    <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+                                </svg>
+                                Manage Files
+                            </button>
+                            <button id="open-export-btn" class="btn btn-sm btn-secondary btn-full-width sidebar-action-btn">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                    stroke-width="2">
+                                    <path d="M12 3v12"></path>
+                                    <path d="m7 10 5 5 5-5"></path>
+                                    <path d="M5 21h14"></path>
+                                </svg>
+                                <span>Export Dataset</span>
+                                <span id="sidebar-export-format" class="sidebar-format-badge">ShareGPT</span>
+                            </button>
+                            <button id="open-settings-btn" class="btn btn-sm btn-secondary btn-full-width sidebar-action-btn">
+                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                    stroke-width="2">
+                                    <circle cx="12" cy="12" r="3"></circle>
+                                    <path
+                                        d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82A1.65 1.65 0 0 0 3 14H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.6H9A1.65 1.65 0 0 0 10 3.09V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09A1.65 1.65 0 0 0 15 4.6a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9V9A1.65 1.65 0 0 0 20.91 10H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09A1.65 1.65 0 0 0 19.4 15z">
+                                    </path>
+                                </svg>
+                                Settings
+                            </button>
                         </div>
-                        <p class="small muted">Click an input, then press your desired key combo.</p>
-                    </div>
+                    </section>
                 </div>
             </aside>
 
@@ -400,27 +322,6 @@
 ---
 gpt: response"></textarea>
 
-
-                        <!-- Metadata -->
-                        <div class="metadata-row">
-                            <div class="form-group">
-                                <label for="tags">Tags</label>
-                                <input type="text" id="tags" class="input" placeholder="food, casual..."
-                                    list="tag-suggestions">
-                                <datalist id="tag-suggestions"></datalist>
-                            </div>
-                            <div class="form-group">
-                                <label for="rating">Rating</label>
-                                <select id="rating" class="select">
-                                    <option value="">-</option>
-                                    <option value="5">★★★★★</option>
-                                    <option value="4">★★★★</option>
-                                    <option value="3">★★★</option>
-                                    <option value="2">★★</option>
-                                    <option value="1">★</option>
-                                </select>
-                            </div>
-                        </div>
 
                         <!-- Action Buttons -->
                         <div class="action-bar">
@@ -569,9 +470,10 @@ gpt: response"></textarea>
                             <h2>Review Queue</h2>
                             <div class="review-controls">
                                 <span id="review-count">0 items</span>
+                                <button id="open-review-browser-btn" class="btn btn-sm btn-secondary">Browse Queue</button>
                                 <button id="keep-all-btn" class="btn btn-sm btn-success">Keep All</button>
                                 <button id="reject-all-btn" class="btn btn-sm btn-danger">Reject All</button>
-                                <button id="clear-queue-btn" class="btn btn-sm btn-secondary">Clear</button>
+                                <button id="clear-queue-btn" class="btn btn-sm btn-secondary">Discard All</button>
                             </div>
                         </div>
 
@@ -594,6 +496,9 @@ gpt: response"></textarea>
                         <!-- Current Review Item -->
                         <div id="review-conversation" class="conversation">
                         </div>
+                        <textarea id="review-edit" class="textarea conversation-edit hidden" placeholder="user: message
+---
+gpt: response"></textarea>
 
                         <!-- Review Actions -->
                         <div class="action-bar">
@@ -620,6 +525,7 @@ gpt: response"></textarea>
                                 </svg>
                                 Edit
                             </button>
+                            <button id="review-edit-cancel-btn" class="btn btn-sm hidden">Cancel Edit</button>
                         </div>
                     </section>
                 </div>
@@ -665,6 +571,10 @@ gpt: response"></textarea>
                     <!-- Left: Settings -->
                     <div class="export-settings">
                         <div class="form-group">
+                            <label for="export-search-input">Search</label>
+                            <input type="text" id="export-search-input" class="input" placeholder="Search conversations...">
+                        </div>
+                        <div class="form-group">
                             <label>Format</label>
                             <select id="export-format" class="select">
                                 <option value="sharegpt">ShareGPT</option>
@@ -677,11 +587,15 @@ gpt: response"></textarea>
                             <label>System Prompt Source</label>
                             <div class="checkbox-row">
                                 <label class="toggle-label">
-                                    <input type="checkbox" id="export-prompt-source-chat">
+                                    <input type="radio" name="export-prompt-source" id="export-prompt-source-custom" value="custom" checked>
+                                    <span>Custom</span>
+                                </label>
+                                <label class="toggle-label">
+                                    <input type="radio" name="export-prompt-source" id="export-prompt-source-chat" value="chat">
                                     <span>Chat Tab</span>
                                 </label>
                                 <label class="toggle-label">
-                                    <input type="checkbox" id="export-prompt-source-generate">
+                                    <input type="radio" name="export-prompt-source" id="export-prompt-source-generate" value="generate">
                                     <span>Generate Tab</span>
                                 </label>
                             </div>
@@ -716,8 +630,13 @@ gpt: response"></textarea>
                                 placeholder="Enter system prompt to apply to all exports..."></textarea>
                         </div>
 
-                        <div class="export-summary">
-                            <span id="export-file-count">0</span> conversations selected
+                        <div class="selection-toolbar">
+                            <button id="export-select-toggle" class="btn btn-sm btn-secondary">Select All</button>
+                            <button id="export-load-all" class="btn btn-sm btn-secondary">Load All</button>
+                            <div id="export-selection-chip" class="selection-chip hidden">
+                                <span id="export-file-count">0 selected</span>
+                                <button id="export-clear-selection" class="selection-chip-clear" title="Clear selection">×</button>
+                            </div>
                         </div>
                         <div class="form-group export-filename-group">
                             <label for="export-filename">Custom Filename (optional)</label>
@@ -729,14 +648,20 @@ gpt: response"></textarea>
                     <div class="export-selection">
                         <div class="export-selection-header">
                             <label>Select Conversations</label>
-                            <div class="export-selection-actions">
-                                <button id="export-select-all" class="btn btn-sm">Select All</button>
-                                <button id="export-select-none" class="btn btn-sm">Select None</button>
-                            </div>
                             <button id="view-exported-datasets-btn" class="btn btn-sm btn-secondary ml-auto">View Exported</button>
                         </div>
-                        <div id="export-file-list" class="export-file-list">
-                            <!-- Files loaded dynamically -->
+                        <div class="modal-preview-layout">
+                            <div id="export-file-list" class="export-file-list">
+                                <!-- Files loaded dynamically -->
+                            </div>
+                            <div class="modal-preview-card">
+                                <div class="modal-preview-header">Preview</div>
+                                <div id="export-preview" class="modal-preview-body empty-files">Select a conversation to preview it here</div>
+                            </div>
+                        </div>
+                        <div class="modal-actions">
+                            <span id="export-pagination-status" class="muted small"></span>
+                            <button id="export-load-more" class="btn btn-sm btn-secondary hidden">Load More</button>
                         </div>
                     </div>
                 </div>
@@ -767,7 +692,6 @@ gpt: response"></textarea>
                     <div class="file-tabs">
                         <button class="file-tab active" data-folder="wanted">Wanted</button>
                         <button class="file-tab" data-folder="rejected">Rejected</button>
-                        <button class="file-tab" data-folder="review">Review</button>
                     </div>
 
                     <div class="files-search-actions">
@@ -776,24 +700,34 @@ gpt: response"></textarea>
 
                     <div class="export-selection flex-1">
                         <div class="export-selection-header">
-                            <label><span id="files-modal-count">0</span> Selected</label>
+                            <label>Saved Conversations</label>
                             <div class="export-selection-actions" id="files-bulk-actions">
-                                <button id="files-select-all" class="btn btn-sm">Select All</button>
-                                <button id="files-select-none" class="btn btn-sm">Select None</button>
+                                <button id="files-select-toggle" class="btn btn-sm btn-secondary">Select All</button>
+                                <button id="files-load-all" class="btn btn-sm btn-secondary">Load All</button>
                                 <button id="files-bulk-reject" class="btn btn-sm btn-secondary" data-folder="wanted"
                                     hidden>Move to Rejected</button>
                                 <button id="files-bulk-restore" class="btn btn-sm btn-secondary" data-folder="rejected"
                                     hidden>Move to Wanted</button>
-                                <button id="files-bulk-keep" class="btn btn-sm btn-success" data-folder="review"
-                                    hidden>Keep Selected</button>
-                                <button id="files-bulk-discard" class="btn btn-sm btn-danger" data-folder="review"
-                                    hidden>Reject Selected</button>
                                 <button id="files-bulk-delete" class="btn btn-sm btn-danger"
                                     data-folder="wanted rejected" hidden>Delete</button>
+                                <div id="files-selection-chip" class="selection-chip hidden">
+                                    <span id="files-modal-count">0 selected</span>
+                                    <button id="files-clear-selection" class="selection-chip-clear" title="Clear selection">×</button>
+                                </div>
                             </div>
                         </div>
-                        <div id="files-modal-list" class="export-file-list max-h-50vh">
-                            <!-- Files loaded dynamically -->
+                        <div class="modal-preview-layout">
+                            <div id="files-modal-list" class="export-file-list max-h-50vh">
+                                <!-- Files loaded dynamically -->
+                            </div>
+                            <div class="modal-preview-card">
+                                <div class="modal-preview-header">Preview</div>
+                                <div id="files-preview" class="modal-preview-body empty-files">Select a conversation to preview it here</div>
+                            </div>
+                        </div>
+                        <div class="modal-actions">
+                            <span id="files-pagination-status" class="muted small"></span>
+                            <button id="files-load-more" class="btn btn-sm btn-secondary hidden">Load More</button>
                         </div>
                     </div>
                 </div>
@@ -814,9 +748,190 @@ gpt: response"></textarea>
                     </button>
                 </div>
                 <div class="export-body flex-col">
+                    <div class="files-search-actions">
+                        <input type="text" id="exported-datasets-search-input" class="input" placeholder="Search exported datasets...">
+                    </div>
                     <div class="export-selection flex-1">
                         <div id="exported-datasets-list" class="export-file-list max-h-50vh">
                             <!-- Items populated by JS -->
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div id="settings-modal" class="modal hidden">
+            <div class="modal-backdrop"></div>
+            <div class="modal-content export-modal-content settings-modal-content">
+                <div class="export-header">
+                    <h3>Settings</h3>
+                    <button id="close-settings-modal" class="icon-btn" title="Close">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="2">
+                            <line x1="18" y1="6" x2="6" y2="18" />
+                            <line x1="6" y1="6" x2="18" y2="18" />
+                        </svg>
+                    </button>
+                </div>
+
+                <div class="export-body">
+                    <div class="export-settings settings-search-panel">
+                        <div class="form-group">
+                            <label for="settings-search-input">Search Settings</label>
+                            <input type="text" id="settings-search-input" class="input" placeholder="Search settings...">
+                        </div>
+                        <div class="settings-category-nav">
+                            <button class="settings-category-btn active" type="button" data-settings-target="settings-sync-section">Sync</button>
+                            <button class="settings-category-btn" type="button" data-settings-target="settings-hotkeys-section">Hotkeys</button>
+                        </div>
+                    </div>
+                    <div class="settings-sections">
+                        <section id="settings-sync-section" class="settings-section" data-settings-search="sync auto sync auto save reject reason history">
+                            <div class="settings-section-header">
+                                <h4>Sync</h4>
+                            </div>
+                            <div class="form-grid">
+                                <div class="form-group">
+                                    <label class="toggle-label">
+                                        <input type="checkbox" id="auto-sync-enabled" checked>
+                                        <span>Auto-sync when online</span>
+                                    </label>
+                                </div>
+                                <div class="form-group">
+                                    <label for="sync-interval">Sync interval (seconds)</label>
+                                    <input type="number" id="sync-interval" class="input" value="30" min="5" max="300">
+                                </div>
+                                <div class="form-group">
+                                    <label class="toggle-label">
+                                        <input type="checkbox" id="auto-save-enabled" checked>
+                                        <span>Auto-save drafts locally</span>
+                                    </label>
+                                </div>
+                                <div class="form-group">
+                                    <label for="save-interval">Save interval (ms)</label>
+                                    <input type="number" id="save-interval" class="input" value="2000" min="500" max="10000"
+                                        step="500">
+                                </div>
+                                <div class="form-group">
+                                    <label class="toggle-label">
+                                        <input type="checkbox" id="ask-reject-reason" checked>
+                                        <span>Ask for reject reason</span>
+                                    </label>
+                                </div>
+                                <div class="form-group">
+                                    <label for="history-max-setting">Prompt history limit</label>
+                                    <input type="number" id="history-max-setting" class="input" value="30" min="5" max="500">
+                                </div>
+                            </div>
+                        </section>
+
+                        <section id="settings-hotkeys-section" class="settings-section" data-settings-search="hotkeys shortcuts key bindings">
+                            <div class="settings-section-header">
+                                <h4>Hotkeys</h4>
+                            </div>
+                            <div class="hotkey-grid">
+                                <label>Keep (Review)</label>
+                                <input class="input input-sm hotkey-input" data-action="reviewKeep" value="s" readonly>
+                                <label>Reject (Review)</label>
+                                <input class="input input-sm hotkey-input" data-action="reviewReject" value="x" readonly>
+                                <label>Next (Review)</label>
+                                <input class="input input-sm hotkey-input" data-action="reviewNext" value="j" readonly>
+                                <label>Prev (Review)</label>
+                                <input class="input input-sm hotkey-input" data-action="reviewPrev" value="k" readonly>
+                                <label>Generate</label>
+                                <input class="input input-sm hotkey-input" data-action="generate" value="ctrl+g" readonly>
+                                <label>Save</label>
+                                <input class="input input-sm hotkey-input" data-action="save" value="ctrl+Enter" readonly>
+                                <label>Reject</label>
+                                <input class="input input-sm hotkey-input" data-action="reject" value="ctrl+Backspace" readonly>
+                            </div>
+                            <div class="hotkey-actions">
+                                <button id="save-hotkeys-btn" class="btn btn-sm btn-accent">Save</button>
+                                <button id="reset-hotkeys-btn" class="btn btn-sm">Reset</button>
+                            </div>
+                            <p class="small muted">Click an input, then press your desired key combo.</p>
+                        </section>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div id="custom-params-modal" class="modal hidden">
+            <div class="modal-backdrop"></div>
+            <div class="modal-content files-modal-content custom-params-modal-content">
+                <div class="export-header">
+                    <h3>Custom Parameters</h3>
+                    <button id="close-custom-params-modal" class="icon-btn" title="Close">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="2">
+                            <line x1="18" y1="6" x2="6" y2="18" />
+                            <line x1="6" y1="6" x2="18" y2="18" />
+                        </svg>
+                    </button>
+                </div>
+                <div class="export-body flex-col">
+                    <div class="files-search-actions">
+                        <input type="text" id="custom-params-search-input" class="input" placeholder="Search parameters...">
+                    </div>
+                    <div id="custom-params-modal-list" class="custom-params-list custom-params-modal-list"></div>
+                    <div class="custom-param-form">
+                        <input type="text" id="custom-param-key" class="input" placeholder="Parameter">
+                        <input type="text" id="custom-param-value" class="input" placeholder="Value">
+                        <button id="custom-param-add-btn" class="icon-btn" title="Add parameter">
+                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                stroke-width="2">
+                                <line x1="12" y1="5" x2="12" y2="19" />
+                                <line x1="5" y1="12" x2="19" y2="12" />
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div id="review-browser-modal" class="modal hidden">
+            <div class="modal-backdrop"></div>
+            <div class="modal-content files-modal-content">
+                <div class="export-header">
+                    <h3>Review Browser</h3>
+                    <button id="close-review-browser-modal" class="icon-btn" title="Close">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="2">
+                            <line x1="18" y1="6" x2="6" y2="18" />
+                            <line x1="6" y1="6" x2="18" y2="18" />
+                        </svg>
+                    </button>
+                </div>
+                <div class="export-body flex-col">
+                    <div class="files-search-actions">
+                        <input type="text" id="review-browser-search-input" class="input" placeholder="Search review queue...">
+                    </div>
+                    <div class="export-selection flex-1">
+                        <div class="export-selection-header">
+                            <label>Queued Conversations</label>
+                            <div class="export-selection-actions">
+                                <button id="review-browser-select-toggle" class="btn btn-sm btn-secondary">Select All</button>
+                                <button id="review-browser-load-all" class="btn btn-sm btn-secondary">Load All</button>
+                                <button id="review-browser-bulk-keep" class="btn btn-sm btn-success">Keep Selected</button>
+                                <button id="review-browser-bulk-reject" class="btn btn-sm btn-danger">Reject Selected</button>
+                                <div id="review-browser-selection-chip" class="selection-chip hidden">
+                                    <span id="review-browser-count">0 selected</span>
+                                    <button id="review-browser-clear-selection" class="selection-chip-clear" title="Clear selection">×</button>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="modal-preview-layout">
+                            <div id="review-browser-list" class="export-file-list max-h-50vh">
+                                <!-- Review items loaded dynamically -->
+                            </div>
+                            <div class="modal-preview-card">
+                                <div class="modal-preview-header">Preview</div>
+                                <div id="review-browser-preview" class="modal-preview-body empty-files">Click a queue item to load it into the review tab</div>
+                            </div>
+                        </div>
+                        <div class="modal-actions">
+                            <span id="review-browser-pagination-status" class="muted small"></span>
+                            <button id="review-browser-load-more" class="btn btn-sm btn-secondary hidden">Load More</button>
                         </div>
                     </div>
                 </div>
@@ -968,6 +1083,12 @@ gpt: response"></textarea>
     </div>
 
     <script src="app.js?v=4.0.0"></script>
+    <script>
+        // Register service worker
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('/sw.js').catch(() => {});
+        }
+    </script>
 </body>
 
 </html>

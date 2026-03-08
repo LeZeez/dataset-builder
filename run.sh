@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Synthetic Dataset Generator - Run Script
+# Synthetic Dataset Builder - Run Script
 
 # Check for virtual environment
 if [ ! -d "venv" ]; then
@@ -14,7 +14,7 @@ source venv/bin/activate
 # Install dependencies if needed
 if [ ! -f "venv/.installed" ]; then
     echo "📥 Installing dependencies..."
-    pip install -r requirements.txt
+    python3 -m pip install -r requirements.txt
     touch venv/.installed
 fi
 
@@ -29,7 +29,7 @@ if [ -z "$OPENAI_API_KEY" ] && [ -z "$ANTHROPIC_API_KEY" ] && [ -z "$GOOGLE_API_
 fi
 
 echo ""
-echo "🗂️ Starting Synthetic Dataset Generator..."
+echo "🗂️ Starting Synthetic Dataset Builder..."
 echo ""
 
-python server.py
+python3 server.py
