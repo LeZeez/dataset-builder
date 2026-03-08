@@ -35,6 +35,7 @@ def get_stats(data_dir: str = "data/wanted") -> dict:
         "total_messages": 0,
         "human_messages": 0,
         "gpt_messages": 0,
+        "system_messages": 0,
         "avg_messages_per_conv": 0,
         "avg_human_msg_length": 0,
         "avg_gpt_msg_length": 0,
@@ -43,11 +44,11 @@ def get_stats(data_dir: str = "data/wanted") -> dict:
         "earliest": None,
         "latest": None
     }
-    
+
     human_lengths = []
     gpt_lengths = []
     dates = []
-    
+
     for json_file in json_files:
         try:
             with open(json_file, 'r', encoding='utf-8') as f:
@@ -55,17 +56,20 @@ def get_stats(data_dir: str = "data/wanted") -> dict:
         except json.JSONDecodeError:
             print(f"Skipping malformed JSON file: {json_file}")
             continue
-        
+
         messages = conv.get("conversations", [])
         stats["total_messages"] += len(messages)
-        
+
         for msg in messages:
-            if msg["from"] == "human":
+            role = msg.get("from", "")
+            if role == "human":
                 stats["human_messages"] += 1
                 human_lengths.append(len(msg["value"]))
-            else:
+            elif role == "gpt":
                 stats["gpt_messages"] += 1
                 gpt_lengths.append(len(msg["value"]))
+            elif role == "system":
+                stats["system_messages"] += 1
         
         # Extract date from ID or metadata
         metadata = conv.get("metadata", {})

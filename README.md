@@ -141,19 +141,23 @@ dataset-builder/
 ├── ui/                     # Web interface
 │   ├── index.html
 │   ├── app.js
-│   └── styles.css
+│   ├── styles.css
+│   └── sw.js               # Service worker (PWA cache)
 ├── data/
 │   ├── wanted/             # Approved conversations
 │   ├── rejected/           # Discarded conversations
 │   └── prompts/            # Saved prompt templates
 ├── defaults/               # Default prompt & config templates
 ├── scripts/
+│   ├── database.py         # SQLite storage layer (conversations, drafts, presets, queue)
 │   ├── parser.py           # Minimal → Base format converter
 │   ├── exporter.py         # Base → ShareGPT / Alpaca / OpenAI
 │   └── stats.py            # Dataset statistics
+├── tests/
+│   └── test_regression.py  # Regression tests (pytest)
 ├── exports/                # Exported datasets
 ├── server.py               # Flask backend
-├── config.json             # Configuration (auto-created on first run)
+├── config.json             # Runtime/server config (auto-created on first run)
 ├── config.example.json     # Configuration template
 └── requirements.txt
 ```

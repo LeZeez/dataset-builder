@@ -571,7 +571,7 @@ gpt: response"></textarea>
                                 <span id="review-count">0 items</span>
                                 <button id="keep-all-btn" class="btn btn-sm btn-success">Keep All</button>
                                 <button id="reject-all-btn" class="btn btn-sm btn-danger">Reject All</button>
-                                <button id="clear-queue-btn" class="btn btn-sm btn-secondary">Clear</button>
+                                <button id="clear-queue-btn" class="btn btn-sm btn-secondary">Discard All</button>
                             </div>
                         </div>
 
@@ -968,6 +968,12 @@ gpt: response"></textarea>
     </div>
 
     <script src="app.js?v=4.0.0"></script>
+    <script>
+        // Register service worker
+        if ('serviceWorker' in navigator) {
+            navigator.serviceWorker.register('/sw.js').catch(() => {});
+        }
+    </script>
 </body>
 
 </html>

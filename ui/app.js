@@ -154,11 +154,12 @@ const syncEngine = {
         document.addEventListener('visibilitychange', () => {
             if (!document.hidden && this.pendingChanges) this.push();
         });
-        window.addEventListener('beforeunload', () => {
+        window.addEventListener('beforeunload', async () => {
             if (this.pendingChanges) {
                 try {
-                    const draft = JSON.stringify({ _sessionId: SESSION_ID, _localTime: new Date().toISOString() });
-                    navigator.sendBeacon('/api/drafts', new Blob([draft], { type: 'application/json' }));
+                    // Send actual draft content, not just session metadata
+                    const draft = await buildDraftObject();
+                    navigator.sendBeacon('/api/drafts', new Blob([JSON.stringify(draft)], { type: 'application/json' }));
                 } catch (e) { }
             }
         });
@@ -818,7 +819,9 @@ async function savePrompt() {
             body: JSON.stringify({ name, content })
         });
         if (res.ok) {
-            state.currentPromptName = name;
+            const data = await res.json();
+            // Use the sanitized name from server, not the raw client name
+            state.currentPromptName = data.name || name;
             await loadPrompts();
             toast('Prompt saved!', 'success');
         }
@@ -1285,6 +1288,7 @@ async function loadFilesModal(folder = 'wanted') {
             const res = await fetch(url);
             if (res.ok) {
                 const data = await res.json();
+                // Support both old array format and new paginated format
                 state.filesModal.files = Array.isArray(data) ? data : (data.conversations || []);
             }
         }
@@ -2430,7 +2434,22 @@ async function rejectAllReview() {
 }
 
 async function clearReviewQueue() {
-    await rejectAllReview();
+    if (state.review.queue.length === 0) return;
+    if (!confirm(`Discard all ${state.review.queue.length} conversations from the queue? This will NOT save them anywhere.`)) return;
+    showSaveIndicator('Clearing...');
+    try {
+        await fetch('/api/review-queue', { method: 'DELETE' });
+        await dbClear('reviewQueue');
+        state.review.queue = [];
+        state.review.currentIndex = 0;
+        updateReviewBadge();
+        renderReviewItem();
+        hideSaveIndicator('Cleared');
+        toast('Queue cleared', 'info');
+    } catch (e) {
+        toast('Failed to clear queue', 'error');
+        hideSaveIndicator('Clear failed');
+    }
 }
 
 // ============ TABS ============
@@ -2461,13 +2480,20 @@ function closeSidebar() {
 async function saveApiKey() {
     const key = els.apiKey.value.trim();
     if (key.startsWith('•')) { toast('Enter a new key', 'info'); return; }
+    // Preserve the current base URL value before config reload wipes it
+    const currentBaseUrl = els.baseUrl.value;
     try {
         const res = await fetch('/api/config/key', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ provider: els.provider.value, api_key: key })
         });
-        if (res.ok) { toast('API key saved!', 'success'); loadConfig(); }
+        if (res.ok) {
+            toast('API key saved!', 'success');
+            await loadConfig();
+            // Restore base URL that loadConfig() overwrote from disk
+            els.baseUrl.value = currentBaseUrl;
+        }
     } catch (e) { toast('Failed to save key', 'error'); }
 }
 
@@ -2528,10 +2554,10 @@ function updateExportPromptState() {
     const useChat = els.exportPromptSourceChat?.checked;
     const useGenerate = els.exportPromptSourceGenerate?.checked;
 
-    // Mutual exclusivity
+    // Radio-like mutual exclusivity: the most recently clicked one wins
     if (useChat && useGenerate) {
-        if (this === els.exportPromptSourceChat) els.exportPromptSourceGenerate.checked = false;
-        else els.exportPromptSourceChat.checked = false;
+        // Uncheck the other one
+        els.exportPromptSourceGenerate.checked = false;
     }
 
     if (els.exportPromptSourceChat?.checked || els.exportPromptSourceGenerate?.checked) {
@@ -2550,8 +2576,10 @@ async function loadExportFiles() {
         const res = await fetch('/api/conversations?folder=wanted');
         if (res.ok) {
             const data = await res.json();
+            // Support both old array format and new paginated format
             state.export.files = Array.isArray(data) ? data : (data.conversations || []);
-            state.export.selectedIds = new Set(state.export.files.map(f => f.id));
+            // Don't select all by default - start with nothing selected
+            state.export.selectedIds = new Set();
             renderExportFileList();
             updateExportCount();
         }
@@ -2659,6 +2687,8 @@ function setupAutoSaveTimer() {
 function onDraftInput() { debouncedSaveDraft(); }
 
 function debouncedSaveDraft() {
+    // Respect the autoSave setting
+    if (!syncSettings.autoSaveEnabled) return;
     if (saveDraftTimer) clearTimeout(saveDraftTimer);
     const delay = syncSettings.saveInterval || 2000;
     saveDraftTimer = setTimeout(async () => {
@@ -2676,11 +2706,15 @@ async function saveDraftToLocal() {
     try {
         const draft = await buildDraftObject();
         await dbSet('drafts', SESSION_ID, draft);
-        // Also keep localStorage as fallback
-        localStorage.setItem('dataset-builder-draft', JSON.stringify(draft));
+        // IndexedDB is the single source of truth - no localStorage duplication
         hideSaveIndicator('Saved ✓');
     } catch (e) {
         console.error('Failed to save draft locally:', e);
+        // Fallback to localStorage only if IndexedDB fails
+        try {
+            const draft = await buildDraftObject();
+            localStorage.setItem('dataset-builder-draft', JSON.stringify(draft));
+        } catch (e2) { }
         hideSaveIndicator('Save failed');
     }
 }
@@ -3129,17 +3163,27 @@ function setupEventListeners() {
     els.confirmExport?.addEventListener('click', () => {
         const format = els.exportFormat.value;
         const systemPrompt = getExportSystemPrompt();
-        const selectedIds = state.export.selectedIds.size > 0 ? Array.from(state.export.selectedIds) : null;
-        if (selectedIds && selectedIds.length === 0) { toast('Please select at least one conversation to export', 'error'); return; }
+        const selectedIds = Array.from(state.export.selectedIds);
+        // Fix: zero selected means nothing selected, NOT "export all"
+        if (selectedIds.length === 0) {
+            toast('Please select at least one conversation to export', 'error');
+            return;
+        }
         exportDataset(format, selectedIds, systemPrompt);
         closeExportModal();
     });
     els.cancelExport?.addEventListener('click', closeExportModal);
     els.closeExport?.addEventListener('click', closeExportModal);
 
-    // Checkbox events
-    els.exportPromptSourceChat?.addEventListener('change', updateExportPromptState.bind(els.exportPromptSourceChat));
-    els.exportPromptSourceGenerate?.addEventListener('change', updateExportPromptState.bind(els.exportPromptSourceGenerate));
+    // Checkbox events - mutual exclusivity for export prompt source
+    els.exportPromptSourceChat?.addEventListener('change', () => {
+        if (els.exportPromptSourceChat.checked) els.exportPromptSourceGenerate.checked = false;
+        updateExportPromptState();
+    });
+    els.exportPromptSourceGenerate?.addEventListener('change', () => {
+        if (els.exportPromptSourceGenerate.checked) els.exportPromptSourceChat.checked = false;
+        updateExportPromptState();
+    });
 
     // Export Presets
     els.exportPresetSelect?.addEventListener('change', loadExportPreset);

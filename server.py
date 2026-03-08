@@ -36,9 +36,9 @@ from flask_cors import CORS
 from werkzeug.exceptions import HTTPException
 
 # Import our modules
-from scripts.parser import generate_conversation_id, validate_conversation
+from scripts.parser import validate_conversation
 from scripts.exporter import export_dataset
-from scripts.stats import get_stats
+from scripts import database as db
 
 # Load config
 CONFIG_PATH = Path('config.json')
@@ -396,13 +396,12 @@ def get_prompt_legacy(version: str):
 @app.route('/api/stats', methods=['GET'])
 def get_statistics():
     """Get dataset statistics."""
-    wanted_stats = get_stats('data/wanted')
-    rejected_count = len(list((DATA_DIR / 'rejected').glob('*.json'))) if (DATA_DIR / 'rejected').exists() else 0
-    
+    stats = db.get_stats()
+
     return jsonify({
-        'wanted': wanted_stats.get('total_conversations', 0),
-        'rejected': rejected_count,
-        'details': wanted_stats
+        'wanted': stats.get('wanted', stats.get('total_conversations', 0)),
+        'rejected': stats.get('rejected', 0),
+        'details': stats
     })
 
 
@@ -468,7 +467,7 @@ def _is_private_ip(hostname: str) -> bool:
         return True
 
 
-def validate_base_url(url: str) -> bool:
+def validate_base_url(url: str, config: dict = None) -> bool:
     """Validate base_url to prevent SSRF attacks.
 
     - Always blocks non-http(s) schemes
@@ -479,6 +478,8 @@ def validate_base_url(url: str) -> bool:
     """
     if not url:
         return True
+    if config is None:
+        config = load_config()
     try:
         parsed = urlparse(url)
         if parsed.scheme not in ('http', 'https'):
@@ -538,87 +539,95 @@ def generate_conversation():
 
 def generate_openai(prompt: str, model: str, temperature: float, config: dict, custom_params: dict = None) -> str:
     """Generate using OpenAI API."""
-    
+
     provider_config = config.get('providers', {}).get('openai', {})
-    
+
     # Try config first, then environment variable
     api_key = provider_config.get('api_key') or os.environ.get('OPENAI_API_KEY')
     if not api_key:
         raise ValueError('OpenAI API key not set. Configure it in Settings.')
-    
+
     base_url = provider_config.get('base_url') or 'https://api.openai.com/v1'
-    if not validate_base_url(base_url):
+    if not validate_base_url(base_url, config):
         raise ValueError('Invalid base URL configured for OpenAI.')
 
     client = openai.OpenAI(api_key=api_key, base_url=base_url)
-    
+
+    max_tokens = config.get('api', {}).get('max_tokens', 2048)
     kwargs = dict(
         model=model,
         messages=[{'role': 'user', 'content': prompt}],
         temperature=temperature,
-        max_tokens=2048
+        max_tokens=max_tokens
     )
     if custom_params:
         kwargs['extra_body'] = custom_params
-    
+
     response = client.chat.completions.create(**kwargs)
-    
+
     return response.choices[0].message.content
 
 
 def generate_anthropic(prompt: str, model: str, temperature: float, config: dict, custom_params: dict = None) -> str:
     """Generate using Anthropic API."""
-    
+
     provider_config = config.get('providers', {}).get('anthropic', {})
-    
+
     api_key = provider_config.get('api_key') or os.environ.get('ANTHROPIC_API_KEY')
     if not api_key:
         raise ValueError('Anthropic API key not set. Configure it in Settings.')
-    
+
     base_url = provider_config.get('base_url') or 'https://api.anthropic.com/v1'
-    if not validate_base_url(base_url):
+    if not validate_base_url(base_url, config):
         raise ValueError('Invalid base URL configured for Anthropic.')
 
     client = anthropic.Anthropic(api_key=api_key, base_url=base_url)
-    
+
+    max_tokens = config.get('api', {}).get('max_tokens', 2048)
     kwargs = dict(
         model=model or 'claude-3-5-sonnet-20241022',
-        max_tokens=2048,
+        max_tokens=max_tokens,
         messages=[{'role': 'user', 'content': prompt}],
         temperature=temperature
     )
     if custom_params:
         kwargs.update(custom_params)
-    
+
     response = client.messages.create(**kwargs)
-    
+
     return response.content[0].text
 
 
 def generate_google(prompt: str, model: str, temperature: float, config: dict, custom_params: dict = None) -> str:
     """Generate using Google Gemini API."""
-    
+
     provider_config = config.get('providers', {}).get('google', {})
-    
+
     api_key = provider_config.get('api_key') or os.environ.get('GOOGLE_API_KEY')
     if not api_key:
         raise ValueError('Google API key not set. Configure it in Settings.')
-    
-    genai.configure(api_key=api_key)
-    
+
+    base_url = provider_config.get('base_url', '')
+    # Configure with base_url if provided (for proxy/custom endpoints)
+    if base_url:
+        genai.configure(api_key=api_key, client_options={'api_endpoint': base_url})
+    else:
+        genai.configure(api_key=api_key)
+
+    max_tokens = config.get('api', {}).get('max_tokens', 2048)
     gen_config = dict(
         temperature=temperature,
-        max_output_tokens=2048
+        max_output_tokens=max_tokens
     )
     if custom_params:
         gen_config.update(custom_params)
-    
+
     gen_model = genai.GenerativeModel(model or 'gemini-1.5-flash')
     response = gen_model.generate_content(
         prompt,
         generation_config=genai.types.GenerationConfig(**gen_config)
     )
-    
+
     return response.text
 
 
@@ -631,38 +640,43 @@ def save_conversation_endpoint():
     conversation = data.get('conversation', {})
     folder = data.get('folder', 'wanted')  # 'wanted' or 'rejected'
     metadata = data.get('metadata', {})
-    
+
     if not is_valid_folder(folder):
         return jsonify({'error': 'Invalid folder'}), 400
-    
-    # Generate ID
-    target_dir = f'data/{folder}'
-    conv_id = generate_conversation_id(target_dir)
-    
-    # Build full conversation object
+
+    # Generate ID atomically via SQLite
+    conv_id = db.generate_conversation_id()
+    messages = conversation.get('conversations', [])
+
+    # Build metadata
+    full_metadata = {
+        'created_at': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
+        'source': 'synthetic',
+        **metadata
+    }
+
+    # Build full conversation for validation
     full_conv = {
         'id': conv_id,
-        'conversations': conversation.get('conversations', []),
-        'metadata': {
-            'created_at': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
-            'source': 'synthetic',
-            **metadata
-        }
+        'conversations': messages,
+        'metadata': full_metadata
     }
-    
+
     # Validate
     is_valid, errors = validate_conversation(full_conv)
     if not is_valid:
         return jsonify({'error': 'Invalid conversation', 'details': errors}), 400
-    
-    # Save
-    folder_path = Path(target_dir)
+
+    # Save to SQLite
+    db.save_conversation(conv_id, messages, folder, full_metadata)
+
+    # Also save JSON file for backward compatibility
+    folder_path = Path(f'data/{folder}')
     folder_path.mkdir(parents=True, exist_ok=True)
-    
     filepath = folder_path / f'{conv_id}.json'
     with open(filepath, 'w', encoding='utf-8') as f:
         json.dump(full_conv, f, ensure_ascii=False, indent=2)
-    
+
     return jsonify({
         'success': True,
         'id': conv_id,
@@ -678,47 +692,51 @@ def save_bulk_conversations():
     data = request.get_json() or {}
     items = data.get('items', [])
     folder = data.get('folder', 'wanted')
-    
+
     if not is_valid_folder(folder):
         return jsonify({'error': 'Invalid folder'}), 400
-    
+
     saved = []
     errors = []
-    
+
     for item in items:
         try:
             conversation = item.get('conversation', {})
             metadata = item.get('metadata', {})
-            
-            target_dir = f'data/{folder}'
-            conv_id = generate_conversation_id(target_dir)
-            
+
+            conv_id = db.generate_conversation_id()
+            messages = conversation.get('conversations', [])
+
+            full_metadata = {
+                'created_at': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
+                'source': 'synthetic',
+                **metadata
+            }
+
             full_conv = {
                 'id': conv_id,
-                'conversations': conversation.get('conversations', []),
-                'metadata': {
-                    'created_at': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
-                    'source': 'synthetic',
-                    **metadata
-                }
+                'conversations': messages,
+                'metadata': full_metadata
             }
-            
+
             is_valid, errs = validate_conversation(full_conv)
             if not is_valid:
                 errors.append({'error': errs})
                 continue
-            
-            folder_path = Path(target_dir)
+
+            db.save_conversation(conv_id, messages, folder, full_metadata)
+
+            # Also save JSON file for backward compatibility
+            folder_path = Path(f'data/{folder}')
             folder_path.mkdir(parents=True, exist_ok=True)
-            
             filepath = folder_path / f'{conv_id}.json'
             with open(filepath, 'w', encoding='utf-8') as f:
                 json.dump(full_conv, f, ensure_ascii=False, indent=2)
-            
+
             saved.append({'id': conv_id})
         except Exception as e:
             errors.append({'error': str(e)})
-    
+
     return jsonify({
         'success': True,
         'saved_count': len(saved),
@@ -848,53 +866,27 @@ def export_dataset_endpoint(format: str):
 
 @app.route('/api/conversations', methods=['GET'])
 def list_conversations():
-    """List all saved conversations."""
+    """List all saved conversations with pagination."""
     folder = request.args.get('folder', 'wanted')
     if not is_valid_folder(folder):
         return jsonify({'error': 'Invalid folder'}), 400
 
     search = request.args.get('search', '').strip().lower()
     tag_filter = request.args.get('tag', '').strip()
-    folder_path = DATA_DIR / folder
-    
-    if not folder_path.exists():
-        return jsonify([])
-    
-    conversations = []
-    for json_file in sorted(folder_path.glob('*.json'), reverse=True):
-        try:
-            with open(json_file, 'r', encoding='utf-8') as f:
-                conv = json.load(f)
-                msgs = conv.get('conversations', [])
-                # Get first user message as preview
-                first_user = next((m['value'] for m in msgs if m.get('from') == 'human'), '')
-                tags = conv.get('metadata', {}).get('tags', [])
-                
-                # Apply search filter
-                if search:
-                    all_text = ' '.join(m.get('value', '') for m in msgs).lower()
-                    if search not in all_text and search not in json_file.stem.lower():
-                        continue
-                
-                # Apply tag filter
-                if tag_filter and tag_filter not in tags:
-                    continue
-                
-                conversations.append({
-                    'id': conv.get('id', json_file.stem),
-                    'preview': first_user[:80] if first_user else json_file.stem,
-                    'created_at': conv.get('metadata', {}).get('created_at'),
-                    'tags': tags,
-                    'turns': len([m for m in msgs if m.get('from') in ('human', 'gpt')])
-                })
-        except json.JSONDecodeError:
-            # Skip malformed files
-            continue
-        except Exception:
-            # Skip other processing errors
-            continue
-    
-    return jsonify(conversations)
+    limit = int(request.args.get('limit', 50))
+    offset = int(request.args.get('offset', 0))
+
+    conversations, total = db.list_conversations(
+        folder=folder, search=search, tag=tag_filter,
+        limit=limit, offset=offset
+    )
+
+    return jsonify({
+        'conversations': conversations,
+        'total': total,
+        'limit': limit,
+        'offset': offset
+    })
 
 
 @app.route('/api/conversation/<conv_id>', methods=['GET'])
@@ -907,16 +899,11 @@ def get_conversation(conv_id: str):
     if not is_valid_folder(folder):
         return jsonify({'error': 'Invalid folder'}), 400
 
-    filepath = DATA_DIR / folder / f'{conv_id}.json'
-    
-    if not filepath.exists():
+    conv = db.get_conversation(conv_id, folder)
+    if not conv:
         return jsonify({'error': 'Conversation not found'}), 404
-    
-    try:
-        with open(filepath, 'r', encoding='utf-8') as f:
-            return jsonify(json.load(f))
-    except json.JSONDecodeError:
-        return jsonify({'error': 'Invalid conversation file format'}), 400
+
+    return jsonify(conv)
 
 
 @app.route('/api/conversation/<conv_id>/move', methods=['POST'])
@@ -928,21 +915,21 @@ def move_conversation(conv_id: str):
     data = request.get_json() or {}
     from_folder = data.get('from', 'wanted')
     to_folder = data.get('to', 'rejected')
-    
+
     if not is_valid_folder(from_folder) or not is_valid_folder(to_folder):
         return jsonify({'error': 'Invalid folder'}), 400
-    
+
+    if not db.move_conversation(conv_id, from_folder, to_folder):
+        return jsonify({'error': 'Conversation not found'}), 404
+
+    # Also move the JSON file for backward compatibility
     src_path = DATA_DIR / from_folder / f'{conv_id}.json'
     dst_path = DATA_DIR / to_folder / f'{conv_id}.json'
-    
-    if not src_path.exists():
-        return jsonify({'error': 'Conversation not found'}), 404
-    
-    # Move file
-    dst_path.parent.mkdir(parents=True, exist_ok=True)
-    src_path.rename(dst_path)
-    
-    return jsonify({'success': True, 'new_path': str(dst_path)})
+    if src_path.exists():
+        dst_path.parent.mkdir(parents=True, exist_ok=True)
+        src_path.rename(dst_path)
+
+    return jsonify({'success': True})
 
 
 @app.route('/api/conversation/<conv_id>', methods=['DELETE'])
@@ -952,18 +939,18 @@ def delete_conversation(conv_id: str):
         return jsonify({'error': 'Invalid conversation ID'}), 400
 
     folder = request.args.get('folder', 'wanted')
-    
+
     if not is_valid_folder(folder):
         return jsonify({'error': 'Invalid folder'}), 400
-    
-    filepath = DATA_DIR / folder / f'{conv_id}.json'
-    
-    if not filepath.exists():
+
+    if not db.delete_conversation(conv_id, folder):
         return jsonify({'error': 'Conversation not found'}), 404
-    
-    # Permanently delete
-    filepath.unlink()
-    
+
+    # Also delete JSON file
+    filepath = DATA_DIR / folder / f'{conv_id}.json'
+    if filepath.exists():
+        filepath.unlink()
+
     return jsonify({'success': True, 'deleted': conv_id})
 
 @app.route('/api/conversations/bulk-delete', methods=['POST'])
@@ -976,18 +963,17 @@ def bulk_delete_conversations():
     if not is_valid_folder(folder):
         return jsonify({'error': 'Invalid folder'}), 400
 
-    deleted = []
-    for conv_id in ids:
-        if not is_safe_id(conv_id):
-            continue
+    safe_ids = [cid for cid in ids if is_safe_id(cid)]
+    deleted = db.bulk_delete_conversations(safe_ids, folder)
 
+    # Also delete JSON files
+    for conv_id in deleted:
         filepath = DATA_DIR / folder / f'{conv_id}.json'
         if filepath.exists():
             try:
                 filepath.unlink()
-                deleted.append(conv_id)
-            except Exception as e:
-                app.logger.error(f"Failed to delete conversation {conv_id}: {e}")
+            except Exception:
+                pass
 
     return jsonify({'success': True, 'deleted': deleted})
 
@@ -1002,24 +988,20 @@ def bulk_move_conversations():
     if not is_valid_folder(from_folder) or not is_valid_folder(to_folder):
         return jsonify({'error': 'Invalid folder'}), 400
 
-    moved = []
+    safe_ids = [cid for cid in ids if is_safe_id(cid)]
+    moved = db.bulk_move_conversations(safe_ids, from_folder, to_folder)
 
+    # Also move JSON files
     dst_dir = DATA_DIR / to_folder
     dst_dir.mkdir(parents=True, exist_ok=True)
-
-    for conv_id in ids:
-        if not is_safe_id(conv_id):
-            continue
-
+    for conv_id in moved:
         src_path = DATA_DIR / from_folder / f'{conv_id}.json'
         dst_path = dst_dir / f'{conv_id}.json'
-
         if src_path.exists():
             try:
                 src_path.rename(dst_path)
-                moved.append(conv_id)
-            except Exception as e:
-                app.logger.error(f"Failed to move conversation {conv_id}: {e}")
+            except Exception:
+                pass
 
     return jsonify({'success': True, 'moved': moved})
 
@@ -1033,8 +1015,8 @@ def list_models():
     config = load_config()
     provider_config = config.get('providers', {}).get(provider, {})
     
-    # Get saved model history
-    model_history = config.get('model_history', {}).get(provider, [])
+    # Get in-memory model history (no longer from config)
+    model_history = getattr(app, '_model_history', {}).get(provider, [])
     
     try:
         if provider == 'openai':
@@ -1101,12 +1083,17 @@ def fetch_anthropic_models(provider_config: dict) -> list:
 
 def fetch_google_models(provider_config: dict) -> list:
     """Fetch models from Google AI."""
-    
+
     api_key = provider_config.get('api_key') or os.environ.get('GOOGLE_API_KEY')
     if not api_key:
         return []
-    
-    genai.configure(api_key=api_key)
+
+    base_url = provider_config.get('base_url', '')
+    if base_url:
+        genai.configure(api_key=api_key, client_options={'api_endpoint': base_url})
+    else:
+        genai.configure(api_key=api_key)
+
     models = genai.list_models()
     result = [m.name.replace('models/', '') for m in models if 'generateContent' in m.supported_generation_methods]
     return result
@@ -1114,29 +1101,27 @@ def fetch_google_models(provider_config: dict) -> list:
 
 @app.route('/api/models/history', methods=['POST'])
 def add_model_to_history():
-    """Add a model to history for quick access."""
+    """Add a model to history for quick access (stored ephemerally in memory)."""
     data = request.get_json() or {}
     provider = data.get('provider', 'openai')
     model = data.get('model', '')
-    
+
     if not model:
         return jsonify({'error': 'Model required'}), 400
-    
-    config = load_config()
-    if 'model_history' not in config:
-        config['model_history'] = {}
-    if provider not in config['model_history']:
-        config['model_history'][provider] = []
-    
-    # Add to front, remove duplicates, limit to 10
-    history = config['model_history'][provider]
+
+    # Store in memory only, not in config.json
+    if not hasattr(app, '_model_history'):
+        app._model_history = {}
+    if provider not in app._model_history:
+        app._model_history[provider] = []
+
+    history = app._model_history[provider]
     if model in history:
         history.remove(model)
     history.insert(0, model)
-    config['model_history'][provider] = history[:10]
-    
-    save_config(config)
-    return jsonify({'success': True, 'history': config['model_history'][provider]})
+    app._model_history[provider] = history[:5]  # Keep small
+
+    return jsonify({'success': True, 'history': app._model_history[provider]})
 
 
 # ============ STREAMING ============
@@ -1183,21 +1168,22 @@ def stream_openai(prompt: str, model: str, temperature: float, config: dict, sys
         return
     
     base_url = provider_config.get('base_url') or 'https://api.openai.com/v1'
-    if not validate_base_url(base_url):
+    if not validate_base_url(base_url, config):
         yield f"data: {json.dumps({'error': 'Invalid base URL configured for OpenAI'})}\n\n"
         return
     client = openai.OpenAI(api_key=api_key, base_url=base_url)
-    
+
     messages = []
     if system_prompt:
         messages.append({'role': 'system', 'content': system_prompt})
     messages.append({'role': 'user', 'content': prompt})
-    
+
+    max_tokens = config.get('api', {}).get('max_tokens', 2048)
     kwargs = dict(
         model=model,
         messages=messages,
         temperature=temperature,
-        max_tokens=2048,
+        max_tokens=max_tokens,
         stream=True
     )
     if custom_params:
@@ -1220,15 +1206,16 @@ def stream_anthropic(prompt: str, model: str, temperature: float, config: dict, 
         return
     
     base_url = provider_config.get('base_url') or 'https://api.anthropic.com/v1'
-    if not validate_base_url(base_url):
+    if not validate_base_url(base_url, config):
         yield f"data: {json.dumps({'error': 'Invalid base URL configured for Anthropic'})}\n\n"
         return
 
     client = anthropic.Anthropic(api_key=api_key, base_url=base_url)
-    
+
+    max_tokens = config.get('api', {}).get('max_tokens', 2048)
     kwargs = dict(
         model=model or 'claude-3-5-sonnet-20241022',
-        max_tokens=2048,
+        max_tokens=max_tokens,
         system=system_prompt if system_prompt else anthropic.NOT_GIVEN,
         messages=[{'role': 'user', 'content': prompt}],
         temperature=temperature
@@ -1251,10 +1238,15 @@ def stream_google(prompt: str, model: str, temperature: float, config: dict, sys
         return
     
     genai.configure(api_key=api_key)
-    
+
+    base_url = provider_config.get('base_url', '')
+    if base_url:
+        genai.configure(api_key=api_key, client_options={'api_endpoint': base_url})
+
+    max_tokens = config.get('api', {}).get('max_tokens', 2048)
     gen_config = dict(
         temperature=temperature,
-        max_output_tokens=2048
+        max_output_tokens=max_tokens
     )
     if custom_params:
         gen_config.update(custom_params)
@@ -1280,8 +1272,8 @@ def stream_google(prompt: str, model: str, temperature: float, config: dict, sys
 @app.route('/api/presets', methods=['GET'])
 def get_presets():
     """Get variable presets."""
-    config = load_config()
-    return jsonify({'presets': config.get('variable_presets', [])})
+    presets = db.get_presets('variable')
+    return jsonify({'presets': presets})
 
 
 @app.route('/api/presets', methods=['POST'])
@@ -1291,99 +1283,93 @@ def save_preset():
     name = data.get('name', '')
     values = data.get('values', {})
     overwrite = data.get('overwrite', True)
-    
+
     if not name:
         return jsonify({'error': 'Preset name required'}), 400
-    
-    config = load_config()
-    if 'variable_presets' not in config:
-        config['variable_presets'] = []
-    
-    # Update existing or add new
-    existing = next((p for p in config['variable_presets'] if p['name'] == name), None)
-    if existing:
-        if not overwrite:
-            return jsonify({'error': 'Preset already exists'}), 400
-        existing['values'] = values
-    else:
-        config['variable_presets'].append({'name': name, 'values': values})
-    
-    save_config(config)
-    return jsonify({'success': True, 'presets': config['variable_presets']})
+
+    if not db.save_preset('variable', name, {'values': values}, overwrite):
+        return jsonify({'error': 'Preset already exists'}), 400
+
+    presets = db.get_presets('variable')
+    return jsonify({'success': True, 'presets': presets})
 
 
 @app.route('/api/presets/<name>', methods=['DELETE'])
 def delete_preset(name: str):
     """Delete a variable preset."""
-    config = load_config()
-    config['variable_presets'] = [p for p in config.get('variable_presets', []) if p['name'] != name]
-    save_config(config)
+    db.delete_preset('variable', name)
     return jsonify({'success': True})
 
 
-# ============ DRAFTS (Cross-Device Sync) ============
-
-DRAFTS_PATH = DATA_DIR / 'drafts.json'
-
-
-def load_drafts() -> dict:
-    """Load drafts from file."""
-    if DRAFTS_PATH.exists():
-        try:
-            with open(DRAFTS_PATH, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except json.JSONDecodeError:
-            pass
-    return {}
-
-
-def save_drafts(drafts: dict):
-    """Save drafts to file."""
-    with open(DRAFTS_PATH, 'w', encoding='utf-8') as f:
-        json.dump(drafts, f, indent=2, ensure_ascii=False)
+# ============ DRAFTS (Per-Session, SQLite-backed) ============
 
 
 @app.route('/api/drafts', methods=['GET'])
 def get_drafts():
-    """Get all saved drafts for cross-device sync."""
-    return jsonify(load_drafts())
+    """Get drafts for cross-device sync."""
+    session_id = request.args.get('session_id', None)
+    return jsonify(db.get_draft(session_id))
 
 
 @app.route('/api/drafts', methods=['POST'])
 def save_draft_endpoint():
-    """Save drafts for cross-device sync."""
+    """Save drafts for cross-device sync (per-session)."""
     data = request.get_json() or {}
-    drafts = load_drafts()
-    
-    # Merge incoming data with existing drafts
-    for key, value in data.items():
-        drafts[key] = value
-    
-    # Add timestamp
-    drafts['_updated'] = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
-    
-    save_drafts(drafts)
-    return jsonify({'success': True, 'updated': drafts['_updated']})
+    session_id = data.get('_sessionId', 'default')
+
+    # Only save a whitelist of fields to avoid bloat
+    draft = {
+        '_sessionId': session_id,
+        'currentPromptName': data.get('currentPromptName', ''),
+        'model': data.get('model', ''),
+        'temperature': data.get('temperature'),
+        'customParams': data.get('customParams', {}),
+        'generate': {
+            'prompt': data.get('generate', {}).get('prompt', ''),
+            'variables': data.get('generate', {}).get('variables', {}),
+            'rawText': data.get('generate', {}).get('rawText', '')
+        },
+        'chat': {
+            'systemPrompt': data.get('chat', {}).get('systemPrompt', ''),
+            'presetName': data.get('chat', {}).get('presetName', ''),
+            'zoomLevel': data.get('chat', {}).get('zoomLevel', 1),
+            'showAllTools': data.get('chat', {}).get('showAllTools', False),
+            # Store chat messages but cap to avoid bloat
+            'messages': (data.get('chat', {}).get('messages', []))[:100]
+        },
+        'export': {
+            'systemPrompt': data.get('export', {}).get('systemPrompt', ''),
+            'presetName': data.get('export', {}).get('presetName', '')
+        },
+        '_localTime': data.get('_localTime', datetime.now(timezone.utc).isoformat())
+    }
+
+    db.save_draft(session_id, draft)
+
+    return jsonify({
+        'success': True,
+        'updated': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+    })
 
 
 @app.route('/api/drafts/<key>', methods=['POST'])
 def save_draft_key(key: str):
     """Save a specific draft key."""
     data = request.get_json() or {}
-    drafts = load_drafts()
-    drafts[key] = data.get('value')
-    drafts['_updated'] = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
-    save_drafts(drafts)
+    # Get existing draft and update key
+    existing = db.get_draft(key)
+    existing[key] = data.get('value')
+    db.save_draft(key, existing)
     return jsonify({'success': True})
 
 
-# ============ EXPORT PRESETS ============
+# ============ EXPORT PRESETS (SQLite-backed) ============
 
 @app.route('/api/export-presets', methods=['GET'])
 def get_export_presets():
     """Get export system prompt presets."""
-    config = load_config()
-    return jsonify({'presets': config.get('export_presets', [])})
+    presets = db.get_presets('export')
+    return jsonify({'presets': presets})
 
 @app.route('/api/export-presets', methods=['POST'])
 def save_export_preset():
@@ -1396,38 +1382,26 @@ def save_export_preset():
     if not name:
         return jsonify({'error': 'Name required'}), 400
 
-    config = load_config()
-    if 'export_presets' not in config:
-        config['export_presets'] = []
+    if not db.save_preset('export', name, {'prompt': prompt}, overwrite):
+        return jsonify({'error': 'Preset already exists'}), 400
 
-    # Update existing or add new
-    existing = next((p for p in config['export_presets'] if p['name'] == name), None)
-    if existing:
-        if not overwrite:
-            return jsonify({'error': 'Preset already exists'}), 400
-        existing['prompt'] = prompt
-    else:
-        config['export_presets'].append({'name': name, 'prompt': prompt})
-
-    save_config(config)
-    return jsonify({'success': True, 'presets': config['export_presets']})
+    presets = db.get_presets('export')
+    return jsonify({'success': True, 'presets': presets})
 
 @app.route('/api/export-presets/<name>', methods=['DELETE'])
 def delete_export_preset(name: str):
     """Delete an export preset."""
-    config = load_config()
-    config['export_presets'] = [p for p in config.get('export_presets', []) if p['name'] != name]
-    save_config(config)
+    db.delete_preset('export', name)
     return jsonify({'success': True})
 
 
-# ============ CHAT PRESETS ============
+# ============ CHAT PRESETS (SQLite-backed) ============
 
 @app.route('/api/chat-presets', methods=['GET'])
 def get_chat_presets():
     """Get chat system prompt presets."""
-    config = load_config()
-    return jsonify({'presets': config.get('chat_presets', [])})
+    presets = db.get_presets('chat')
+    return jsonify({'presets': presets})
 
 
 @app.route('/api/chat-presets', methods=['POST'])
@@ -1437,33 +1411,21 @@ def save_chat_preset():
     name = data.get('name', '').strip()
     prompt = data.get('prompt', '')
     overwrite = data.get('overwrite', True)
-    
+
     if not name:
         return jsonify({'error': 'Name required'}), 400
-    
-    config = load_config()
-    if 'chat_presets' not in config:
-        config['chat_presets'] = []
-    
-    # Update existing or add new
-    existing = next((p for p in config['chat_presets'] if p['name'] == name), None)
-    if existing:
-        if not overwrite:
-            return jsonify({'error': 'Preset already exists'}), 400
-        existing['prompt'] = prompt
-    else:
-        config['chat_presets'].append({'name': name, 'prompt': prompt})
-    
-    save_config(config)
-    return jsonify({'success': True, 'presets': config['chat_presets']})
+
+    if not db.save_preset('chat', name, {'prompt': prompt}, overwrite):
+        return jsonify({'error': 'Preset already exists'}), 400
+
+    presets = db.get_presets('chat')
+    return jsonify({'success': True, 'presets': presets})
 
 
 @app.route('/api/chat-presets/<name>', methods=['DELETE'])
 def delete_chat_preset(name: str):
     """Delete a chat preset."""
-    config = load_config()
-    config['chat_presets'] = [p for p in config.get('chat_presets', []) if p['name'] != name]
-    save_config(config)
+    db.delete_preset('chat', name)
     return jsonify({'success': True})
 
 
@@ -1472,53 +1434,18 @@ def delete_chat_preset(name: str):
 @app.route('/api/tags', methods=['GET'])
 def get_all_tags():
     """Get all unique tags used across conversations."""
-    wanted_path = DATA_DIR / 'wanted'
-    tags = set()
-    
-    if wanted_path.exists():
-        for json_file in wanted_path.glob('*.json'):
-            try:
-                with open(json_file, 'r', encoding='utf-8') as f:
-                    conv = json.load(f)
-                    for tag in conv.get('metadata', {}).get('tags', []):
-                        tags.add(tag)
-            except json.JSONDecodeError:
-                continue
-            except Exception:
-                continue
-    
-    return jsonify({'tags': sorted(list(tags))})
+    tags = db.get_all_tags()
+    return jsonify({'tags': tags})
 
 
-# ============ REVIEW QUEUE (Server-Side) ============
-
-REVIEW_QUEUE_PATH = DATA_DIR / 'review_queue.json'
-_review_queue_lock = threading.Lock()
-
-
-def load_review_queue() -> list:
-    """Load review queue from file."""
-    if REVIEW_QUEUE_PATH.exists():
-        try:
-            with open(REVIEW_QUEUE_PATH, 'r', encoding='utf-8') as f:
-                return json.load(f)
-        except json.JSONDecodeError:
-            pass
-    return []
-
-
-def save_review_queue(queue: list):
-    """Save review queue to file."""
-    with open(REVIEW_QUEUE_PATH, 'w', encoding='utf-8') as f:
-        json.dump(queue, f, indent=2, ensure_ascii=False)
+# ============ REVIEW QUEUE (SQLite-backed) ============
 
 
 @app.route('/api/review-queue', methods=['GET'])
 def get_review_queue():
     """Get all items in the review queue."""
-    with _review_queue_lock:
-        queue = load_review_queue()
-    return jsonify({'queue': queue, 'count': len(queue)})
+    queue, total = db.get_review_queue()
+    return jsonify({'queue': queue, 'count': total})
 
 
 @app.route('/api/review-queue', methods=['POST'])
@@ -1526,52 +1453,32 @@ def add_to_review_queue():
     """Add one or more items to the review queue."""
     data = request.get_json() or {}
     items = data.get('items', [])
-    
+
     # Also support single-item POST
     if not items and 'conversations' in data:
         items = [data]
-    
+
     if not items:
         return jsonify({'error': 'No items provided'}), 400
-    
-    with _review_queue_lock:
-        queue = load_review_queue()
-        
-        added = []
-        for item in items:
-            entry = {
-                'id': str(uuid.uuid4()),
-                'conversations': item.get('conversations', []),
-                'rawText': item.get('rawText', ''),
-                'metadata': item.get('metadata', {}),
-                'createdAt': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
-            }
-            queue.append(entry)
-            added.append(entry)
-        
-        save_review_queue(queue)
-    
+
+    added = db.add_to_review_queue(items)
+    _, total = db.get_review_queue(limit=0)
+
     return jsonify({
         'success': True,
         'added': added,
-        'count': len(queue)
+        'count': total
     })
 
 
 @app.route('/api/review-queue/<item_id>', methods=['DELETE'])
 def remove_from_review_queue(item_id: str):
     """Remove a specific item from the review queue."""
-    with _review_queue_lock:
-        queue = load_review_queue()
-        original_len = len(queue)
-        queue = [item for item in queue if item.get('id') != item_id]
-        
-        if len(queue) == original_len:
-            return jsonify({'error': 'Item not found'}), 404
-        
-        save_review_queue(queue)
-    
-    return jsonify({'success': True, 'count': len(queue)})
+    if not db.remove_from_review_queue(item_id):
+        return jsonify({'error': 'Item not found'}), 404
+
+    _, total = db.get_review_queue(limit=0)
+    return jsonify({'success': True, 'count': total})
 
 @app.route('/api/review-queue/bulk-delete', methods=['POST'])
 def bulk_remove_from_review_queue():
@@ -1579,70 +1486,67 @@ def bulk_remove_from_review_queue():
     data = request.get_json() or {}
     ids = data.get('ids', [])
 
-    with _review_queue_lock:
-        queue = load_review_queue()
-        ids_set = set(ids)
-        queue = [item for item in queue if item.get('id') not in ids_set]
-        save_review_queue(queue)
+    db.bulk_remove_from_review_queue(ids)
+    _, total = db.get_review_queue(limit=0)
 
-    return jsonify({'success': True, 'count': len(queue)})
+    return jsonify({'success': True, 'count': total})
 
 @app.route('/api/review-queue/bulk-keep', methods=['POST'])
 def bulk_keep_from_review_queue():
     """Atomically save items from the review queue to wanted and remove them from the queue."""
     data = request.get_json() or {}
     ids = data.get('ids', [])
-    ids_set = set(ids)
 
     if not ids:
         return jsonify({'error': 'No ids provided'}), 400
 
     saved = []
     errors = []
+    ids_to_remove = set()
 
-    with _review_queue_lock:
-        queue = load_review_queue()
+    # Find items to keep
+    items_to_keep = db.get_review_queue_items_by_ids(ids)
 
-        # Find items to keep
-        items_to_keep = [item for item in queue if item.get('id') in ids_set]
+    for item in items_to_keep:
+        try:
+            conv_id = db.generate_conversation_id()
+            messages = item.get('conversations', [])
+            full_metadata = {
+                'created_at': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
+                'source': 'synthetic',
+                **item.get('metadata', {})
+            }
 
-        # Save them to wanted folder
-        target_dir = DATA_DIR / 'wanted'
-        target_dir.mkdir(parents=True, exist_ok=True)
+            full_conv = {
+                'id': conv_id,
+                'conversations': messages,
+                'metadata': full_metadata
+            }
 
-        for item in items_to_keep:
-            try:
-                conv_id = generate_conversation_id(str(target_dir))
-                full_conv = {
-                    'id': conv_id,
-                    'conversations': item.get('conversations', []),
-                    'metadata': {
-                        'created_at': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
-                        'source': 'synthetic',
-                        **item.get('metadata', {})
-                    }
-                }
+            is_valid, errs = validate_conversation(full_conv)
+            if not is_valid:
+                errors.append({'error': errs, 'original_id': item.get('id')})
+                continue
 
-                is_valid, errs = validate_conversation(full_conv)
-                if not is_valid:
-                    errors.append({'error': errs, 'original_id': item.get('id')})
-                    # Don't remove from queue if validation fails
-                    ids_set.discard(item.get('id'))
-                    continue
+            db.save_conversation(conv_id, messages, 'wanted', full_metadata)
 
-                filepath = target_dir / f'{conv_id}.json'
-                with open(filepath, 'w', encoding='utf-8') as f:
-                    json.dump(full_conv, f, ensure_ascii=False, indent=2)
+            # Also save JSON file
+            folder_path = DATA_DIR / 'wanted'
+            folder_path.mkdir(parents=True, exist_ok=True)
+            filepath = folder_path / f'{conv_id}.json'
+            with open(filepath, 'w', encoding='utf-8') as f:
+                json.dump(full_conv, f, ensure_ascii=False, indent=2)
 
-                saved.append({'id': conv_id, 'original_id': item.get('id')})
-            except Exception as e:
-                errors.append({'error': str(e), 'original_id': item.get('id')})
-                ids_set.discard(item.get('id'))
+            saved.append({'id': conv_id, 'original_id': item.get('id')})
+            ids_to_remove.add(item.get('id'))
+        except Exception as e:
+            errors.append({'error': str(e), 'original_id': item.get('id')})
 
-        # Remove successfully saved items from the review queue
-        if saved:
-            queue = [item for item in queue if item.get('id') not in ids_set]
-            save_review_queue(queue)
+    # Remove successfully saved items from the review queue
+    if ids_to_remove:
+        db.bulk_remove_from_review_queue(list(ids_to_remove))
+
+    _, total = db.get_review_queue(limit=0)
 
     return jsonify({
         'success': True,
@@ -1650,15 +1554,14 @@ def bulk_keep_from_review_queue():
         'error_count': len(errors),
         'saved': saved,
         'errors': errors,
-        'count': len(queue)
+        'count': total
     })
 
 
 @app.route('/api/review-queue', methods=['DELETE'])
 def clear_review_queue():
-    """Clear the entire review queue."""
-    with _review_queue_lock:
-        save_review_queue([])
+    """Clear the entire review queue (discard without saving)."""
+    db.clear_review_queue()
     return jsonify({'success': True, 'count': 0})
 
 
@@ -1673,6 +1576,10 @@ if __name__ == '__main__':
 
     host = args.host or server_config.get('host', '127.0.0.1')
     port = args.port or server_config.get('port', 5000)
+
+    # Initialize SQLite database and run migrations
+    db.init_db()
+    db.run_migrations(DATA_DIR, config)
 
     # Initialize proper CORS
     allowed_origins = [

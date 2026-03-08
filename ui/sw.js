@@ -1,8 +1,8 @@
-const CACHE_NAME = 'dataset-builder-v3.1.0';
+const CACHE_NAME = 'dataset-builder-v4.0.0';
 const urlsToCache = [
     '/',
-    '/styles.css?v=3.1.0',
-    '/app.js?v=3.1.0',
+    '/styles.css?v=4.0.0',
+    '/app.js?v=4.0.0',
     '/manifest.json'
 ];
 
