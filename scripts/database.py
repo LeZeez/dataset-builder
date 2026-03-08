@@ -280,10 +280,12 @@ def list_conversations(folder: str = 'wanted', search: str = '',
     with get_db() as conn:
         params = [folder]
         where_clauses = ["c.folder = ?"]
+        search_str = (search or '').strip()
+        tokens: list[str] = []
 
-        if search:
+        if search_str:
             # Prefer FTS5 instead of slow LIKE scans over large JSON blobs.
-            safe_search = search.replace('"', '""').strip()
+            safe_search = search_str.replace('"', '""').strip()
             # Tokenize on non-word boundaries so searches like "late-needle-xyz" still match.
             tokens = [t for t in re.findall(r'\w+', safe_search, flags=re.UNICODE) if t]
             if tokens:
@@ -307,6 +309,50 @@ def list_conversations(folder: str = 'wanted', search: str = '',
             f"SELECT COUNT(*) as cnt FROM conversations c WHERE {where}", params
         ).fetchone()
         total = count_row['cnt']
+
+        # Extremely long single-token strings can prevent FTS from indexing the user's
+        # search substring. As a narrow fallback, retry a literal substring scan but only
+        # within a bounded FTS candidate set to avoid full-table JSON LIKE scans.
+        if (
+            total == 0
+            and search_str
+            and tokens
+            and re.search(r"[^\w\s]", search_str, flags=re.UNICODE)
+        ):
+            relaxed_fts_query = " OR ".join([f"\"{t}\"*" for t in tokens])
+            candidate_cnt_row = conn.execute(
+                "SELECT COUNT(*) as cnt FROM conversations_fts WHERE conversations_fts MATCH ?",
+                (relaxed_fts_query,)
+            ).fetchone()
+            candidate_cnt = candidate_cnt_row['cnt']
+
+            # Skip fallback if the relaxed query is too broad (protects large DBs).
+            if candidate_cnt > 0 and candidate_cnt <= 5000:
+                def _escape_like(value: str) -> str:
+                    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+                like_param = f"%{_escape_like(search_str)}%"
+                like_params = [folder, relaxed_fts_query, like_param]
+                like_where_clauses = [
+                    "c.folder = ?",
+                    "c.rowid IN (SELECT rowid FROM conversations_fts WHERE conversations_fts MATCH ?)",
+                    "c.messages LIKE ? ESCAPE '\\'",
+                ]
+
+                if tag:
+                    like_where_clauses.append(
+                        "EXISTS (SELECT 1 FROM tags t WHERE t.conversation_id = c.id AND t.tag = ?)"
+                    )
+                    like_params.append(tag)
+
+                like_where = " AND ".join(like_where_clauses)
+                count_row = conn.execute(
+                    f"SELECT COUNT(*) as cnt FROM conversations c WHERE {like_where}", like_params
+                ).fetchone()
+                total = count_row['cnt']
+                if total > 0:
+                    where = like_where
+                    params = like_params
 
         # Get page
         rows = conn.execute(
@@ -1120,14 +1166,30 @@ def _get_review_queue_count(conn: sqlite3.Connection, search: str = '') -> int:
 
 def _backfill_conversation_search_text(conn: sqlite3.Connection):
     """Backfill search text for conversations created before the column existed."""
-    rows = conn.execute(
-        "SELECT id, messages FROM conversations WHERE search_text = '' OR search_text IS NULL"
-    ).fetchall()
-    for row in rows:
-        messages = json.loads(row['messages']) if row['messages'] else []
-        conn.execute(
-            "UPDATE conversations SET search_text = ? WHERE id = ?",
-            (_build_search_text(messages), row['id'])
+    batch_size = 500
+    last_rowid = 0
+    while True:
+        rows = conn.execute(
+            """SELECT rowid, messages
+               FROM conversations
+               WHERE (search_text = '' OR search_text IS NULL)
+                 AND rowid > ?
+               ORDER BY rowid ASC
+               LIMIT ?""",
+            (last_rowid, batch_size)
+        ).fetchall()
+        if not rows:
+            break
+
+        updates = []
+        for row in rows:
+            messages = json.loads(row['messages']) if row['messages'] else []
+            updates.append((_build_search_text(messages), row['rowid']))
+            last_rowid = int(row['rowid'])
+
+        conn.executemany(
+            "UPDATE conversations SET search_text = ? WHERE rowid = ?",
+            updates
         )
 
 def _backfill_review_queue_fts(conn: sqlite3.Connection):

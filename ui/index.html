@@ -893,7 +893,7 @@ gpt: response"></textarea>
                                 <div class="settings-row">
                                     <label class="settings-row-label" for="virtual-list-enabled">
                                         Virtualize conversation lists
-                                        <span class="hint" title="Only render nearby rows while you scroll. Prevents huge DOM slowdowns on large datasets.">i</span>
+                                        <span class="hint" title="Only render nearby rows while you scroll. Prevents huge page slowdowns on large datasets.">i</span>
                                     </label>
                                     <div class="settings-row-control">
                                         <input type="checkbox" id="virtual-list-enabled" checked>
@@ -902,7 +902,7 @@ gpt: response"></textarea>
                                 <div class="settings-row">
                                     <label class="settings-row-label" for="virtual-batch-size">
                                         Rows per chunk
-                                        <span class="hint" title="How many rows are rendered per virtual chunk. Larger values reduce swapping, smaller values reduce work per chunk.">i</span>
+                                        <span class="hint" title="Use with caution: how many rows are shown at once while you scroll. Larger values can feel smoother but may make the page slower. This only affects the browser UI.">i</span>
                                     </label>
                                     <div class="settings-row-control">
                                         <input type="number" id="virtual-batch-size" class="input input-sm" value="200" min="50" max="2000" step="50">
