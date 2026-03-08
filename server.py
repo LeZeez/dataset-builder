@@ -1527,7 +1527,6 @@ if __name__ == '__main__':
     parser.add_argument('--port', type=int, help='Port to bind to')
     args = parser.parse_args()
 
-    initialize_app()
     config = load_config()
     server_config = config.get('server', {})
 
