@@ -1326,7 +1326,7 @@ kbd {
 .export-modal-content,
 .files-modal-content,
 .macros-modal-content {
-    max-width: 700px;
+    max-width: 880px;
     width: 95%;
 }
 
@@ -1359,7 +1359,7 @@ kbd {
 }
 
 .export-settings {
-    flex: 0 0 210px;
+    flex: 0 0 260px;
     display: flex;
     flex-direction: column;
     gap: 0.6rem;
@@ -1395,7 +1395,8 @@ kbd {
     border: 1px solid var(--border-glass);
     border-radius: 8px;
     flex: 1;
-    max-height: 260px;
+    min-height: 240px;
+    position: relative;
 }
 
 .export-file-item {
@@ -1407,6 +1408,7 @@ kbd {
     cursor: pointer;
     transition: background 0.15s;
     font-size: 0.8rem;
+    height: 60px;
 }
 
 .export-file-item:last-child {
@@ -1442,6 +1444,9 @@ kbd {
     font-size: 0.7rem;
     color: var(--text-secondary);
     margin-top: 0.1rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
 
 .export-summary {
@@ -1515,7 +1520,7 @@ kbd {
 
 .modal-preview-layout {
     display: grid;
-    grid-template-columns: minmax(0, 1.05fr) minmax(260px, 0.95fr);
+    grid-template-columns: minmax(0, 1.3fr) minmax(320px, 0.7fr);
     gap: 0.75rem;
     min-height: 0;
     flex: 1;
@@ -1943,6 +1948,65 @@ kbd {
     font-weight: 600;
 }
 
+.settings-rows {
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+    margin-bottom: 0.7rem;
+}
+
+.settings-row {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    align-items: center;
+    gap: 0.85rem;
+    padding: 0.65rem 0.75rem;
+    border: 1px solid var(--border-glass);
+    border-radius: 12px;
+    background: rgba(255, 255, 255, .02);
+}
+
+.settings-row-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.82rem;
+    font-weight: 600;
+    color: rgba(255, 255, 255, 0.88);
+}
+
+.settings-row-control {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    min-width: 120px;
+}
+
+.settings-row-control input[type="number"] {
+    width: 140px;
+}
+
+.hint {
+    width: 18px;
+    height: 18px;
+    border-radius: 999px;
+    border: 1px solid var(--border-glass);
+    background: rgba(255, 255, 255, .06);
+    color: rgba(255, 255, 255, 0.65);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.72rem;
+    font-weight: 800;
+    cursor: help;
+    flex-shrink: 0;
+}
+
+.hint:hover {
+    background: rgba(255, 255, 255, .11);
+    color: rgba(255, 255, 255, 0.82);
+}
+
 .form-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -2025,6 +2089,172 @@ kbd {
 .toast-info {
     border-left: 3px solid var(--accent);
     color: var(--text-primary);
+}
+
+.task-tracker {
+    position: fixed;
+    right: 1.5rem;
+    bottom: 1.5rem;
+    z-index: 499;
+    display: flex;
+    flex-direction: column;
+    gap: 0.55rem;
+    width: 360px;
+    max-width: calc(100vw - 3rem);
+    pointer-events: none;
+}
+
+.task-card {
+    pointer-events: auto;
+    background: rgba(25, 28, 40, .97);
+    border: 1px solid var(--border-glass);
+    border-radius: 10px;
+    padding: 0.7rem 0.8rem 0.65rem;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, .4);
+    color: rgba(255, 255, 255, 0.92);
+}
+
+.task-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    margin-bottom: 0.3rem;
+}
+
+.task-title {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    font-weight: 650;
+    font-size: 0.82rem;
+}
+
+.task-cancel {
+    width: 28px;
+    height: 28px;
+    border-radius: 8px;
+    border: 1px solid var(--border-glass);
+    background: rgba(255, 255, 255, 0.08);
+    color: rgba(255, 255, 255, 0.92);
+    cursor: pointer;
+}
+
+.task-cancel:hover {
+    background: rgba(255, 255, 255, 0.14);
+}
+
+.task-detail {
+    font-size: 0.78rem;
+    color: rgba(255, 255, 255, 0.75);
+    margin-bottom: 0.45rem;
+}
+
+.task-progress {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.6rem;
+    font-size: 0.72rem;
+    color: rgba(255, 255, 255, 0.65);
+    margin-bottom: 0.35rem;
+}
+
+.task-bar {
+    height: 8px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.12);
+    overflow: hidden;
+}
+
+.task-bar > div {
+    height: 100%;
+    width: 0%;
+    background: linear-gradient(90deg, rgba(86, 195, 255, 0.95), rgba(94, 255, 200, 0.95));
+    border-radius: 999px;
+    transition: width 120ms linear;
+}
+
+.task-bar.task-bar-indeterminate > div {
+    width: 35%;
+    animation: indeterminateSlide 900ms ease-in-out infinite;
+}
+
+.task-bar.task-bar-muted > div {
+    width: 100%;
+    background: rgba(255, 255, 255, 0.08);
+    animation: none;
+}
+
+.task-mini-spinner,
+.inline-spinner,
+.virtual-spinner {
+    display: inline-block;
+    width: 12px;
+    height: 12px;
+    border-radius: 999px;
+    border: 2px solid rgba(255, 255, 255, 0.22);
+    border-top-color: rgba(255, 255, 255, 0.85);
+    animation: spin 0.85s linear infinite;
+    flex-shrink: 0;
+}
+
+@keyframes indeterminateSlide {
+    0% {
+        transform: translateX(-120%);
+    }
+    100% {
+        transform: translateX(320%);
+    }
+}
+
+.virtual-items-host {
+    contain: content;
+}
+
+.virtual-list {
+    overflow-anchor: none;
+}
+
+.virtual-items-host.virtual-swap {
+    animation: virtualSwapFade 120ms ease-out;
+}
+
+@keyframes virtualSwapFade {
+    from {
+        opacity: 0.75;
+    }
+    to {
+        opacity: 1;
+    }
+}
+
+.virtual-loading {
+    position: sticky;
+    bottom: 10px;
+    left: 0;
+    right: 0;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    margin: 0.6rem 0.6rem 0.3rem;
+    padding: 0.45rem 0.6rem;
+    border-radius: 999px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: rgba(18, 20, 28, 0.92);
+    color: rgba(255, 255, 255, 0.72);
+    font-size: 0.76rem;
+    pointer-events: none;
+    backdrop-filter: blur(10px);
+}
+
+.virtual-loading:not([hidden]) {
+    display: flex;
+}
+
+.virtual-spacer {
+    height: 0px;
 }
 
 /* ====== HOTKEYS ====== */

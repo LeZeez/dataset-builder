@@ -394,12 +394,13 @@ def delete_prompt(name: str):
 @app.route('/api/stats', methods=['GET'])
 def get_statistics():
     """Get dataset statistics."""
-    stats = db.get_stats()
+    counts = db.get_conversation_counts()
+    details = db.get_stats() if request.args.get('details') == '1' else None
 
     return jsonify({
-        'wanted': stats.get('wanted', stats.get('total_conversations', 0)),
-        'rejected': stats.get('rejected', 0),
-        'details': stats
+        'wanted': counts.get('wanted', 0),
+        'rejected': counts.get('rejected', 0),
+        'details': details
     })
 
 
@@ -1369,11 +1370,16 @@ def get_all_tags():
 def get_review_queue():
     """Get all items in the review queue."""
     search = request.args.get('search', '').strip()
+    ids_only = request.args.get('ids_only', '').strip().lower() in ('1', 'true', 'yes')
     try:
-        limit = max(0, min(int(request.args.get('limit', 0)), 200))
+        limit = max(1, min(int(request.args.get('limit', 100)), 200))
         offset = max(0, int(request.args.get('offset', 0)))
     except ValueError:
         return jsonify({'error': 'Invalid pagination parameters'}), 400
+
+    if ids_only:
+        ids, total = db.get_review_queue_ids(limit=limit, offset=offset, search=search)
+        return jsonify({'ids': ids, 'count': total, 'limit': limit, 'offset': offset})
 
     queue, total = db.get_review_queue(limit=limit, offset=offset, search=search)
     return jsonify({'queue': queue, 'count': total, 'limit': limit, 'offset': offset})
@@ -1393,7 +1399,7 @@ def add_to_review_queue():
         return jsonify({'error': 'No items provided'}), 400
 
     added = db.add_to_review_queue(items)
-    _, total = db.get_review_queue(limit=0)
+    total = db.get_review_queue_count()
 
     return jsonify({
         'success': True,
@@ -1408,7 +1414,7 @@ def remove_from_review_queue(item_id: str):
     if not db.remove_from_review_queue(item_id):
         return jsonify({'error': 'Item not found'}), 404
 
-    _, total = db.get_review_queue(limit=0)
+    total = db.get_review_queue_count()
     return jsonify({'success': True, 'count': total})
 
 
@@ -1435,49 +1441,14 @@ def bulk_remove_from_review_queue():
     ids = data.get('ids', [])
 
     db.bulk_remove_from_review_queue(ids)
-    _, total = db.get_review_queue(limit=0)
+    total = db.get_review_queue_count()
 
     return jsonify({'success': True, 'count': total})
 
 
-def _persist_review_items(ids: list[str], target_folder: str):
+def _persist_review_items(ids: list[str] | None, target_folder: str):
     """Save selected review queue items to a folder and remove successful ones."""
-    saved = []
-    errors = []
-    ids_to_remove = set()
-
-    items = db.get_review_queue_items_by_ids(ids)
-    for item in items:
-        try:
-            conv_id = db.generate_conversation_id()
-            messages = item.get('conversations', [])
-            full_metadata = {
-                'created_at': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
-                'source': 'synthetic',
-                **item.get('metadata', {})
-            }
-
-            full_conv = {
-                'id': conv_id,
-                'conversations': messages,
-                'metadata': full_metadata
-            }
-
-            is_valid, errs = validate_conversation(full_conv)
-            if not is_valid:
-                errors.append({'error': errs, 'original_id': item.get('id')})
-                continue
-
-            db.save_conversation(conv_id, messages, target_folder, full_metadata)
-            saved.append({'id': conv_id, 'original_id': item.get('id')})
-            ids_to_remove.add(item.get('id'))
-        except Exception as e:
-            errors.append({'error': str(e), 'original_id': item.get('id')})
-
-    if ids_to_remove:
-        db.bulk_remove_from_review_queue(list(ids_to_remove))
-
-    _, total = db.get_review_queue(limit=0)
+    saved, errors, total = db.persist_review_queue_items(ids, target_folder)
     return jsonify({
         'success': True,
         'saved_count': len(saved),
@@ -1492,11 +1463,12 @@ def bulk_keep_from_review_queue():
     """Atomically save items from the review queue to wanted and remove them from the queue."""
     data = request.get_json() or {}
     ids = data.get('ids', [])
+    keep_all = bool(data.get('all'))
 
-    if not ids:
+    if not keep_all and not ids:
         return jsonify({'error': 'No ids provided'}), 400
 
-    return _persist_review_items(ids, 'wanted')
+    return _persist_review_items(None if keep_all else ids, 'wanted')
 
 
 @app.route('/api/review-queue/bulk-reject', methods=['POST'])
@@ -1504,11 +1476,12 @@ def bulk_reject_from_review_queue():
     """Atomically save items from the review queue to rejected and remove them from the queue."""
     data = request.get_json() or {}
     ids = data.get('ids', [])
+    reject_all = bool(data.get('all'))
 
-    if not ids:
+    if not reject_all and not ids:
         return jsonify({'error': 'No ids provided'}), 400
 
-    return _persist_review_items(ids, 'rejected')
+    return _persist_review_items(None if reject_all else ids, 'rejected')
 
 
 @app.route('/api/review-queue', methods=['DELETE'])

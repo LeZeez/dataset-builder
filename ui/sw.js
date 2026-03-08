@@ -34,7 +34,12 @@ self.addEventListener('fetch', (event) => {
         event.respondWith(
             fetch(event.request).catch(() => {
                 return new Response(JSON.stringify({ error: 'Offline' }), {
-                    headers: { 'Content-Type': 'application/json' }
+                    status: 503,
+                    statusText: 'Service Unavailable',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'Cache-Control': 'no-store'
+                    }
                 });
             })
         );

@@ -11,6 +11,7 @@ from pathlib import Path
 
 DB_PATH = Path('data/dataset.db')
 _local = threading.local()
+_SEARCH_TEXT_LIMIT = 4000
 
 
 def _get_conn() -> sqlite3.Connection:
@@ -23,6 +24,14 @@ def _get_conn() -> sqlite3.Connection:
         conn.execute("PRAGMA foreign_keys=ON")
         _local.conn = conn
     return _local.conn
+
+
+def close_db():
+    """Close the current thread-local connection, if any."""
+    conn = getattr(_local, 'conn', None)
+    if conn is not None:
+        conn.close()
+        _local.conn = None
 
 
 @contextmanager
@@ -47,6 +56,7 @@ def init_db():
                 messages TEXT NOT NULL DEFAULT '[]',
                 metadata TEXT NOT NULL DEFAULT '{}',
                 preview TEXT DEFAULT '',
+                search_text TEXT NOT NULL DEFAULT '',
                 turn_count INTEGER DEFAULT 0,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL
@@ -73,6 +83,9 @@ def init_db():
                 metadata TEXT NOT NULL DEFAULT '{}',
                 created_at TEXT NOT NULL
             );
+
+            CREATE INDEX IF NOT EXISTS idx_review_queue_created_at
+                ON review_queue(created_at);
 
             CREATE TABLE IF NOT EXISTS drafts (
                 session_id TEXT PRIMARY KEY,
@@ -101,27 +114,104 @@ def init_db():
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL DEFAULT ''
             );
+
+            CREATE VIRTUAL TABLE IF NOT EXISTS review_queue_fts USING fts5(
+                id UNINDEXED,
+                raw_text,
+                content='review_queue',
+                content_rowid='rowid'
+            );
+
+            CREATE TRIGGER IF NOT EXISTS review_queue_ai AFTER INSERT ON review_queue BEGIN
+                INSERT INTO review_queue_fts(rowid, id, raw_text)
+                VALUES (new.rowid, new.id, new.raw_text);
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS review_queue_ad AFTER DELETE ON review_queue BEGIN
+                INSERT INTO review_queue_fts(review_queue_fts, rowid, id, raw_text)
+                VALUES ('delete', old.rowid, old.id, old.raw_text);
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS review_queue_au AFTER UPDATE ON review_queue BEGIN
+                INSERT INTO review_queue_fts(review_queue_fts, rowid, id, raw_text)
+                VALUES ('delete', old.rowid, old.id, old.raw_text);
+                INSERT INTO review_queue_fts(rowid, id, raw_text)
+                VALUES (new.rowid, new.id, new.raw_text);
+            END;
+
+            CREATE VIRTUAL TABLE IF NOT EXISTS conversations_fts USING fts5(
+                id UNINDEXED,
+                folder UNINDEXED,
+                preview,
+                search_text,
+                messages,
+                content='conversations',
+                content_rowid='rowid'
+            );
+
+            CREATE TRIGGER IF NOT EXISTS conversations_ai AFTER INSERT ON conversations BEGIN
+                INSERT INTO conversations_fts(rowid, id, folder, preview, search_text, messages)
+                VALUES (new.rowid, new.id, new.folder, new.preview, new.search_text, new.messages);
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS conversations_ad AFTER DELETE ON conversations BEGIN
+                INSERT INTO conversations_fts(conversations_fts, rowid, id, folder, preview, search_text, messages)
+                VALUES ('delete', old.rowid, old.id, old.folder, old.preview, old.search_text, old.messages);
+            END;
+
+            CREATE TRIGGER IF NOT EXISTS conversations_au AFTER UPDATE ON conversations BEGIN
+                INSERT INTO conversations_fts(conversations_fts, rowid, id, folder, preview, search_text, messages)
+                VALUES ('delete', old.rowid, old.id, old.folder, old.preview, old.search_text, old.messages);
+                INSERT INTO conversations_fts(rowid, id, folder, preview, search_text, messages)
+                VALUES (new.rowid, new.id, new.folder, new.preview, new.search_text, new.messages);
+            END;
         """)
+        _ensure_column(conn, 'conversations', 'search_text', "TEXT NOT NULL DEFAULT ''")
+        _backfill_conversation_search_text(conn)
+        _backfill_review_queue_fts(conn)
+        _backfill_conversations_fts(conn)
 
 
 # ============ CONVERSATION ID GENERATION (Atomic) ============
+
+def _next_conversation_id(conn: sqlite3.Connection) -> str:
+    """Generate a unique conversation ID using the current transaction."""
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    conn.execute(
+        "INSERT INTO id_counter (date_prefix, seq) VALUES (?, 1) "
+        "ON CONFLICT(date_prefix) DO UPDATE SET seq = seq + 1",
+        (today,)
+    )
+    row = conn.execute(
+        "SELECT seq FROM id_counter WHERE date_prefix = ?", (today,)
+    ).fetchone()
+    seq = row['seq']
+    return f"{today}_{seq:03d}"
+
+def _next_conversation_ids(conn: sqlite3.Connection, count: int) -> list[str]:
+    """Generate a batch of unique conversation IDs."""
+    if count <= 0:
+        return []
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    conn.execute(
+        "INSERT INTO id_counter (date_prefix, seq) VALUES (?, ?) "
+        "ON CONFLICT(date_prefix) DO UPDATE SET seq = seq + ?",
+        (today, count, count)
+    )
+    row = conn.execute(
+        "SELECT seq FROM id_counter WHERE date_prefix = ?", (today,)
+    ).fetchone()
+    end_seq = row['seq']
+    start_seq = end_seq - count + 1
+    return [f"{today}_{seq:03d}" for seq in range(start_seq, end_seq + 1)]
+
 
 def generate_conversation_id() -> str:
     """Generate a unique conversation ID atomically using SQLite.
     Format: YYYY-MM-DD_NNN
     """
-    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     with get_db() as conn:
-        conn.execute(
-            "INSERT INTO id_counter (date_prefix, seq) VALUES (?, 1) "
-            "ON CONFLICT(date_prefix) DO UPDATE SET seq = seq + 1",
-            (today,)
-        )
-        row = conn.execute(
-            "SELECT seq FROM id_counter WHERE date_prefix = ?", (today,)
-        ).fetchone()
-        seq = row['seq']
-    return f"{today}_{seq:03d}"
+        return _next_conversation_id(conn)
 
 
 # ============ CONVERSATIONS ============
@@ -142,27 +232,21 @@ def save_conversation(conv_id: str, messages: list, folder: str = 'wanted',
             break
 
     turn_count = len([m for m in messages if m.get('from') in ('human', 'gpt')])
+    search_text = _build_search_text(messages)
 
     with get_db() as conn:
-        conn.execute("""
-            INSERT OR REPLACE INTO conversations
-                (id, folder, messages, metadata, preview, turn_count, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            conv_id, folder,
-            json.dumps(messages, ensure_ascii=False),
-            json.dumps(meta, ensure_ascii=False),
-            preview, turn_count, created_at, now
-        ))
-
-        # Update tags
-        tags = meta.get('tags', [])
-        conn.execute("DELETE FROM tags WHERE conversation_id = ?", (conv_id,))
-        for tag in tags:
-            conn.execute(
-                "INSERT OR IGNORE INTO tags (conversation_id, tag) VALUES (?, ?)",
-                (conv_id, tag)
-            )
+        _save_conversation_record(
+            conn=conn,
+            conv_id=conv_id,
+            folder=folder,
+            messages=messages,
+            metadata=meta,
+            preview=preview,
+            search_text=search_text,
+            turn_count=turn_count,
+            created_at=created_at,
+            updated_at=now,
+        )
 
     return conv_id
 
@@ -197,9 +281,10 @@ def list_conversations(folder: str = 'wanted', search: str = '',
         where_clauses = ["c.folder = ?"]
 
         if search:
-            where_clauses.append("(c.preview LIKE ? OR c.messages LIKE ? OR c.id LIKE ?)")
-            like = f"%{search}%"
-            params.extend([like, like, like])
+            safe_search = search.replace('"', '""')
+            where_clauses.append("(c.rowid IN (SELECT rowid FROM conversations_fts WHERE conversations_fts MATCH ?) OR c.messages LIKE ?)")
+            params.append(f'"{safe_search}"*')
+            params.append(f'%{search}%')
 
         if tag:
             where_clauses.append(
@@ -247,6 +332,8 @@ def move_conversation(conv_id: str, from_folder: str, to_folder: str) -> bool:
             (to_folder, datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
              conv_id, from_folder)
         )
+        if result.rowcount > 0:
+            _invalidate_stats_cache()
     return result.rowcount > 0
 
 
@@ -262,6 +349,8 @@ def delete_conversation(conv_id: str, folder: str = None) -> bool:
             result = conn.execute(
                 "DELETE FROM conversations WHERE id = ?", (conv_id,)
             )
+        if result.rowcount > 0:
+            _invalidate_stats_cache()
     return result.rowcount > 0
 
 
@@ -290,6 +379,7 @@ def bulk_delete_conversations(ids: list, folder: str) -> list:
                 f"DELETE FROM conversations WHERE folder = ? AND id IN ({deleted_placeholders})",
                 [folder, *deleted_ids]
             )
+            _invalidate_stats_cache()
 
     return deleted_ids
 
@@ -322,23 +412,42 @@ def bulk_move_conversations(ids: list, from_folder: str, to_folder: str) -> list
                     WHERE folder = ? AND id IN ({moved_placeholders})""",
                 [to_folder, now, from_folder, *moved_ids]
             )
+            _invalidate_stats_cache()
 
     return moved_ids
 
 
 # ============ STATS ============
 
-def get_stats() -> dict:
-    """Get dataset statistics efficiently using SQL."""
+def get_conversation_counts() -> dict:
+    """Get lightweight saved/rejected counts for the main UI."""
     with get_db() as conn:
-        # Counts by folder
-        wanted = conn.execute(
-            "SELECT COUNT(*) as cnt FROM conversations WHERE folder = 'wanted'"
-        ).fetchone()['cnt']
-        rejected = conn.execute(
-            "SELECT COUNT(*) as cnt FROM conversations WHERE folder = 'rejected'"
-        ).fetchone()['cnt']
+        rows = conn.execute(
+            "SELECT folder, COUNT(*) as cnt FROM conversations GROUP BY folder"
+        ).fetchall()
+    counts = {row['folder']: row['cnt'] for row in rows}
+    return {
+        'wanted': counts.get('wanted', 0),
+        'rejected': counts.get('rejected', 0),
+    }
 
+_stats_cache = {
+    'stats': None,
+    'last_updated': None
+}
+
+def _invalidate_stats_cache():
+    """Invalidate the stats cache when data changes."""
+    _stats_cache['stats'] = None
+    _stats_cache['last_updated'] = None
+
+def get_stats() -> dict:
+    """Get dataset statistics efficiently using SQL and caching."""
+    counts = get_conversation_counts()
+    wanted = counts['wanted']
+    rejected = counts['rejected']
+
+    with get_db() as conn:
         if wanted == 0:
             return {
                 'total_conversations': 0,
@@ -346,6 +455,16 @@ def get_stats() -> dict:
                 'wanted': wanted,
                 'rejected': rejected
             }
+
+        # Check if cache is still valid
+        # We use a simple heuristic: if the wanted/rejected counts haven't changed
+        # AND we have cached stats, return the cached stats.
+        # This isn't perfect (edits within a conversation won't update stats immediately),
+        # but it's vastly faster for UI refresh paths.
+        if _stats_cache['stats'] is not None and \
+           _stats_cache['stats']['wanted'] == wanted and \
+           _stats_cache['stats']['rejected'] == rejected:
+             return _stats_cache['stats']
 
         # Get all wanted conversations for detailed stats
         rows = conn.execute(
@@ -409,6 +528,7 @@ def get_stats() -> dict:
             'wanted': wanted,
             'rejected': rejected
         }
+        _stats_cache['stats'] = stats
         return stats
 
 
@@ -457,24 +577,30 @@ def get_review_queue(limit: int = 0, offset: int = 0, search: str = '') -> tuple
     """Get review queue items. Returns (items, total_count)."""
     where_clause = ""
     params: list = []
-    if search:
-        query = f"%{search.lower()}%"
-        where_clause = " WHERE LOWER(raw_text) LIKE ? OR LOWER(conversations) LIKE ?"
-        params.extend([query, query])
 
     with get_db() as conn:
-        total = conn.execute(
-            f"SELECT COUNT(*) as cnt FROM review_queue{where_clause}",
-            params
-        ).fetchone()['cnt']
+        total = _get_review_queue_count(conn, search=search)
 
-        query = f"SELECT * FROM review_queue{where_clause} ORDER BY created_at ASC"
-        query_params = list(params)
-        if limit > 0:
-            query += " LIMIT ? OFFSET ?"
-            query_params.extend([limit, offset])
-
-        rows = conn.execute(query, query_params).fetchall()
+        if search:
+            query_fts = """
+                SELECT r.* FROM review_queue r
+                JOIN review_queue_fts f ON r.rowid = f.rowid
+                WHERE review_queue_fts MATCH ?
+                ORDER BY r.created_at ASC
+            """
+            # FTS5 matches tokens, escape simple quotes
+            safe_search = search.replace('"', '""')
+            params.append(f'"{safe_search}"*')
+            if limit > 0:
+                query_fts += " LIMIT ? OFFSET ?"
+                params.extend([limit, offset])
+            rows = conn.execute(query_fts, params).fetchall()
+        else:
+            query = f"SELECT * FROM review_queue ORDER BY created_at ASC"
+            if limit > 0:
+                query += " LIMIT ? OFFSET ?"
+                params.extend([limit, offset])
+            rows = conn.execute(query, params).fetchall()
 
     items = []
     for row in rows:
@@ -486,6 +612,35 @@ def get_review_queue(limit: int = 0, offset: int = 0, search: str = '') -> tuple
             'createdAt': row['created_at']
         })
     return items, total
+
+
+def get_review_queue_ids(limit: int = 0, offset: int = 0, search: str = '') -> tuple[list[str], int]:
+    """Get review queue IDs only. Returns (ids, total_count)."""
+    params: list = []
+    with get_db() as conn:
+        total = _get_review_queue_count(conn, search=search)
+
+        if search:
+            query = """
+                SELECT r.id FROM review_queue r
+                JOIN review_queue_fts f ON r.rowid = f.rowid
+                WHERE review_queue_fts MATCH ?
+                ORDER BY r.created_at ASC
+            """
+            safe_search = search.replace('"', '""')
+            params.append(f'"{safe_search}"*')
+            if limit > 0:
+                query += " LIMIT ? OFFSET ?"
+                params.extend([limit, offset])
+            rows = conn.execute(query, params).fetchall()
+        else:
+            query = "SELECT id FROM review_queue ORDER BY created_at ASC"
+            if limit > 0:
+                query += " LIMIT ? OFFSET ?"
+                params.extend([limit, offset])
+            rows = conn.execute(query, params).fetchall()
+
+    return [row['id'] for row in rows], total
 
 
 def remove_from_review_queue(item_id: str) -> bool:
@@ -552,6 +707,177 @@ def get_review_queue_items_by_ids(ids: list) -> list:
             'createdAt': row['created_at']
         })
     return items
+
+
+def get_review_queue_count(search: str = '') -> int:
+    """Get the review queue count without loading all queue rows."""
+    with get_db() as conn:
+        return _get_review_queue_count(conn, search=search)
+
+
+def persist_review_queue_items(ids: list[str] | None, target_folder: str) -> tuple[list, list, int]:
+    """Persist review queue items into conversations and remove them atomically in batches."""
+    saved = []
+    errors = []
+    now = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+
+    with get_db() as conn:
+        if ids is None:
+            # Persist all items without loading the entire queue into memory at once.
+            page_size = 200
+            while True:
+                # Always take the oldest page, then delete it after persisting so we never
+                # re-scan with OFFSET, and we don't accidentally delete new rows added later.
+                rows = conn.execute(
+                    "SELECT rowid, * FROM review_queue ORDER BY created_at ASC LIMIT ?",
+                    (page_size,)
+                ).fetchall()
+                if not rows:
+                    break
+
+                conv_ids = _next_conversation_ids(conn, len(rows))
+                conv_inserts = []
+                tag_inserts = []
+                rowids_to_remove: list[int] = []
+
+                for row, conv_id in zip(rows, conv_ids):
+                    rowids_to_remove.append(int(row['rowid']))
+                    messages = json.loads(row['conversations'])
+                    metadata = json.loads(row['metadata']) if row['metadata'] else {}
+
+                    full_metadata = {
+                        'created_at': now,
+                        'source': 'synthetic',
+                        **metadata
+                    }
+
+                    preview = ''
+                    for message in messages:
+                        if message.get('from') == 'human':
+                            preview = message.get('value', '')[:80]
+                            break
+
+                    search_text = _build_search_text(messages)
+                    turn_count = len([m for m in messages if m.get('from') in ('human', 'gpt')])
+
+                    conv_inserts.append((
+                        conv_id, target_folder,
+                        json.dumps(messages, ensure_ascii=False),
+                        json.dumps(full_metadata, ensure_ascii=False),
+                        preview, search_text, turn_count, full_metadata['created_at'], now
+                    ))
+
+                    for tag in full_metadata.get('tags', []):
+                        tag_inserts.append((conv_id, tag))
+
+                    saved.append({'id': conv_id, 'original_id': row['id']})
+
+                if conv_inserts:
+                    conn.executemany("""
+                        INSERT OR REPLACE INTO conversations
+                            (id, folder, messages, metadata, preview, search_text, turn_count, created_at, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, conv_inserts)
+
+                if tag_inserts:
+                    conn.executemany(
+                        "INSERT OR IGNORE INTO tags (conversation_id, tag) VALUES (?, ?)",
+                        tag_inserts
+                    )
+
+                if rowids_to_remove:
+                    placeholders = ','.join('?' * len(rowids_to_remove))
+                    conn.execute(
+                        f"DELETE FROM review_queue WHERE rowid IN ({placeholders})",
+                        rowids_to_remove
+                    )
+            _invalidate_stats_cache()
+
+        else:
+            unique_ids = list(dict.fromkeys(ids))
+            if not unique_ids:
+                return [], [], _get_review_queue_count(conn)
+            placeholders = ','.join('?' * len(unique_ids))
+            rows = conn.execute(
+                f"SELECT * FROM review_queue WHERE id IN ({placeholders})",
+                unique_ids
+            ).fetchall()
+            order = {item_id: index for index, item_id in enumerate(unique_ids)}
+            rows = sorted(rows, key=lambda row: order.get(row['id'], len(order)))
+
+            count = len(rows)
+            conv_ids = _next_conversation_ids(conn, count)
+            ids_to_remove = [row['id'] for row in rows]
+
+            conv_inserts = []
+            tag_inserts = []
+
+            for row, conv_id in zip(rows, conv_ids):
+                messages = json.loads(row['conversations'])
+                metadata = json.loads(row['metadata']) if row['metadata'] else {}
+
+                full_metadata = {
+                    'created_at': now,
+                    'source': 'synthetic',
+                    **metadata
+                }
+
+                preview = ''
+                for message in messages:
+                    if message.get('from') == 'human':
+                        preview = message.get('value', '')[:80]
+                        break
+
+                search_text = _build_search_text(messages)
+                turn_count = len([m for m in messages if m.get('from') in ('human', 'gpt')])
+
+                conv_inserts.append((
+                    conv_id, target_folder,
+                    json.dumps(messages, ensure_ascii=False),
+                    json.dumps(full_metadata, ensure_ascii=False),
+                    preview, search_text, turn_count, full_metadata['created_at'], now
+                ))
+
+                for tag in full_metadata.get('tags', []):
+                    tag_inserts.append((conv_id, tag))
+
+                saved.append({'id': conv_id, 'original_id': row['id']})
+
+            if conv_inserts:
+                # Insert in chunks of 500
+                chunk_size = 500
+                for i in range(0, len(conv_inserts), chunk_size):
+                    chunk = conv_inserts[i:i+chunk_size]
+                    conn.executemany("""
+                        INSERT OR REPLACE INTO conversations
+                            (id, folder, messages, metadata, preview, search_text, turn_count, created_at, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, chunk)
+
+            if tag_inserts:
+                # Insert in chunks of 500
+                chunk_size = 500
+                for i in range(0, len(tag_inserts), chunk_size):
+                    chunk = tag_inserts[i:i+chunk_size]
+                    conn.executemany(
+                        "INSERT OR IGNORE INTO tags (conversation_id, tag) VALUES (?, ?)",
+                        chunk
+                    )
+
+            if ids_to_remove:
+                batch_size = 500
+                for i in range(0, len(ids_to_remove), batch_size):
+                    batch = ids_to_remove[i:i+batch_size]
+                    placeholders = ','.join('?' * len(batch))
+                    conn.execute(
+                        f"DELETE FROM review_queue WHERE id IN ({placeholders})",
+                        batch
+                    )
+
+            _invalidate_stats_cache()
+
+        remaining = _get_review_queue_count(conn)
+    return saved, errors, remaining
 
 
 # ============ DRAFTS ============
@@ -686,6 +1012,100 @@ def _row_to_conversation(row) -> dict:
         'conversations': json.loads(row['messages']),
         'metadata': json.loads(row['metadata']) if row['metadata'] else {}
     }
+
+
+def _ensure_column(conn: sqlite3.Connection, table: str, column: str, definition: str):
+    """Add a missing column for lightweight migrations."""
+    columns = {row['name'] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+    if column not in columns:
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
+def _build_search_text(messages: list) -> str:
+    """Build a compact searchable text blob without JSON punctuation noise."""
+    parts = []
+    for message in messages:
+        role = message.get('from', '')
+        value = (message.get('value') or '').strip()
+        if not value:
+            continue
+        parts.append(f"{role}: {value}")
+    return '\n'.join(parts)[:_SEARCH_TEXT_LIMIT]
+
+
+def _save_conversation_record(conn: sqlite3.Connection, conv_id: str, folder: str,
+                              messages: list, metadata: dict, preview: str,
+                              search_text: str, turn_count: int,
+                              created_at: str, updated_at: str):
+    """Persist one conversation row and its tags using the active transaction."""
+    conn.execute("""
+        INSERT OR REPLACE INTO conversations
+            (id, folder, messages, metadata, preview, search_text, turn_count, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (
+        conv_id, folder,
+        json.dumps(messages, ensure_ascii=False),
+        json.dumps(metadata, ensure_ascii=False),
+        preview, search_text, turn_count, created_at, updated_at
+    ))
+
+    tags = metadata.get('tags', [])
+    conn.execute("DELETE FROM tags WHERE conversation_id = ?", (conv_id,))
+    for tag in tags:
+        conn.execute(
+            "INSERT OR IGNORE INTO tags (conversation_id, tag) VALUES (?, ?)",
+            (conv_id, tag)
+        )
+    _invalidate_stats_cache()
+
+
+def _get_review_queue_count(conn: sqlite3.Connection, search: str = '') -> int:
+    """Get review queue count using the active transaction/connection."""
+    if search:
+        safe_search = search.replace('"', '""')
+        row = conn.execute(
+            "SELECT COUNT(*) as cnt FROM review_queue_fts WHERE review_queue_fts MATCH ?",
+            (f'"{safe_search}"*',)
+        ).fetchone()
+    else:
+        row = conn.execute("SELECT COUNT(*) as cnt FROM review_queue").fetchone()
+    return row['cnt']
+
+
+def _backfill_conversation_search_text(conn: sqlite3.Connection):
+    """Backfill search text for conversations created before the column existed."""
+    rows = conn.execute(
+        "SELECT id, messages FROM conversations WHERE search_text = '' OR search_text IS NULL"
+    ).fetchall()
+    for row in rows:
+        messages = json.loads(row['messages']) if row['messages'] else []
+        conn.execute(
+            "UPDATE conversations SET search_text = ? WHERE id = ?",
+            (_build_search_text(messages), row['id'])
+        )
+
+def _backfill_review_queue_fts(conn: sqlite3.Connection):
+    """Backfill the review_queue_fts table if it's empty."""
+    count = conn.execute("SELECT COUNT(*) as cnt FROM review_queue_fts").fetchone()['cnt']
+    if count == 0:
+        conn.execute(
+            "INSERT INTO review_queue_fts(rowid, id, raw_text) SELECT rowid, id, raw_text FROM review_queue"
+        )
+
+def _backfill_conversations_fts(conn: sqlite3.Connection):
+    """Backfill the conversations_fts table if it's empty."""
+    count = conn.execute("SELECT COUNT(*) as cnt FROM conversations_fts").fetchone()['cnt']
+    if count == 0:
+        conn.execute(
+            """INSERT INTO conversations_fts(rowid, id, folder, preview, search_text, messages)
+               SELECT rowid, id, folder, preview, search_text, messages FROM conversations"""
+        )
+
+
+def validate_review_item(conv: dict) -> tuple[bool, list[str]]:
+    """Import parser validation lazily to avoid circular imports."""
+    from scripts.parser import validate_conversation
+    return validate_conversation(conv)
 
 
 # ============ API SETTINGS (provider/model/key/url stored in DB) ============
