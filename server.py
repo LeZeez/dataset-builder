@@ -1,5 +1,5 @@
 """
-Backend server for Synthetic Dataset Generator
+Backend server for Synthetic Dataset Builder
 
 Provides API endpoints for:
 - Conversation generation (via LLM APIs) with streaming support
@@ -31,6 +31,7 @@ from urllib.parse import urlparse
 import anthropic
 import google.generativeai as genai
 import openai
+import yaml
 from flask import Flask, Response, jsonify, request, send_from_directory
 from flask_cors import CORS
 from werkzeug.exceptions import HTTPException
@@ -41,7 +42,7 @@ from scripts.exporter import export_dataset
 from scripts import database as db
 
 # Load config
-CONFIG_PATH = Path('config.json')
+CONFIG_PATH = Path('config.yaml')
 DATA_DIR = Path('data')
 VALID_FOLDERS = ('wanted', 'rejected')
 
@@ -73,43 +74,31 @@ def setup_defaults():
         except PermissionError:
             print(f"[Warning] Permission denied when copying Generate.txt")
 
-    # Copy config.example.json to config.json
-    config_example = Path(__file__).parent / "config.example.json"
+    # Create config.yaml from example if needed
     if not CONFIG_PATH.exists():
-        try:
-            shutil.copy2(config_example, CONFIG_PATH)
-        except FileNotFoundError:
-            pass
-        except PermissionError:
-            print(f"[Warning] Permission denied when copying config.example.json")
-
-    # Load config to setup default presets if empty
-    if CONFIG_PATH.exists():
-        try:
-            with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
-                config = json.load(f)
-
-            changed = False
-
-            def _add_default_preset(key, filename):
-                nonlocal changed
-                if key not in config or not config[key]:
-                    path = Path(__file__).parent / "defaults" / filename
-                    if path.exists():
-                        with open(path, 'r', encoding='utf-8') as f_preset:
-                            content = f_preset.read()
-                        config[key] = [{'name': 'Default', 'prompt': content}]
-                        changed = True
-
-            _add_default_preset('chat_presets', 'Chat.txt')
-            _add_default_preset('export_presets', 'Export.txt')
-
-            if changed:
+        config_example = Path(__file__).parent / "config.example.yaml"
+        if config_example.exists():
+            try:
+                shutil.copy2(config_example, CONFIG_PATH)
+            except (FileNotFoundError, PermissionError):
+                pass
+        else:
+            # Create minimal default
+            default_config = {
+                'server': {
+                    'host': '127.0.0.1',
+                    'port': 5000,
+                    'allowed_ips': [],
+                    'password': '',
+                    'allow_local_network': True,
+                    'trusted_domains': []
+                }
+            }
+            try:
                 with open(CONFIG_PATH, 'w', encoding='utf-8') as f:
-                    json.dump(config, f, indent=2, ensure_ascii=False)
-
-        except (json.JSONDecodeError, IOError) as e:
-            print(f"[Warning] Failed to setup default presets due to a config or file error: {e}")
+                    yaml.dump(default_config, f, default_flow_style=False, allow_unicode=True)
+            except PermissionError:
+                print("[Warning] Permission denied when creating config.yaml")
 
 setup_defaults()
 
@@ -118,12 +107,13 @@ def load_config() -> dict:
         if CONFIG_PATH.exists():
             try:
                 with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
-                    return json.load(f)
-            except (json.JSONDecodeError, IOError):
+                    return yaml.safe_load(f) or {}
+            except (yaml.YAMLError, IOError):
                 return {}
         return {}
 
 app = Flask(__name__, static_folder='ui', static_url_path='')
+_app_initialized = False
 
 # Filter out /api/drafts and /api/health logs
 class QuietFilter(logging.Filter):
@@ -134,6 +124,39 @@ class QuietFilter(logging.Filter):
 # Apply the filter to Werkzeug logger
 log = logging.getLogger('werkzeug')
 log.addFilter(QuietFilter())
+
+
+def build_allowed_origins(config: dict) -> list[str]:
+    """Build the allowed origins list for CORS."""
+    server_config = config.get('server', {})
+    host = server_config.get('host', '127.0.0.1')
+    port = server_config.get('port', 5000)
+
+    allowed_origins = [
+        f'http://localhost:{port}',
+        f'http://127.0.0.1:{port}'
+    ]
+    if host not in ('127.0.0.1', 'localhost', '0.0.0.0'):
+        allowed_origins.append(f'http://{host}:{port}')
+    return allowed_origins
+
+
+def initialize_app():
+    """Initialize storage, run migrations, and configure app-wide services."""
+    global _app_initialized
+    if _app_initialized:
+        return
+
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    (DATA_DIR / 'prompts').mkdir(parents=True, exist_ok=True)
+    Path('exports').mkdir(exist_ok=True)
+
+    config = load_config()
+    db.init_db()
+    db.seed_default_presets(Path(__file__).parent / 'defaults')
+
+    CORS(app, origins=build_allowed_origins(config))
+    _app_initialized = True
 
 
 @app.before_request
@@ -163,9 +186,9 @@ def security_check():
 
 def save_config(config: dict):
     with _config_lock:
-        temp_path = CONFIG_PATH.with_suffix('.json.tmp')
+        temp_path = CONFIG_PATH.with_suffix('.yaml.tmp')
         with open(temp_path, 'w', encoding='utf-8') as f:
-            json.dump(config, f, indent=2, ensure_ascii=False)
+            yaml.dump(config, f, default_flow_style=False, allow_unicode=True)
         os.replace(temp_path, CONFIG_PATH)
 
 
@@ -204,47 +227,46 @@ def health_check():
 
 @app.route('/api/config', methods=['GET'])
 def get_config():
-    """Get current configuration (hides full API keys)."""
-    config = load_config()
+    """Get current configuration (API settings from DB, server from config file)."""
+    api_settings = db.get_provider_settings()
     # Mask API keys for security (show last 4 chars only)
-    safe_config = json.loads(json.dumps(config))  # deep copy
-    for provider in safe_config.get('providers', {}).values():
+    safe_settings = json.loads(json.dumps(api_settings))
+    for provider in safe_settings.get('providers', {}).values():
         key = provider.get('api_key', '')
         if key and len(key) > 4:
             provider['api_key'] = '•' * 20 + key[-4:]
-    return jsonify(safe_config)
+    return jsonify(safe_settings)
 
 
 @app.route('/api/config', methods=['POST'])
 def update_config():
-    """Update configuration (API keys, base URLs, etc)."""
+    """Update configuration (API keys, base URLs, etc) - stored in DB."""
     data = request.get_json() or {}
-    config = load_config()
-    
-    # Update provider settings
+
+    # Update provider-specific settings
     if 'provider' in data:
         provider = data['provider']
-        
-        if provider in config.get('providers', {}):
-            # Update API key (only if not masked)
-            if 'api_key' in data and not data['api_key'].startswith('•'):
-                config['providers'][provider]['api_key'] = data['api_key']
-            
-            # Update base URL
-            if 'base_url' in data:
-                if not validate_base_url(data['base_url']):
-                    return jsonify({'error': 'Invalid base URL'}), 400
-                config['providers'][provider]['base_url'] = data['base_url']
-    
+
+        # Update API key (only if not masked)
+        if 'api_key' in data and not data['api_key'].startswith('•'):
+            db.set_api_setting(f'{provider}.api_key', data['api_key'])
+
+        # Update base URL
+        if 'base_url' in data:
+            if not validate_base_url(data['base_url']):
+                return jsonify({'error': 'Invalid base URL'}), 400
+            db.set_api_setting(f'{provider}.base_url', data['base_url'])
+
     # Update default provider/model/temperature
     if 'default_provider' in data:
-        config['api']['provider'] = data['default_provider']
+        db.set_api_setting('provider', data['default_provider'])
     if 'default_model' in data:
-        config['api']['model'] = data['default_model']
+        db.set_api_setting('model', data['default_model'])
     if 'default_temperature' in data:
-        config['api']['temperature'] = data['default_temperature']
-    
-    save_config(config)
+        db.set_api_setting('temperature', str(data['default_temperature']))
+    if 'default_max_tokens' in data:
+        db.set_api_setting('max_tokens', str(data['default_max_tokens']))
+
     return jsonify({'success': True})
 
 
@@ -254,18 +276,12 @@ def set_api_key():
     data = request.get_json() or {}
     provider = data.get('provider')
     api_key = data.get('api_key', '')
-    
+
     if not provider:
         return jsonify({'error': 'Provider required'}), 400
 
-    config = load_config()
-    
-    if provider not in config.get('providers', {}):
-        return jsonify({'error': 'Unknown provider'}), 400
-    
-    config['providers'][provider]['api_key'] = api_key
-    save_config(config)
-    
+    db.set_api_setting(f'{provider}.api_key', api_key)
+
     return jsonify({'success': True})
 
 
@@ -275,21 +291,15 @@ def set_base_url():
     data = request.get_json() or {}
     provider = data.get('provider')
     base_url = data.get('base_url', '')
-    
+
     if not provider:
         return jsonify({'error': 'Provider required'}), 400
-    
+
     if base_url and not validate_base_url(base_url):
         return jsonify({'error': 'Invalid base URL'}), 400
-    
-    config = load_config()
-    
-    if provider not in config.get('providers', {}):
-        return jsonify({'error': 'Unknown provider'}), 400
-    
-    config['providers'][provider]['base_url'] = base_url
-    save_config(config)
-    
+
+    db.set_api_setting(f'{provider}.base_url', base_url)
+
     return jsonify({'success': True})
 
 
@@ -379,18 +389,6 @@ def delete_prompt(name: str):
     return jsonify({'success': True})
 
 
-# Keep backward-compatible endpoint
-@app.route('/api/prompt/<version>', methods=['GET'])
-def get_prompt_legacy(version: str):
-    """Get prompt template by version (legacy endpoint)."""
-    # Sanitize version
-    safe_version = re.sub(r'[^a-zA-Z0-9_-]', '', version)
-    prompt_path = DATA_DIR / 'prompts' / f'{safe_version}.txt'
-    if prompt_path.exists():
-        return jsonify({'content': prompt_path.read_text(encoding='utf-8')})
-    return jsonify({'error': 'Prompt not found'}), 404
-
-
 # ============ STATS ============
 
 @app.route('/api/stats', methods=['GET'])
@@ -435,7 +433,7 @@ def prepare_custom_params(raw_params: dict) -> dict:
     return {k: parse_param_value(v) for k, v in raw_params.items()}
 
 
-# Default trusted API domains (can be extended via config.json server.trusted_domains)
+# Default trusted API domains (can be extended via config.yaml server.trusted_domains)
 _DEFAULT_TRUSTED_DOMAINS = (
     'api.openai.com',
     'api.anthropic.com',
@@ -471,7 +469,7 @@ def validate_base_url(url: str, config: dict = None) -> bool:
     """Validate base_url to prevent SSRF attacks.
 
     - Always blocks non-http(s) schemes
-    - Always allows known trusted API domains (configurable via config.json)
+    - Always allows known trusted API domains (configurable via config.yaml)
     - If server.allow_local_network is true (default), allows any URL including
       localhost and private IPs — suitable for self-hosted setups
     - If server.allow_local_network is false, rejects private/loopback/link-local IPs
@@ -540,9 +538,10 @@ def generate_conversation():
 def generate_openai(prompt: str, model: str, temperature: float, config: dict, custom_params: dict = None) -> str:
     """Generate using OpenAI API."""
 
-    provider_config = config.get('providers', {}).get('openai', {})
+    api_settings = db.get_provider_settings()
+    provider_config = api_settings.get('providers', {}).get('openai', {})
 
-    # Try config first, then environment variable
+    # Try DB first, then environment variable
     api_key = provider_config.get('api_key') or os.environ.get('OPENAI_API_KEY')
     if not api_key:
         raise ValueError('OpenAI API key not set. Configure it in Settings.')
@@ -553,7 +552,7 @@ def generate_openai(prompt: str, model: str, temperature: float, config: dict, c
 
     client = openai.OpenAI(api_key=api_key, base_url=base_url)
 
-    max_tokens = config.get('api', {}).get('max_tokens', 2048)
+    max_tokens = api_settings.get('max_tokens', 2048)
     kwargs = dict(
         model=model,
         messages=[{'role': 'user', 'content': prompt}],
@@ -571,7 +570,8 @@ def generate_openai(prompt: str, model: str, temperature: float, config: dict, c
 def generate_anthropic(prompt: str, model: str, temperature: float, config: dict, custom_params: dict = None) -> str:
     """Generate using Anthropic API."""
 
-    provider_config = config.get('providers', {}).get('anthropic', {})
+    api_settings = db.get_provider_settings()
+    provider_config = api_settings.get('providers', {}).get('anthropic', {})
 
     api_key = provider_config.get('api_key') or os.environ.get('ANTHROPIC_API_KEY')
     if not api_key:
@@ -583,7 +583,7 @@ def generate_anthropic(prompt: str, model: str, temperature: float, config: dict
 
     client = anthropic.Anthropic(api_key=api_key, base_url=base_url)
 
-    max_tokens = config.get('api', {}).get('max_tokens', 2048)
+    max_tokens = api_settings.get('max_tokens', 2048)
     kwargs = dict(
         model=model or 'claude-3-5-sonnet-20241022',
         max_tokens=max_tokens,
@@ -601,7 +601,8 @@ def generate_anthropic(prompt: str, model: str, temperature: float, config: dict
 def generate_google(prompt: str, model: str, temperature: float, config: dict, custom_params: dict = None) -> str:
     """Generate using Google Gemini API."""
 
-    provider_config = config.get('providers', {}).get('google', {})
+    api_settings = db.get_provider_settings()
+    provider_config = api_settings.get('providers', {}).get('google', {})
 
     api_key = provider_config.get('api_key') or os.environ.get('GOOGLE_API_KEY')
     if not api_key:
@@ -610,11 +611,13 @@ def generate_google(prompt: str, model: str, temperature: float, config: dict, c
     base_url = provider_config.get('base_url', '')
     # Configure with base_url if provided (for proxy/custom endpoints)
     if base_url:
+        if not validate_base_url(base_url, config):
+            raise ValueError('Invalid base URL configured for Google.')
         genai.configure(api_key=api_key, client_options={'api_endpoint': base_url})
     else:
         genai.configure(api_key=api_key)
 
-    max_tokens = config.get('api', {}).get('max_tokens', 2048)
+    max_tokens = api_settings.get('max_tokens', 2048)
     gen_config = dict(
         temperature=temperature,
         max_output_tokens=max_tokens
@@ -670,17 +673,9 @@ def save_conversation_endpoint():
     # Save to SQLite
     db.save_conversation(conv_id, messages, folder, full_metadata)
 
-    # Also save JSON file for backward compatibility
-    folder_path = Path(f'data/{folder}')
-    folder_path.mkdir(parents=True, exist_ok=True)
-    filepath = folder_path / f'{conv_id}.json'
-    with open(filepath, 'w', encoding='utf-8') as f:
-        json.dump(full_conv, f, ensure_ascii=False, indent=2)
-
     return jsonify({
         'success': True,
-        'id': conv_id,
-        'path': str(filepath)
+        'id': conv_id
     })
 
 
@@ -725,13 +720,6 @@ def save_bulk_conversations():
                 continue
 
             db.save_conversation(conv_id, messages, folder, full_metadata)
-
-            # Also save JSON file for backward compatibility
-            folder_path = Path(f'data/{folder}')
-            folder_path.mkdir(parents=True, exist_ok=True)
-            filepath = folder_path / f'{conv_id}.json'
-            with open(filepath, 'w', encoding='utf-8') as f:
-                json.dump(full_conv, f, ensure_ascii=False, indent=2)
 
             saved.append({'id': conv_id})
         except Exception as e:
@@ -847,12 +835,12 @@ def export_dataset_endpoint(format: str):
             if not filename.endswith('.jsonl'): filename += '.jsonl'
         
         output_path = export_dataset(
-            'data/wanted',
-            'exports',
-            format,
+            output_dir='exports',
+            format=format,
             selected_ids=selected_ids,
             system_prompt=system_prompt,
-            filename=filename
+            filename=filename,
+            folder='wanted'
         )
         return jsonify({
             'success': True,
@@ -873,8 +861,11 @@ def list_conversations():
 
     search = request.args.get('search', '').strip().lower()
     tag_filter = request.args.get('tag', '').strip()
-    limit = int(request.args.get('limit', 50))
-    offset = int(request.args.get('offset', 0))
+    try:
+        limit = max(1, min(int(request.args.get('limit', 50)), 200))
+        offset = max(0, int(request.args.get('offset', 0)))
+    except ValueError:
+        return jsonify({'error': 'Invalid pagination parameters'}), 400
 
     conversations, total = db.list_conversations(
         folder=folder, search=search, tag=tag_filter,
@@ -922,13 +913,6 @@ def move_conversation(conv_id: str):
     if not db.move_conversation(conv_id, from_folder, to_folder):
         return jsonify({'error': 'Conversation not found'}), 404
 
-    # Also move the JSON file for backward compatibility
-    src_path = DATA_DIR / from_folder / f'{conv_id}.json'
-    dst_path = DATA_DIR / to_folder / f'{conv_id}.json'
-    if src_path.exists():
-        dst_path.parent.mkdir(parents=True, exist_ok=True)
-        src_path.rename(dst_path)
-
     return jsonify({'success': True})
 
 
@@ -946,11 +930,6 @@ def delete_conversation(conv_id: str):
     if not db.delete_conversation(conv_id, folder):
         return jsonify({'error': 'Conversation not found'}), 404
 
-    # Also delete JSON file
-    filepath = DATA_DIR / folder / f'{conv_id}.json'
-    if filepath.exists():
-        filepath.unlink()
-
     return jsonify({'success': True, 'deleted': conv_id})
 
 @app.route('/api/conversations/bulk-delete', methods=['POST'])
@@ -965,15 +944,6 @@ def bulk_delete_conversations():
 
     safe_ids = [cid for cid in ids if is_safe_id(cid)]
     deleted = db.bulk_delete_conversations(safe_ids, folder)
-
-    # Also delete JSON files
-    for conv_id in deleted:
-        filepath = DATA_DIR / folder / f'{conv_id}.json'
-        if filepath.exists():
-            try:
-                filepath.unlink()
-            except Exception:
-                pass
 
     return jsonify({'success': True, 'deleted': deleted})
 
@@ -991,18 +961,6 @@ def bulk_move_conversations():
     safe_ids = [cid for cid in ids if is_safe_id(cid)]
     moved = db.bulk_move_conversations(safe_ids, from_folder, to_folder)
 
-    # Also move JSON files
-    dst_dir = DATA_DIR / to_folder
-    dst_dir.mkdir(parents=True, exist_ok=True)
-    for conv_id in moved:
-        src_path = DATA_DIR / from_folder / f'{conv_id}.json'
-        dst_path = dst_dir / f'{conv_id}.json'
-        if src_path.exists():
-            try:
-                src_path.rename(dst_path)
-            except Exception:
-                pass
-
     return jsonify({'success': True, 'moved': moved})
 
 
@@ -1012,12 +970,9 @@ def bulk_move_conversations():
 def list_models():
     """Fetch available models from provider."""
     provider = request.args.get('provider', 'openai')
-    config = load_config()
-    provider_config = config.get('providers', {}).get(provider, {})
-    
-    # Get in-memory model history (no longer from config)
-    model_history = getattr(app, '_model_history', {}).get(provider, [])
-    
+    api_settings = db.get_provider_settings()
+    provider_config = api_settings.get('providers', {}).get(provider, {})
+
     try:
         if provider == 'openai':
             models = fetch_openai_models(provider_config)
@@ -1027,32 +982,30 @@ def list_models():
             models = fetch_google_models(provider_config)
         else:
             models = []
-        
+
         return jsonify({
             'models': models,
-            'history': model_history,
-            'default': config.get('api', {}).get('model', '')
+            'default': api_settings.get('model', '')
         })
     except Exception as e:
         return jsonify({
             'models': [],
-            'history': model_history,
             'error': str(e)
         })
 
 
 def fetch_openai_models(provider_config: dict) -> list:
     """Fetch models from OpenAI-compatible API."""
-    
+
     api_key = provider_config.get('api_key') or os.environ.get('OPENAI_API_KEY')
     if not api_key:
         return []
-    
+
     base_url = provider_config.get('base_url') or 'https://api.openai.com/v1'
     if not validate_base_url(base_url):
         return []
     client = openai.OpenAI(api_key=api_key, base_url=base_url)
-    
+
     response = client.models.list()
     # Return all models, excluding known non-chat models (embeddings, tts, whisper, dall-e, moderation)
     excluded_prefixes = ('text-embedding', 'tts-', 'whisper', 'dall-e', 'text-moderation', 'davinci', 'babbage', 'curie', 'ada')
@@ -1062,22 +1015,21 @@ def fetch_openai_models(provider_config: dict) -> list:
 
 def fetch_anthropic_models(provider_config: dict) -> list:
     """Fetch models from Anthropic API."""
-    
+
     api_key = provider_config.get('api_key') or os.environ.get('ANTHROPIC_API_KEY')
     if not api_key:
         return []
-    
+
     try:
         base_url = provider_config.get('base_url') or 'https://api.anthropic.com'
         if not validate_base_url(base_url):
             return []
         client = anthropic.Anthropic(api_key=api_key, base_url=base_url)
-        
+
         response = client.models.list()
         models = [m.id for m in response.data]
         return sorted(models, reverse=True)
     except Exception as e:
-        # Return empty list instead of hardcoded fallback
         return []
 
 
@@ -1090,6 +1042,8 @@ def fetch_google_models(provider_config: dict) -> list:
 
     base_url = provider_config.get('base_url', '')
     if base_url:
+        if not validate_base_url(base_url, load_config()):
+            return []
         genai.configure(api_key=api_key, client_options={'api_endpoint': base_url})
     else:
         genai.configure(api_key=api_key)
@@ -1097,31 +1051,6 @@ def fetch_google_models(provider_config: dict) -> list:
     models = genai.list_models()
     result = [m.name.replace('models/', '') for m in models if 'generateContent' in m.supported_generation_methods]
     return result
-
-
-@app.route('/api/models/history', methods=['POST'])
-def add_model_to_history():
-    """Add a model to history for quick access (stored ephemerally in memory)."""
-    data = request.get_json() or {}
-    provider = data.get('provider', 'openai')
-    model = data.get('model', '')
-
-    if not model:
-        return jsonify({'error': 'Model required'}), 400
-
-    # Store in memory only, not in config.json
-    if not hasattr(app, '_model_history'):
-        app._model_history = {}
-    if provider not in app._model_history:
-        app._model_history[provider] = []
-
-    history = app._model_history[provider]
-    if model in history:
-        history.remove(model)
-    history.insert(0, model)
-    app._model_history[provider] = history[:5]  # Keep small
-
-    return jsonify({'success': True, 'history': app._model_history[provider]})
 
 
 # ============ STREAMING ============
@@ -1160,13 +1089,14 @@ def generate_stream():
 
 def stream_openai(prompt: str, model: str, temperature: float, config: dict, system_prompt: str = '', custom_params: dict = None) -> Generator:
     """Stream from OpenAI API."""
-    
-    provider_config = config.get('providers', {}).get('openai', {})
+
+    api_settings = db.get_provider_settings()
+    provider_config = api_settings.get('providers', {}).get('openai', {})
     api_key = provider_config.get('api_key') or os.environ.get('OPENAI_API_KEY')
     if not api_key:
         yield f"data: {json.dumps({'error': 'OpenAI API key not set'})}\n\n"
         return
-    
+
     base_url = provider_config.get('base_url') or 'https://api.openai.com/v1'
     if not validate_base_url(base_url, config):
         yield f"data: {json.dumps({'error': 'Invalid base URL configured for OpenAI'})}\n\n"
@@ -1178,7 +1108,7 @@ def stream_openai(prompt: str, model: str, temperature: float, config: dict, sys
         messages.append({'role': 'system', 'content': system_prompt})
     messages.append({'role': 'user', 'content': prompt})
 
-    max_tokens = config.get('api', {}).get('max_tokens', 2048)
+    max_tokens = api_settings.get('max_tokens', 2048)
     kwargs = dict(
         model=model,
         messages=messages,
@@ -1188,9 +1118,9 @@ def stream_openai(prompt: str, model: str, temperature: float, config: dict, sys
     )
     if custom_params:
         kwargs['extra_body'] = custom_params
-    
+
     stream = client.chat.completions.create(**kwargs)
-    
+
     for chunk in stream:
         if chunk.choices[0].delta.content:
             yield f"data: {json.dumps({'content': chunk.choices[0].delta.content})}\n\n"
@@ -1198,13 +1128,14 @@ def stream_openai(prompt: str, model: str, temperature: float, config: dict, sys
 
 def stream_anthropic(prompt: str, model: str, temperature: float, config: dict, system_prompt: str = '', custom_params: dict = None) -> Generator:
     """Stream from Anthropic API."""
-    
-    provider_config = config.get('providers', {}).get('anthropic', {})
+
+    api_settings = db.get_provider_settings()
+    provider_config = api_settings.get('providers', {}).get('anthropic', {})
     api_key = provider_config.get('api_key') or os.environ.get('ANTHROPIC_API_KEY')
     if not api_key:
         yield f"data: {json.dumps({'error': 'Anthropic API key not set'})}\n\n"
         return
-    
+
     base_url = provider_config.get('base_url') or 'https://api.anthropic.com/v1'
     if not validate_base_url(base_url, config):
         yield f"data: {json.dumps({'error': 'Invalid base URL configured for Anthropic'})}\n\n"
@@ -1212,7 +1143,7 @@ def stream_anthropic(prompt: str, model: str, temperature: float, config: dict, 
 
     client = anthropic.Anthropic(api_key=api_key, base_url=base_url)
 
-    max_tokens = config.get('api', {}).get('max_tokens', 2048)
+    max_tokens = api_settings.get('max_tokens', 2048)
     kwargs = dict(
         model=model or 'claude-3-5-sonnet-20241022',
         max_tokens=max_tokens,
@@ -1222,7 +1153,7 @@ def stream_anthropic(prompt: str, model: str, temperature: float, config: dict, 
     )
     if custom_params:
         kwargs.update(custom_params)
-    
+
     with client.messages.stream(**kwargs) as stream:
         for text in stream.text_stream:
             yield f"data: {json.dumps({'content': text})}\n\n"
@@ -1230,20 +1161,24 @@ def stream_anthropic(prompt: str, model: str, temperature: float, config: dict, 
 
 def stream_google(prompt: str, model: str, temperature: float, config: dict, system_prompt: str = '', custom_params: dict = None) -> Generator:
     """Stream from Google Gemini API."""
-    
-    provider_config = config.get('providers', {}).get('google', {})
+
+    api_settings = db.get_provider_settings()
+    provider_config = api_settings.get('providers', {}).get('google', {})
     api_key = provider_config.get('api_key') or os.environ.get('GOOGLE_API_KEY')
     if not api_key:
         yield f"data: {json.dumps({'error': 'Google API key not set'})}\n\n"
         return
-    
+
     genai.configure(api_key=api_key)
 
     base_url = provider_config.get('base_url', '')
     if base_url:
+        if not validate_base_url(base_url, config):
+            yield f"data: {json.dumps({'error': 'Invalid base URL configured for Google'})}\n\n"
+            return
         genai.configure(api_key=api_key, client_options={'api_endpoint': base_url})
 
-    max_tokens = config.get('api', {}).get('max_tokens', 2048)
+    max_tokens = api_settings.get('max_tokens', 2048)
     gen_config = dict(
         temperature=temperature,
         max_output_tokens=max_tokens
@@ -1308,6 +1243,8 @@ def delete_preset(name: str):
 def get_drafts():
     """Get drafts for cross-device sync."""
     session_id = request.args.get('session_id', None)
+    if not session_id:
+        return jsonify({})
     return jsonify(db.get_draft(session_id))
 
 
@@ -1332,8 +1269,6 @@ def save_draft_endpoint():
         'chat': {
             'systemPrompt': data.get('chat', {}).get('systemPrompt', ''),
             'presetName': data.get('chat', {}).get('presetName', ''),
-            'zoomLevel': data.get('chat', {}).get('zoomLevel', 1),
-            'showAllTools': data.get('chat', {}).get('showAllTools', False),
             # Store chat messages but cap to avoid bloat
             'messages': (data.get('chat', {}).get('messages', []))[:100]
         },
@@ -1350,17 +1285,6 @@ def save_draft_endpoint():
         'success': True,
         'updated': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
     })
-
-
-@app.route('/api/drafts/<key>', methods=['POST'])
-def save_draft_key(key: str):
-    """Save a specific draft key."""
-    data = request.get_json() or {}
-    # Get existing draft and update key
-    existing = db.get_draft(key)
-    existing[key] = data.get('value')
-    db.save_draft(key, existing)
-    return jsonify({'success': True})
 
 
 # ============ EXPORT PRESETS (SQLite-backed) ============
@@ -1444,8 +1368,15 @@ def get_all_tags():
 @app.route('/api/review-queue', methods=['GET'])
 def get_review_queue():
     """Get all items in the review queue."""
-    queue, total = db.get_review_queue()
-    return jsonify({'queue': queue, 'count': total})
+    search = request.args.get('search', '').strip()
+    try:
+        limit = max(0, min(int(request.args.get('limit', 0)), 200))
+        offset = max(0, int(request.args.get('offset', 0)))
+    except ValueError:
+        return jsonify({'error': 'Invalid pagination parameters'}), 400
+
+    queue, total = db.get_review_queue(limit=limit, offset=offset, search=search)
+    return jsonify({'queue': queue, 'count': total, 'limit': limit, 'offset': offset})
 
 
 @app.route('/api/review-queue', methods=['POST'])
@@ -1480,6 +1411,23 @@ def remove_from_review_queue(item_id: str):
     _, total = db.get_review_queue(limit=0)
     return jsonify({'success': True, 'count': total})
 
+
+@app.route('/api/review-queue/<item_id>', methods=['PUT'])
+def update_review_queue_item(item_id: str):
+    """Update a specific review queue item after inline edits."""
+    data = request.get_json() or {}
+    conversations = data.get('conversations', [])
+    raw_text = data.get('raw_text', '')
+    metadata = data.get('metadata', {})
+
+    if not isinstance(conversations, list) or not isinstance(raw_text, str):
+        return jsonify({'error': 'Invalid review item payload'}), 400
+
+    if not db.update_review_queue_item(item_id, conversations, raw_text, metadata):
+        return jsonify({'error': 'Item not found'}), 404
+
+    return jsonify({'success': True})
+
 @app.route('/api/review-queue/bulk-delete', methods=['POST'])
 def bulk_remove_from_review_queue():
     """Bulk remove items from the review queue."""
@@ -1491,23 +1439,15 @@ def bulk_remove_from_review_queue():
 
     return jsonify({'success': True, 'count': total})
 
-@app.route('/api/review-queue/bulk-keep', methods=['POST'])
-def bulk_keep_from_review_queue():
-    """Atomically save items from the review queue to wanted and remove them from the queue."""
-    data = request.get_json() or {}
-    ids = data.get('ids', [])
 
-    if not ids:
-        return jsonify({'error': 'No ids provided'}), 400
-
+def _persist_review_items(ids: list[str], target_folder: str):
+    """Save selected review queue items to a folder and remove successful ones."""
     saved = []
     errors = []
     ids_to_remove = set()
 
-    # Find items to keep
-    items_to_keep = db.get_review_queue_items_by_ids(ids)
-
-    for item in items_to_keep:
+    items = db.get_review_queue_items_by_ids(ids)
+    for item in items:
         try:
             conv_id = db.generate_conversation_id()
             messages = item.get('conversations', [])
@@ -1528,26 +1468,16 @@ def bulk_keep_from_review_queue():
                 errors.append({'error': errs, 'original_id': item.get('id')})
                 continue
 
-            db.save_conversation(conv_id, messages, 'wanted', full_metadata)
-
-            # Also save JSON file
-            folder_path = DATA_DIR / 'wanted'
-            folder_path.mkdir(parents=True, exist_ok=True)
-            filepath = folder_path / f'{conv_id}.json'
-            with open(filepath, 'w', encoding='utf-8') as f:
-                json.dump(full_conv, f, ensure_ascii=False, indent=2)
-
+            db.save_conversation(conv_id, messages, target_folder, full_metadata)
             saved.append({'id': conv_id, 'original_id': item.get('id')})
             ids_to_remove.add(item.get('id'))
         except Exception as e:
             errors.append({'error': str(e), 'original_id': item.get('id')})
 
-    # Remove successfully saved items from the review queue
     if ids_to_remove:
         db.bulk_remove_from_review_queue(list(ids_to_remove))
 
     _, total = db.get_review_queue(limit=0)
-
     return jsonify({
         'success': True,
         'saved_count': len(saved),
@@ -1557,6 +1487,29 @@ def bulk_keep_from_review_queue():
         'count': total
     })
 
+@app.route('/api/review-queue/bulk-keep', methods=['POST'])
+def bulk_keep_from_review_queue():
+    """Atomically save items from the review queue to wanted and remove them from the queue."""
+    data = request.get_json() or {}
+    ids = data.get('ids', [])
+
+    if not ids:
+        return jsonify({'error': 'No ids provided'}), 400
+
+    return _persist_review_items(ids, 'wanted')
+
+
+@app.route('/api/review-queue/bulk-reject', methods=['POST'])
+def bulk_reject_from_review_queue():
+    """Atomically save items from the review queue to rejected and remove them from the queue."""
+    data = request.get_json() or {}
+    ids = data.get('ids', [])
+
+    if not ids:
+        return jsonify({'error': 'No ids provided'}), 400
+
+    return _persist_review_items(ids, 'rejected')
+
 
 @app.route('/api/review-queue', methods=['DELETE'])
 def clear_review_queue():
@@ -1565,38 +1518,23 @@ def clear_review_queue():
     return jsonify({'success': True, 'count': 0})
 
 
+initialize_app()
+
+
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Synthetic Dataset Generator Server')
+    parser = argparse.ArgumentParser(description='Synthetic Dataset Builder Server')
     parser.add_argument('--host', type=str, help='Host to bind to')
     parser.add_argument('--port', type=int, help='Port to bind to')
     args = parser.parse_args()
 
+    initialize_app()
     config = load_config()
     server_config = config.get('server', {})
 
     host = args.host or server_config.get('host', '127.0.0.1')
     port = args.port or server_config.get('port', 5000)
-
-    # Initialize SQLite database and run migrations
-    db.init_db()
-    db.run_migrations(DATA_DIR, config)
-
-    # Initialize proper CORS
-    allowed_origins = [
-        f'http://localhost:{port}',
-        f'http://127.0.0.1:{port}'
-    ]
-    if host not in ('127.0.0.1', 'localhost', '0.0.0.0'):
-        allowed_origins.append(f'http://{host}:{port}')
-    CORS(app, origins=allowed_origins)
-
-    # Ensure directories exist
-    (DATA_DIR / 'wanted').mkdir(parents=True, exist_ok=True)
-    (DATA_DIR / 'rejected').mkdir(parents=True, exist_ok=True)
-    (DATA_DIR / 'prompts').mkdir(parents=True, exist_ok=True)
-    Path('exports').mkdir(exist_ok=True)
     
-    print('   Synthetic Dataset Generator')
+    print('   Synthetic Dataset Builder')
     print(f'   Server running at http://{host}:{port}')
 
     # Check security configurations

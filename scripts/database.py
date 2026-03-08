@@ -1,9 +1,4 @@
-"""
-SQLite database layer for Synthetic Dataset Generator.
-
-Replaces JSON-per-file storage for conversations, review queue, drafts,
-and presets. Provides atomic operations and efficient queries.
-"""
+"""SQLite database layer for Synthetic Dataset Builder."""
 
 import json
 import sqlite3
@@ -101,6 +96,11 @@ def init_db():
                 date_prefix TEXT PRIMARY KEY,
                 seq INTEGER NOT NULL DEFAULT 0
             );
+
+            CREATE TABLE IF NOT EXISTS api_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL DEFAULT ''
+            );
         """)
 
 
@@ -113,18 +113,14 @@ def generate_conversation_id() -> str:
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     with get_db() as conn:
         conn.execute(
-            "INSERT INTO id_counter (date_prefix, seq) VALUES (?, 0) "
+            "INSERT INTO id_counter (date_prefix, seq) VALUES (?, 1) "
             "ON CONFLICT(date_prefix) DO UPDATE SET seq = seq + 1",
             (today,)
         )
         row = conn.execute(
             "SELECT seq FROM id_counter WHERE date_prefix = ?", (today,)
         ).fetchone()
-        seq = row['seq'] + 1  # +1 because we start at 0
-        conn.execute(
-            "UPDATE id_counter SET seq = ? WHERE date_prefix = ?",
-            (seq, today)
-        )
+        seq = row['seq']
     return f"{today}_{seq:03d}"
 
 
@@ -425,18 +421,28 @@ def add_to_review_queue(items: list) -> list:
     return added
 
 
-def get_review_queue(limit: int = 0, offset: int = 0) -> tuple[list, int]:
+def get_review_queue(limit: int = 0, offset: int = 0, search: str = '') -> tuple[list, int]:
     """Get review queue items. Returns (items, total_count)."""
-    with get_db() as conn:
-        total = conn.execute("SELECT COUNT(*) as cnt FROM review_queue").fetchone()['cnt']
+    where_clause = ""
+    params: list = []
+    if search:
+        query = f"%{search.lower()}%"
+        where_clause = " WHERE LOWER(raw_text) LIKE ? OR LOWER(conversations) LIKE ?"
+        params.extend([query, query])
 
-        query = "SELECT * FROM review_queue ORDER BY created_at ASC"
-        params = []
+    with get_db() as conn:
+        total = conn.execute(
+            f"SELECT COUNT(*) as cnt FROM review_queue{where_clause}",
+            params
+        ).fetchone()['cnt']
+
+        query = f"SELECT * FROM review_queue{where_clause} ORDER BY created_at ASC"
+        query_params = list(params)
         if limit > 0:
             query += " LIMIT ? OFFSET ?"
-            params = [limit, offset]
+            query_params.extend([limit, offset])
 
-        rows = conn.execute(query, params).fetchall()
+        rows = conn.execute(query, query_params).fetchall()
 
     items = []
     for row in rows:
@@ -459,8 +465,27 @@ def remove_from_review_queue(item_id: str) -> bool:
     return result.rowcount > 0
 
 
+def update_review_queue_item(item_id: str, conversations: list, raw_text: str, metadata: dict | None = None) -> bool:
+    """Update a review queue item in place after inline review edits."""
+    with get_db() as conn:
+        result = conn.execute(
+            """UPDATE review_queue
+               SET conversations = ?, raw_text = ?, metadata = ?
+               WHERE id = ?""",
+            (
+                json.dumps(conversations, ensure_ascii=False),
+                raw_text,
+                json.dumps(metadata or {}, ensure_ascii=False),
+                item_id
+            )
+        )
+    return result.rowcount > 0
+
+
 def bulk_remove_from_review_queue(ids: list) -> int:
     """Bulk remove items. Returns count removed."""
+    if not ids:
+        return 0
     with get_db() as conn:
         placeholders = ','.join('?' * len(ids))
         result = conn.execute(
@@ -477,6 +502,8 @@ def clear_review_queue():
 
 def get_review_queue_items_by_ids(ids: list) -> list:
     """Get specific review queue items by IDs."""
+    if not ids:
+        return []
     with get_db() as conn:
         placeholders = ','.join('?' * len(ids))
         rows = conn.execute(
@@ -508,28 +535,19 @@ def save_draft(session_id: str, data: dict):
 
 
 def get_draft(session_id: str = None) -> dict:
-    """Get draft(s). If session_id is None, returns all drafts merged."""
+    """Get the draft for a specific session ID."""
+    if not session_id:
+        return {}
     with get_db() as conn:
-        if session_id:
-            row = conn.execute(
-                "SELECT data, updated_at FROM drafts WHERE session_id = ?",
-                (session_id,)
-            ).fetchone()
-            if row:
-                data = json.loads(row['data'])
-                data['_updated'] = row['updated_at']
-                return data
-            return {}
-        else:
-            # Return the most recent draft
-            row = conn.execute(
-                "SELECT data, updated_at FROM drafts ORDER BY updated_at DESC LIMIT 1"
-            ).fetchone()
-            if row:
-                data = json.loads(row['data'])
-                data['_updated'] = row['updated_at']
-                return data
-            return {}
+        row = conn.execute(
+            "SELECT data, updated_at FROM drafts WHERE session_id = ?",
+            (session_id,)
+        ).fetchone()
+        if row:
+            data = json.loads(row['data'])
+            data['_updated'] = row['updated_at']
+            return data
+        return {}
 
 
 # ============ PRESETS ============
@@ -579,124 +597,54 @@ def delete_preset(preset_type: str, name: str) -> bool:
     return result.rowcount > 0
 
 
-# ============ MIGRATION ============
+def get_conversations_for_export(folder: str = 'wanted', ids: list | None = None) -> list:
+    """Get full conversations for export, preserving requested ID order when provided."""
+    with get_db() as conn:
+        params = [folder]
+        query = """
+            SELECT id, messages, metadata
+            FROM conversations
+            WHERE folder = ?
+        """
 
-def migrate_json_conversations(data_dir: Path):
-    """Import existing JSON conversation files into SQLite."""
-    for folder in ('wanted', 'rejected'):
-        folder_path = data_dir / folder
-        if not folder_path.exists():
+        if ids is not None:
+            if not ids:
+                return []
+            placeholders = ','.join('?' * len(ids))
+            query += f" AND id IN ({placeholders})"
+            params.extend(ids)
+
+        query += " ORDER BY created_at DESC"
+        rows = conn.execute(query, params).fetchall()
+
+    conversations = []
+    for row in rows:
+        conversations.append({
+            'id': row['id'],
+            'conversations': json.loads(row['messages']),
+            'metadata': json.loads(row['metadata']) if row['metadata'] else {}
+        })
+
+    if ids is not None:
+        order = {conv_id: index for index, conv_id in enumerate(ids)}
+        conversations.sort(key=lambda conv: order.get(conv['id'], len(order)))
+
+    return conversations
+
+def seed_default_presets(defaults_dir: Path):
+    """Ensure the built-in chat and export presets exist in SQLite."""
+    for preset_type, filename in (('chat', 'Chat.txt'), ('export', 'Export.txt')):
+        if get_presets(preset_type):
             continue
 
-        for json_file in folder_path.glob('*.json'):
-            try:
-                with open(json_file, 'r', encoding='utf-8') as f:
-                    conv = json.load(f)
-
-                conv_id = conv.get('id', json_file.stem)
-                messages = conv.get('conversations', [])
-                metadata = conv.get('metadata', {})
-
-                # Check if already imported
-                with get_db() as conn:
-                    existing = conn.execute(
-                        "SELECT id FROM conversations WHERE id = ?", (conv_id,)
-                    ).fetchone()
-
-                if not existing:
-                    save_conversation(conv_id, messages, folder, metadata)
-            except (json.JSONDecodeError, Exception) as e:
-                print(f"[Migration] Skipping {json_file}: {e}")
-
-
-def migrate_review_queue(data_dir: Path):
-    """Import existing review_queue.json into SQLite."""
-    queue_path = data_dir / 'review_queue.json'
-    if not queue_path.exists():
-        return
-
-    try:
-        with open(queue_path, 'r', encoding='utf-8') as f:
-            queue = json.load(f)
-
-        if not isinstance(queue, list) or not queue:
-            return
-
-        # Check if already migrated
-        with get_db() as conn:
-            count = conn.execute("SELECT COUNT(*) as cnt FROM review_queue").fetchone()['cnt']
-        if count > 0:
-            return
-
-        with get_db() as conn:
-            for item in queue:
-                conn.execute("""
-                    INSERT OR IGNORE INTO review_queue (id, conversations, raw_text, metadata, created_at)
-                    VALUES (?, ?, ?, ?, ?)
-                """, (
-                    item.get('id', str(uuid.uuid4())),
-                    json.dumps(item.get('conversations', []), ensure_ascii=False),
-                    item.get('rawText', ''),
-                    json.dumps(item.get('metadata', {}), ensure_ascii=False),
-                    item.get('createdAt', datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'))
-                ))
-    except (json.JSONDecodeError, Exception) as e:
-        print(f"[Migration] Skipping review queue: {e}")
-
-
-def migrate_presets_from_config(config: dict):
-    """Import presets from config.json into SQLite."""
-    now = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
-
-    for preset_type, config_key, data_key in [
-        ('chat', 'chat_presets', 'prompt'),
-        ('export', 'export_presets', 'prompt'),
-        ('variable', 'variable_presets', 'values'),
-    ]:
-        presets = config.get(config_key, [])
-        if not presets:
+        path = defaults_dir / filename
+        if not path.exists():
             continue
 
-        # Check if already migrated
-        existing = get_presets(preset_type)
-        if existing:
-            continue
+        with open(path, 'r', encoding='utf-8') as f:
+            content = f.read()
 
-        for preset in presets:
-            name = preset.get('name', '')
-            if not name:
-                continue
-            data = {data_key: preset.get(data_key, '' if data_key == 'prompt' else {})}
-            save_preset(preset_type, name, data)
-
-
-def migrate_drafts(data_dir: Path):
-    """Import existing drafts.json into SQLite."""
-    drafts_path = data_dir / 'drafts.json'
-    if not drafts_path.exists():
-        return
-
-    try:
-        with open(drafts_path, 'r', encoding='utf-8') as f:
-            drafts = json.load(f)
-
-        if not drafts:
-            return
-
-        session_id = drafts.get('_sessionId', 'migrated')
-        save_draft(session_id, drafts)
-    except (json.JSONDecodeError, Exception) as e:
-        print(f"[Migration] Skipping drafts: {e}")
-
-
-def run_migrations(data_dir: Path, config: dict):
-    """Run all migrations from JSON files to SQLite."""
-    init_db()
-    migrate_json_conversations(data_dir)
-    migrate_review_queue(data_dir)
-    migrate_presets_from_config(config)
-    migrate_drafts(data_dir)
-    print("[Migration] Database migration complete.")
+        save_preset(preset_type, 'Default', {'prompt': content}, overwrite=False)
 
 
 def _row_to_conversation(row) -> dict:
@@ -706,3 +654,67 @@ def _row_to_conversation(row) -> dict:
         'conversations': json.loads(row['messages']),
         'metadata': json.loads(row['metadata']) if row['metadata'] else {}
     }
+
+
+# ============ API SETTINGS (provider/model/key/url stored in DB) ============
+
+def set_api_setting(key: str, value: str):
+    """Set a single API setting value."""
+    with get_db() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO api_settings (key, value) VALUES (?, ?)",
+            (key, value)
+        )
+
+
+def get_all_api_settings() -> dict:
+    """Get all API settings as a dict."""
+    with get_db() as conn:
+        rows = conn.execute("SELECT key, value FROM api_settings").fetchall()
+    return {row['key']: row['value'] for row in rows}
+
+
+def get_provider_settings() -> dict:
+    """Get provider/API settings structured as a dict.
+
+    Keys stored:
+      provider, model, temperature, max_tokens,
+      openai.api_key, openai.base_url,
+      anthropic.api_key, anthropic.base_url,
+      google.api_key, google.base_url
+    """
+    raw = get_all_api_settings()
+    return {
+        'provider': raw.get('provider', 'openai'),
+        'model': raw.get('model', ''),
+        'temperature': _safe_float(raw.get('temperature', ''), 0.9),
+        'max_tokens': _safe_int(raw.get('max_tokens', ''), 2048),
+        'providers': {
+            'openai': {
+                'base_url': raw.get('openai.base_url', ''),
+                'api_key': raw.get('openai.api_key', '')
+            },
+            'anthropic': {
+                'base_url': raw.get('anthropic.base_url', 'https://api.anthropic.com/v1'),
+                'api_key': raw.get('anthropic.api_key', '')
+            },
+            'google': {
+                'base_url': raw.get('google.base_url', 'https://generativelanguage.googleapis.com/v1beta'),
+                'api_key': raw.get('google.api_key', '')
+            }
+        }
+    }
+
+
+def _safe_float(val: str, default: float) -> float:
+    try:
+        return float(val)
+    except (ValueError, TypeError):
+        return default
+
+
+def _safe_int(val: str, default: int) -> int:
+    try:
+        return int(val)
+    except (ValueError, TypeError):
+        return default
