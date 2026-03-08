@@ -40,7 +40,7 @@ python3 -m pip install -r requirements.txt
 
 ### 2. Configure
 
-Create `config.yaml` from `config.example.yaml` if you want to customize host, auth, or trusted domains before first run.
+`config.yaml` is automatically created from `config.example.yaml` — edit it if you want to customize host, auth, or trusted domains before first run.
 
 Default server config:
 
@@ -146,13 +146,6 @@ Print dataset stats as JSON:
 ```bash
 python3 scripts/stats.py --json
 ```
-
-## Notes
-
-- `exports/` is created automatically if missing.
-- `data/prompts/Default.txt` is created automatically from `defaults/Generate.txt` on first run.
-- The app does not depend on JSON conversation folders or alternate config formats.
-- Benchmark tooling lives under `benchmark/` and defaults to `benchmark/benchmark.db`, which is auto-created and gitignored so you can stress-test without touching `data/dataset.db`.
 
 ## License
 
