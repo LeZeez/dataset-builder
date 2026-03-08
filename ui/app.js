@@ -3400,6 +3400,7 @@ async function persistAllReviewQueueInBatches(action) {
             const persistData = await persistRes.json().catch(() => ({}));
 
             const savedCount = typeof persistData.saved_count === 'number' ? persistData.saved_count : ids.length;
+            const errorCount = typeof persistData.error_count === 'number' ? persistData.error_count : 0;
             processed += savedCount;
 
             const remaining = typeof persistData.count === 'number' ? persistData.count : null;
@@ -3418,6 +3419,11 @@ async function persistAllReviewQueueInBatches(action) {
                 total: total || null,
                 indeterminate: !total
             });
+
+            if (savedCount === 0 && errorCount > 0) {
+                toast(`Stopped: ${errorCount} invalid item(s) stayed in the queue`, 'warning');
+                break;
+            }
 
             // Yield so the UI stays responsive.
             await new Promise(resolve => requestAnimationFrame(() => resolve()));

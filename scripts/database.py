@@ -719,6 +719,7 @@ def persist_review_queue_items(ids: list[str] | None, target_folder: str) -> tup
     """Persist review queue items into conversations and remove them atomically in batches."""
     saved = []
     errors = []
+    error_ids: set[str] = set()
     now = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
 
     with get_db() as conn:
@@ -735,14 +736,35 @@ def persist_review_queue_items(ids: list[str] | None, target_folder: str) -> tup
                 if not rows:
                     break
 
-                conv_ids = _next_conversation_ids(conn, len(rows))
+                valid_rows: list[tuple] = []
+                for row in rows:
+                    try:
+                        messages = json.loads(row['conversations'])
+                    except Exception:
+                        if row['id'] not in error_ids:
+                            errors.append({'id': row['id'], 'errors': ["Invalid JSON in 'conversations'"]})
+                            error_ids.add(row['id'])
+                        continue
+
+                    ok, errs = validate_review_item({'id': row['id'], 'conversations': messages})
+                    if not ok:
+                        if row['id'] not in error_ids:
+                            errors.append({'id': row['id'], 'errors': errs})
+                            error_ids.add(row['id'])
+                        continue
+                    valid_rows.append((row, messages))
+
+                # Avoid infinite loops: if the oldest page is entirely invalid, stop and leave them in queue.
+                if not valid_rows:
+                    break
+
+                conv_ids = _next_conversation_ids(conn, len(valid_rows))
                 conv_inserts = []
                 tag_inserts = []
                 rowids_to_remove: list[int] = []
 
-                for row, conv_id in zip(rows, conv_ids):
+                for (row, messages), conv_id in zip(valid_rows, conv_ids):
                     rowids_to_remove.append(int(row['rowid']))
-                    messages = json.loads(row['conversations'])
                     metadata = json.loads(row['metadata']) if row['metadata'] else {}
 
                     full_metadata = {
@@ -805,15 +827,31 @@ def persist_review_queue_items(ids: list[str] | None, target_folder: str) -> tup
             order = {item_id: index for index, item_id in enumerate(unique_ids)}
             rows = sorted(rows, key=lambda row: order.get(row['id'], len(order)))
 
-            count = len(rows)
-            conv_ids = _next_conversation_ids(conn, count)
-            ids_to_remove = [row['id'] for row in rows]
+            valid_rows: list[tuple] = []
+            for row in rows:
+                try:
+                    messages = json.loads(row['conversations'])
+                except Exception:
+                    if row['id'] not in error_ids:
+                        errors.append({'id': row['id'], 'errors': ["Invalid JSON in 'conversations'"]})
+                        error_ids.add(row['id'])
+                    continue
+
+                ok, errs = validate_review_item({'id': row['id'], 'conversations': messages})
+                if not ok:
+                    if row['id'] not in error_ids:
+                        errors.append({'id': row['id'], 'errors': errs})
+                        error_ids.add(row['id'])
+                    continue
+                valid_rows.append((row, messages))
+
+            conv_ids = _next_conversation_ids(conn, len(valid_rows))
+            ids_to_remove = [row['id'] for (row, _messages) in valid_rows]
 
             conv_inserts = []
             tag_inserts = []
 
-            for row, conv_id in zip(rows, conv_ids):
-                messages = json.loads(row['conversations'])
+            for (row, messages), conv_id in zip(valid_rows, conv_ids):
                 metadata = json.loads(row['metadata']) if row['metadata'] else {}
 
                 full_metadata = {
