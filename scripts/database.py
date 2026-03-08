@@ -267,31 +267,63 @@ def delete_conversation(conv_id: str, folder: str = None) -> bool:
 
 def bulk_delete_conversations(ids: list, folder: str) -> list:
     """Bulk delete conversations, returns list of deleted IDs."""
-    deleted = []
+    if not ids:
+        return []
+
+    placeholders = ','.join('?' * len(ids))
     with get_db() as conn:
+        rows = conn.execute(
+            f"SELECT id FROM conversations WHERE folder = ? AND id IN ({placeholders})",
+            [folder, *ids]
+        ).fetchall()
+        matched_ids = {row['id'] for row in rows}
+        deleted_ids = []
+        seen_ids = set()
         for conv_id in ids:
-            result = conn.execute(
-                "DELETE FROM conversations WHERE id = ? AND folder = ?",
-                (conv_id, folder)
+            if conv_id in matched_ids and conv_id not in seen_ids:
+                deleted_ids.append(conv_id)
+                seen_ids.add(conv_id)
+
+        if deleted_ids:
+            deleted_placeholders = ','.join('?' * len(deleted_ids))
+            conn.execute(
+                f"DELETE FROM conversations WHERE folder = ? AND id IN ({deleted_placeholders})",
+                [folder, *deleted_ids]
             )
-            if result.rowcount > 0:
-                deleted.append(conv_id)
-    return deleted
+
+    return deleted_ids
 
 
 def bulk_move_conversations(ids: list, from_folder: str, to_folder: str) -> list:
     """Bulk move conversations, returns list of moved IDs."""
-    moved = []
+    if not ids:
+        return []
+
     now = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+    placeholders = ','.join('?' * len(ids))
     with get_db() as conn:
+        rows = conn.execute(
+            f"SELECT id FROM conversations WHERE folder = ? AND id IN ({placeholders})",
+            [from_folder, *ids]
+        ).fetchall()
+        matched_ids = {row['id'] for row in rows}
+        moved_ids = []
+        seen_ids = set()
         for conv_id in ids:
-            result = conn.execute(
-                "UPDATE conversations SET folder = ?, updated_at = ? WHERE id = ? AND folder = ?",
-                (to_folder, now, conv_id, from_folder)
+            if conv_id in matched_ids and conv_id not in seen_ids:
+                moved_ids.append(conv_id)
+                seen_ids.add(conv_id)
+
+        if moved_ids:
+            moved_placeholders = ','.join('?' * len(moved_ids))
+            conn.execute(
+                f"""UPDATE conversations
+                    SET folder = ?, updated_at = ?
+                    WHERE folder = ? AND id IN ({moved_placeholders})""",
+                [to_folder, now, from_folder, *moved_ids]
             )
-            if result.rowcount > 0:
-                moved.append(conv_id)
-    return moved
+
+    return moved_ids
 
 
 # ============ STATS ============
