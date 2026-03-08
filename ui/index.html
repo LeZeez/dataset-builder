@@ -632,7 +632,7 @@ gpt: response"></textarea>
 
                         <div class="selection-toolbar">
                             <button id="export-select-toggle" class="btn btn-sm btn-secondary">Select All</button>
-                            <button id="export-load-all" class="btn btn-sm btn-secondary">Load All</button>
+                            <button id="export-load-all" class="btn btn-sm btn-secondary" title="Fetch all pages (cancelable from the loading tracker)">Load All</button>
                             <div id="export-selection-chip" class="selection-chip hidden">
                                 <span id="export-file-count">0 selected</span>
                                 <button id="export-clear-selection" class="selection-chip-clear" title="Clear selection">×</button>
@@ -703,7 +703,7 @@ gpt: response"></textarea>
                             <label>Saved Conversations</label>
                             <div class="export-selection-actions" id="files-bulk-actions">
                                 <button id="files-select-toggle" class="btn btn-sm btn-secondary">Select All</button>
-                                <button id="files-load-all" class="btn btn-sm btn-secondary">Load All</button>
+                                <button id="files-load-all" class="btn btn-sm btn-secondary" title="Fetch all pages (cancelable from the loading tracker)">Load All</button>
                                 <button id="files-bulk-reject" class="btn btn-sm btn-secondary" data-folder="wanted"
                                     hidden>Move to Rejected</button>
                                 <button id="files-bulk-restore" class="btn btn-sm btn-secondary" data-folder="rejected"
@@ -781,46 +781,79 @@ gpt: response"></textarea>
                             <input type="text" id="settings-search-input" class="input" placeholder="Search settings...">
                         </div>
                         <div class="settings-category-nav">
-                            <button class="settings-category-btn active" type="button" data-settings-target="settings-sync-section">Sync</button>
+                            <button class="settings-category-btn active" type="button" data-settings-target="settings-misc-section">Misc</button>
+                            <button class="settings-category-btn" type="button" data-settings-target="settings-sync-section">Sync</button>
                             <button class="settings-category-btn" type="button" data-settings-target="settings-hotkeys-section">Hotkeys</button>
+                            <button class="settings-category-btn" type="button" data-settings-target="settings-advanced-section">Advanced</button>
                         </div>
                     </div>
                     <div class="settings-sections">
-                        <section id="settings-sync-section" class="settings-section" data-settings-search="sync auto sync auto save reject reason history">
+                        <section id="settings-misc-section" class="settings-section" data-settings-search="misc reject reason reject prompt">
+                            <div class="settings-section-header">
+                                <h4>Misc</h4>
+                            </div>
+                            <div class="settings-rows">
+                                <div class="settings-row">
+                                    <label class="settings-row-label" for="ask-reject-reason">
+                                        Ask for rejection reason
+                                        <span class="hint" title="After rejecting a conversation, show a small prompt to label why it was rejected.">i</span>
+                                    </label>
+                                    <div class="settings-row-control">
+                                        <input type="checkbox" id="ask-reject-reason" checked>
+                                    </div>
+                                </div>
+                            </div>
+                        </section>
+
+                        <section id="settings-sync-section" class="settings-section" data-settings-search="sync auto sync auto save history">
                             <div class="settings-section-header">
                                 <h4>Sync</h4>
                             </div>
-                            <div class="form-grid">
-                                <div class="form-group">
-                                    <label class="toggle-label">
+                            <div class="settings-rows">
+                                <div class="settings-row">
+                                    <label class="settings-row-label" for="auto-sync-enabled">
+                                        Auto-sync when online
+                                        <span class="hint" title="When connected, automatically sync drafts and saved conversations to the server.">i</span>
+                                    </label>
+                                    <div class="settings-row-control">
                                         <input type="checkbox" id="auto-sync-enabled" checked>
-                                        <span>Auto-sync when online</span>
+                                    </div>
+                                </div>
+                                <div class="settings-row">
+                                    <label class="settings-row-label" for="sync-interval">
+                                        Sync interval (seconds)
+                                        <span class="hint" title="How often auto-sync runs while online. Smaller values sync sooner but do more background work.">i</span>
                                     </label>
+                                    <div class="settings-row-control">
+                                        <input type="number" id="sync-interval" class="input input-sm" value="30" min="5" max="300">
+                                    </div>
                                 </div>
-                                <div class="form-group">
-                                    <label for="sync-interval">Sync interval (seconds)</label>
-                                    <input type="number" id="sync-interval" class="input" value="30" min="5" max="300">
-                                </div>
-                                <div class="form-group">
-                                    <label class="toggle-label">
+                                <div class="settings-row">
+                                    <label class="settings-row-label" for="auto-save-enabled">
+                                        Auto-save drafts locally
+                                        <span class="hint" title="Saves your current work locally so you can refresh without losing it.">i</span>
+                                    </label>
+                                    <div class="settings-row-control">
                                         <input type="checkbox" id="auto-save-enabled" checked>
-                                        <span>Auto-save drafts locally</span>
+                                    </div>
+                                </div>
+                                <div class="settings-row">
+                                    <label class="settings-row-label" for="save-interval">
+                                        Save interval (ms)
+                                        <span class="hint" title="How often drafts are saved locally while you type.">i</span>
                                     </label>
+                                    <div class="settings-row-control">
+                                        <input type="number" id="save-interval" class="input input-sm" value="2000" min="500" max="10000" step="500">
+                                    </div>
                                 </div>
-                                <div class="form-group">
-                                    <label for="save-interval">Save interval (ms)</label>
-                                    <input type="number" id="save-interval" class="input" value="2000" min="500" max="10000"
-                                        step="500">
-                                </div>
-                                <div class="form-group">
-                                    <label class="toggle-label">
-                                        <input type="checkbox" id="ask-reject-reason" checked>
-                                        <span>Ask for reject reason</span>
+                                <div class="settings-row">
+                                    <label class="settings-row-label" for="history-max-setting">
+                                        Prompt history limit
+                                        <span class="hint" title="Caps how many prompts are kept in History.">i</span>
                                     </label>
-                                </div>
-                                <div class="form-group">
-                                    <label for="history-max-setting">Prompt history limit</label>
-                                    <input type="number" id="history-max-setting" class="input" value="30" min="5" max="500">
+                                    <div class="settings-row-control">
+                                        <input type="number" id="history-max-setting" class="input input-sm" value="30" min="5" max="500">
+                                    </div>
                                 </div>
                             </div>
                         </section>
@@ -851,10 +884,57 @@ gpt: response"></textarea>
                             </div>
                             <p class="small muted">Click an input, then press your desired key combo.</p>
                         </section>
+
+                        <section id="settings-advanced-section" class="settings-section" data-settings-search="advanced performance load all virtualization render distance batch size chunks scroll auto load">
+                            <div class="settings-section-header">
+                                <h4>Advanced</h4>
+                            </div>
+                            <div class="settings-rows">
+                                <div class="settings-row">
+                                    <label class="settings-row-label" for="virtual-list-enabled">
+                                        Virtualize conversation lists
+                                        <span class="hint" title="Only render nearby rows while you scroll. Prevents huge DOM slowdowns on large datasets.">i</span>
+                                    </label>
+                                    <div class="settings-row-control">
+                                        <input type="checkbox" id="virtual-list-enabled" checked>
+                                    </div>
+                                </div>
+                                <div class="settings-row">
+                                    <label class="settings-row-label" for="virtual-batch-size">
+                                        Rows per chunk
+                                        <span class="hint" title="How many rows are rendered per virtual chunk. Larger values reduce swapping, smaller values reduce work per chunk.">i</span>
+                                    </label>
+                                    <div class="settings-row-control">
+                                        <input type="number" id="virtual-batch-size" class="input input-sm" value="200" min="50" max="2000" step="50">
+                                    </div>
+                                </div>
+                                <div class="settings-row">
+                                    <label class="settings-row-label" for="virtual-max-batches">
+                                        Chunks kept around you
+                                        <span class="hint" title="How many chunks stay rendered at once (like render distance). Higher is smoother but uses more DOM.">i</span>
+                                    </label>
+                                    <div class="settings-row-control">
+                                        <input type="number" id="virtual-max-batches" class="input input-sm" value="3" min="1" max="20">
+                                    </div>
+                                </div>
+                                <div class="settings-row">
+                                    <label class="settings-row-label" for="auto-load-on-scroll">
+                                        Auto-load more while scrolling
+                                        <span class="hint" title="When you reach near the bottom, automatically fetch the next page in the background.">i</span>
+                                    </label>
+                                    <div class="settings-row-control">
+                                        <input type="checkbox" id="auto-load-on-scroll" checked>
+                                    </div>
+                                </div>
+                            </div>
+                            <p class="small muted">These options cap DOM work while keeping pagination fast.</p>
+                        </section>
                     </div>
                 </div>
             </div>
         </div>
+
+        <div id="task-tracker" class="task-tracker" aria-live="polite"></div>
 
         <div id="custom-params-modal" class="modal hidden">
             <div class="modal-backdrop"></div>
@@ -911,7 +991,7 @@ gpt: response"></textarea>
                             <label>Queued Conversations</label>
                             <div class="export-selection-actions">
                                 <button id="review-browser-select-toggle" class="btn btn-sm btn-secondary">Select All</button>
-                                <button id="review-browser-load-all" class="btn btn-sm btn-secondary">Load All</button>
+                                <button id="review-browser-load-all" class="btn btn-sm btn-secondary" title="Fetch all pages (cancelable from the loading tracker)">Load All</button>
                                 <button id="review-browser-bulk-keep" class="btn btn-sm btn-success">Keep Selected</button>
                                 <button id="review-browser-bulk-reject" class="btn btn-sm btn-danger">Reject Selected</button>
                                 <div id="review-browser-selection-chip" class="selection-chip hidden">

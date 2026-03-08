@@ -20,6 +20,8 @@ data/dataset.db
 data/dataset.db-*
 data/prompts/*.txt
 !data/prompts/.gitkeep
+benchmark/*.db
+benchmark/*.db-*
 tests/
 # Config with API keys - use config.example.yaml as template
 config.yaml

@@ -5,9 +5,12 @@ The SQLite database is the single source of truth for conversations.
 """
 
 import json
+import sys
 import time
 from pathlib import Path
 from typing import Literal
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from scripts import database as db
 

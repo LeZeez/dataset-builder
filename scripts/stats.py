@@ -1,6 +1,10 @@
 """Dataset statistics CLI backed by the SQLite database."""
 
 import json
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from scripts import database as db
 

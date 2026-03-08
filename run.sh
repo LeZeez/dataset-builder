@@ -33,3 +33,11 @@ echo "🗂️ Starting Synthetic Dataset Builder..."
 echo ""
 
 python3 server.py
+exit_code=$?
+
+if [ "$exit_code" -ne 0 ]; then
+    echo ""
+    echo "⚠️  Server exited with code $exit_code."
+fi
+
+exit "$exit_code"

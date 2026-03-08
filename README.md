@@ -64,6 +64,7 @@ data/
 
 defaults/               # built-in prompt and preset seed files
 exports/                # generated dataset files
+benchmark/              # standalone benchmark scripts and disposable benchmark DBs
 ui/                     # frontend
 scripts/                # storage, export, parser, stats helpers
 ```
@@ -110,6 +111,19 @@ Export rejected conversations as OpenAI JSONL:
 
 ```bash
 python3 scripts/exporter.py --format openai --folder rejected
+```
+
+Seed a standalone benchmark database:
+
+```bash
+python3 benchmark/stress_seed.py --wanted 2000 --review 3000
+```
+
+Run local storage benchmarks against that benchmark database.
+If `benchmark/benchmark.db` does not exist yet, this command creates and seeds it automatically:
+
+```bash
+python3 benchmark/benchmark.py --include-write
 ```
 
 Print dataset stats:

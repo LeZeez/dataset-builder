@@ -372,6 +372,11 @@ async function loadUiPrefs() {
         if (els.settingsSearchInput && state.uiPrefs.settingsSearch) {
             els.settingsSearchInput.value = state.uiPrefs.settingsSearch;
         }
+        if (els.virtualListEnabled) els.virtualListEnabled.checked = state.uiPrefs.virtualListEnabled !== false;
+        if (els.virtualBatchSize) els.virtualBatchSize.value = String(state.uiPrefs.virtualBatchSize ?? 200);
+        if (els.virtualMaxBatches) els.virtualMaxBatches.value = String(state.uiPrefs.virtualMaxBatches ?? 3);
+        if (els.autoLoadOnScroll) els.autoLoadOnScroll.checked = state.uiPrefs.autoLoadOnScroll !== false;
+        applyVirtualPrefs();
         updateSidebarExportButton();
     } catch (e) { }
 }
@@ -384,6 +389,33 @@ function saveUiPrefs() {
     state.uiPrefs.settingsSearch = els.settingsSearchInput?.value || '';
     state.uiPrefs.lastExportFormat = normalizeExportFormat(state.uiPrefs.lastExportFormat);
     dbSet('settings', UI_PREFS_KEY, state.uiPrefs).catch(() => { });
+}
+
+function clampNumber(val, { min = -Infinity, max = Infinity, fallback = 0 } = {}) {
+    const num = Number(val);
+    if (!Number.isFinite(num)) return fallback;
+    return Math.max(min, Math.min(max, num));
+}
+
+function applyVirtualPrefs() {
+    const enabled = state.uiPrefs.virtualListEnabled !== false;
+    const batchSize = clampNumber(state.uiPrefs.virtualBatchSize, { min: 50, max: 2000, fallback: 200 });
+    const maxBatches = clampNumber(state.uiPrefs.virtualMaxBatches, { min: 1, max: 20, fallback: 3 });
+    const autoLoad = state.uiPrefs.autoLoadOnScroll !== false;
+
+    state.uiPrefs.virtualListEnabled = enabled;
+    state.uiPrefs.virtualBatchSize = batchSize;
+    state.uiPrefs.virtualMaxBatches = maxBatches;
+    state.uiPrefs.autoLoadOnScroll = autoLoad;
+
+    [state.filesModal, state.export, state.reviewBrowser].forEach(slice => {
+        slice.virtualEnabled = enabled;
+        slice.virtualBatchSize = batchSize;
+        slice.virtualMaxBatches = maxBatches;
+        slice.autoLoadOnScroll = autoLoad;
+        if (!slice.virtualRowHeight) slice.virtualRowHeight = 64;
+        slice.virtualRafPending = false;
+    });
 }
 
 function matchesHotkey(e, hotkeyStr) {
@@ -429,7 +461,7 @@ const state = {
     sidebar: {
         open: false
     },
-    filesModal: {
+	    filesModal: {
         currentFolder: 'wanted',
         files: [],
         selectedIds: new Set(),
@@ -439,9 +471,20 @@ const state = {
         offset: 0,
         total: 0,
         hasMore: false,
-        isLoading: false
+        isLoading: false,
+        renderedCount: 0,
+        seenIds: new Set(),
+        idToIndex: new Map(),
+        virtualEnabled: true,
+	        virtualBatchSize: 200,
+	        virtualMaxBatches: 3,
+	        virtualRowHeight: 60,
+	        virtualRafPending: false,
+        autoLoadOnScroll: true,
+        loadAllTaskId: null,
+        loadAllController: null
     },
-    export: {
+	    export: {
         selectedIds: new Set(),
         anchorId: null,
         previewId: null,
@@ -451,15 +494,30 @@ const state = {
         offset: 0,
         total: 0,
         hasMore: false,
-        isLoading: false
+        isLoading: false,
+        renderedCount: 0,
+        seenIds: new Set(),
+        idToIndex: new Map(),
+        virtualEnabled: true,
+	        virtualBatchSize: 200,
+	        virtualMaxBatches: 3,
+	        virtualRowHeight: 60,
+	        virtualRafPending: false,
+        autoLoadOnScroll: true,
+        loadAllTaskId: null,
+        loadAllController: null
     },
     exportedDatasets: [],
     review: {
         queue: [],
         currentIndex: 0,
-        isEditing: false
+        isEditing: false,
+        offset: 0,
+        total: 0,
+        hasMore: false,
+        isLoading: false
     },
-    reviewBrowser: {
+	    reviewBrowser: {
         items: [],
         selectedIds: new Set(),
         anchorId: null,
@@ -468,7 +526,18 @@ const state = {
         offset: 0,
         total: 0,
         hasMore: false,
-        isLoading: false
+        isLoading: false,
+        renderedCount: 0,
+        seenIds: new Set(),
+        idToIndex: new Map(),
+        virtualEnabled: true,
+	        virtualBatchSize: 200,
+	        virtualMaxBatches: 3,
+	        virtualRowHeight: 60,
+	        virtualRafPending: false,
+        autoLoadOnScroll: true,
+        loadAllTaskId: null,
+        loadAllController: null
     },
     bulk: {
         isRunning: false,
@@ -479,13 +548,21 @@ const state = {
     tags: [],
     customParams: {},
     promptHistory: [], // array of {text, timestamp}
+    tasks: {
+        nextId: 1,
+        items: new Map()
+    },
     uiPrefs: {
         currentTab: 'generate',
         chatZoom: 1,
         showAllTools: false,
         chatPromptCollapsed: true,
         settingsSearch: '',
-        lastExportFormat: 'sharegpt'
+        lastExportFormat: 'sharegpt',
+        virtualListEnabled: true,
+        virtualBatchSize: 200,
+        virtualMaxBatches: 3,
+        autoLoadOnScroll: true
     }
 };
 
@@ -504,6 +581,375 @@ const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => document.querySelectorAll(sel);
 
 let els = {};
+
+function ensureVirtualListStructure(container) {
+    if (!container) return null;
+    container.classList.add('virtual-list');
+    let topSpacer = container.querySelector('.virtual-spacer[data-spacer="top"]');
+    let bottomSpacer = container.querySelector('.virtual-spacer[data-spacer="bottom"]');
+    let itemsHost = container.querySelector('.virtual-items-host');
+    let loadingRow = container.querySelector('.virtual-loading');
+    if (!topSpacer || !bottomSpacer || !itemsHost || !loadingRow) {
+        container.innerHTML = `
+            <div class="virtual-spacer" data-spacer="top"></div>
+            <div class="virtual-items-host"></div>
+            <div class="virtual-spacer" data-spacer="bottom"></div>
+            <div class="virtual-loading" hidden>
+                <div class="virtual-spinner" aria-hidden="true"></div>
+                <div class="virtual-loading-text">Loading more...</div>
+            </div>
+        `;
+        topSpacer = container.querySelector('.virtual-spacer[data-spacer="top"]');
+        bottomSpacer = container.querySelector('.virtual-spacer[data-spacer="bottom"]');
+        itemsHost = container.querySelector('.virtual-items-host');
+        loadingRow = container.querySelector('.virtual-loading');
+    }
+    return { topSpacer, itemsHost, bottomSpacer, loadingRow };
+}
+
+function renderVirtualWindow({ slice, container, items, renderRowHtml }) {
+    if (!container) return;
+
+    if (!items || items.length === 0) {
+        container.innerHTML = slice?.isLoading
+            ? '<div class="empty-files"><span class="inline-spinner"></span> Loading...</div>'
+            : '<div class="empty-files">No items found</div>';
+        slice.renderedCount = 0;
+        slice.virtualWindowStart = 0;
+        slice.virtualWindowEnd = 0;
+        slice.virtualRenderedItemsLength = 0;
+        return;
+    }
+
+    if (!slice.virtualEnabled) {
+        container.innerHTML = items.map(renderRowHtml).join('');
+        slice.renderedCount = items.length;
+        slice.virtualWindowStart = 0;
+        slice.virtualWindowEnd = items.length;
+        slice.virtualRenderedItemsLength = items.length;
+        return;
+    }
+
+    const parts = ensureVirtualListStructure(container);
+    if (!parts) return;
+
+    const batchSize = slice.virtualBatchSize || 200;
+    const maxBatches = slice.virtualMaxBatches || 3;
+    const rowHeight = slice.virtualRowHeight || 64;
+
+    const safeBatch = Math.max(20, Math.min(5000, batchSize));
+    const safeMaxBatches = Math.max(1, Math.min(30, maxBatches));
+    const totalChunks = Math.max(1, Math.ceil(items.length / safeBatch));
+    const windowChunks = Math.min(totalChunks, safeMaxBatches);
+
+    // Chunk-based windowing: only swap the rendered window when you cross a chunk boundary.
+    const firstIndex = Math.max(0, Math.floor((container.scrollTop || 0) / rowHeight));
+    const chunkIndex = Math.floor(firstIndex / safeBatch);
+    const maxStartChunk = Math.max(0, totalChunks - windowChunks);
+    const desiredStartChunk = Math.max(0, Math.min(chunkIndex - Math.floor(windowChunks / 2), maxStartChunk));
+    const windowStart = desiredStartChunk * safeBatch;
+    const windowEnd = Math.min(items.length, windowStart + windowChunks * safeBatch);
+
+    const needsHostRender =
+        slice.virtualWindowStart !== windowStart ||
+        slice.virtualWindowEnd !== windowEnd ||
+        slice.virtualRenderedItemsLength !== items.length;
+
+    const topH = `${windowStart * rowHeight}px`;
+    const bottomH = `${Math.max(0, (items.length - windowEnd) * rowHeight)}px`;
+    if (parts.topSpacer.style.height !== topH) parts.topSpacer.style.height = topH;
+    if (parts.bottomSpacer.style.height !== bottomH) parts.bottomSpacer.style.height = bottomH;
+
+    if (needsHostRender) {
+        let html = '';
+        for (let i = windowStart; i < windowEnd; i++) html += renderRowHtml(items[i]);
+        parts.itemsHost.innerHTML = html;
+        parts.itemsHost.classList.remove('virtual-swap');
+        parts.itemsHost.classList.add('virtual-swap');
+        requestAnimationFrame(() => parts.itemsHost.classList.remove('virtual-swap'));
+        slice.virtualWindowStart = windowStart;
+        slice.virtualWindowEnd = windowEnd;
+        slice.virtualRenderedItemsLength = items.length;
+    }
+
+    slice.renderedCount = windowEnd - windowStart;
+
+    // Loading indicator (sticky) for paged lists.
+    if (parts.loadingRow) {
+        const show = (items.length > 0) && !!slice.hasMore && (!!slice.isLoading || !!slice.isLoadAllRunning);
+        const shouldBeHidden = !show;
+        if (parts.loadingRow.hidden !== shouldBeHidden) parts.loadingRow.hidden = shouldBeHidden;
+    }
+
+    // Update row height estimate once, after first render.
+    if (!slice.virtualRowHeightMeasured) {
+        const firstRow = parts.itemsHost.firstElementChild;
+        if (firstRow && firstRow.offsetHeight) {
+            slice.virtualRowHeight = Math.max(40, Math.min(220, firstRow.offsetHeight));
+            slice.virtualRowHeightMeasured = true;
+        }
+    }
+}
+
+function createTask({ title, detail = '', onCancel = null } = {}) {
+    const id = state.tasks.nextId++;
+    state.tasks.items.set(id, {
+        id,
+        title: String(title || 'Working...'),
+        detail: String(detail || ''),
+        current: null,
+        total: null,
+        indeterminate: true,
+        status: 'running',
+        onCancel
+    });
+    renderTasks();
+    return id;
+}
+
+function updateTask(id, { detail, current, total, indeterminate } = {}) {
+    const task = state.tasks.items.get(id);
+    if (!task) return;
+    if (detail !== undefined) task.detail = String(detail);
+    if (current !== undefined) task.current = current;
+    if (total !== undefined) task.total = total;
+    if (indeterminate !== undefined) task.indeterminate = !!indeterminate;
+    renderTasks();
+}
+
+function finishTask(id, { status = 'done', detail } = {}) {
+    const task = state.tasks.items.get(id);
+    if (!task) return;
+    task.status = status;
+    if (detail !== undefined) task.detail = String(detail);
+    renderTasks();
+    setTimeout(() => {
+        state.tasks.items.delete(id);
+        renderTasks();
+    }, 1500);
+}
+
+function buildTaskCard(taskId) {
+    const card = document.createElement('div');
+    card.className = 'task-card';
+    card.dataset.taskId = String(taskId);
+
+    const header = document.createElement('div');
+    header.className = 'task-header';
+
+    const title = document.createElement('div');
+    title.className = 'task-title';
+    const spinner = document.createElement('span');
+    spinner.className = 'task-mini-spinner';
+    spinner.setAttribute('aria-hidden', 'true');
+    const titleText = document.createElement('span');
+    const status = document.createElement('span');
+    status.className = 'muted small';
+    status.hidden = true;
+    title.appendChild(spinner);
+    title.appendChild(titleText);
+    title.appendChild(status);
+
+    const cancel = document.createElement('button');
+    cancel.className = 'task-cancel';
+    cancel.type = 'button';
+    cancel.title = 'Cancel';
+    cancel.textContent = '×';
+
+    header.appendChild(title);
+    header.appendChild(cancel);
+
+    const detail = document.createElement('div');
+    detail.className = 'task-detail';
+    detail.hidden = true;
+
+    const progress = document.createElement('div');
+    progress.className = 'task-progress';
+    const progressText = document.createElement('span');
+    const progressPct = document.createElement('span');
+    progress.appendChild(progressText);
+    progress.appendChild(progressPct);
+
+    const bar = document.createElement('div');
+    bar.className = 'task-bar';
+    const barInner = document.createElement('div');
+    bar.appendChild(barInner);
+
+    card.appendChild(header);
+    card.appendChild(detail);
+    card.appendChild(progress);
+    card.appendChild(bar);
+
+    card._refs = { spinner, titleText, status, cancel, detail, progressText, progressPct, bar, barInner };
+    return card;
+}
+
+function renderTasks() {
+    if (!els.taskTracker) return;
+    if (!els.taskTracker._taskCards) els.taskTracker._taskCards = new Map();
+    const cards = els.taskTracker._taskCards;
+    const tasks = Array.from(state.tasks.items.values());
+
+    if (tasks.length === 0) {
+        cards.forEach(card => card.remove());
+        cards.clear();
+        els.taskTracker.innerHTML = '';
+        return;
+    }
+
+    const activeIds = new Set(tasks.map(t => t.id));
+    for (const [id, card] of cards.entries()) {
+        if (!activeIds.has(id)) {
+            card.remove();
+            cards.delete(id);
+        }
+    }
+
+    for (const task of tasks) {
+        let card = cards.get(task.id);
+        if (!card) {
+            card = buildTaskCard(task.id);
+            cards.set(task.id, card);
+            els.taskTracker.appendChild(card);
+        } else {
+            // Keep DOM order aligned with current task order.
+            if (card !== els.taskTracker.lastElementChild) {
+                // Append moves the node if it already exists.
+                els.taskTracker.appendChild(card);
+            }
+        }
+
+        const refs = card._refs;
+        const hasProgress = typeof task.current === 'number' && typeof task.total === 'number' && task.total > 0;
+        const pct = hasProgress ? Math.max(0, Math.min(100, (task.current / task.total) * 100)) : 0;
+        const statusLabel = task.status === 'canceled' ? 'Canceled' : task.status === 'error' ? 'Error' : task.status === 'done' ? 'Done' : '';
+        const progressText = hasProgress
+            ? `${Math.min(task.current, task.total)}/${task.total}`
+            : (task.status === 'running' ? 'Working...' : '');
+
+        refs.spinner.hidden = task.status !== 'running';
+        refs.titleText.textContent = String(task.title || 'Working...');
+        refs.status.hidden = !statusLabel;
+        refs.status.textContent = statusLabel ? `(${statusLabel})` : '';
+
+        const d = String(task.detail || '');
+        refs.detail.hidden = !d;
+        refs.detail.textContent = d;
+
+        refs.progressText.textContent = progressText;
+        refs.progressPct.textContent = hasProgress ? `${Math.round(pct)}%` : '';
+
+        refs.bar.classList.toggle('task-bar-indeterminate', !hasProgress && task.status === 'running');
+        refs.bar.classList.toggle('task-bar-muted', !hasProgress && task.status !== 'running');
+        refs.barInner.style.width = hasProgress ? `${pct.toFixed(2)}%` : '';
+
+        refs.cancel.disabled = task.status !== 'running';
+        refs.cancel.onclick = () => {
+            const t = state.tasks.items.get(task.id);
+            if (!t || t.status !== 'running') return;
+            try { t.onCancel?.(); } catch (_e) { }
+            t.status = 'canceled';
+            renderTasks();
+            setTimeout(() => {
+                state.tasks.items.delete(task.id);
+                renderTasks();
+            }, 800);
+        };
+    }
+}
+
+function setupVirtualListScroll({ slice, container, render, loadMore }) {
+    if (!container || container._virtualScrollBound) return;
+    container._virtualScrollBound = true;
+
+    const maybeLoadMore = () => {
+        if (!slice.autoLoadOnScroll) return;
+        if (!slice.hasMore || slice.isLoading) return;
+        const threshold = 280;
+        const nearBottom = container.scrollTop + container.clientHeight >= container.scrollHeight - threshold;
+        if (nearBottom) loadMore?.();
+    };
+
+    container.addEventListener('scroll', () => {
+        if (slice.virtualRafPending) return;
+        slice.virtualRafPending = true;
+        requestAnimationFrame(() => {
+            slice.virtualRafPending = false;
+            render?.();
+            maybeLoadMore();
+        });
+    }, { passive: true });
+}
+
+function isTaskActive(taskId) {
+    return !!taskId && state.tasks.items.has(taskId);
+}
+
+async function startLoadAllForSlice({ slice, title, loadNextPage, hasMore, getProgressDetail }) {
+    if (isTaskActive(slice.loadAllTaskId)) {
+        toast('Already loading...', 'info');
+        return;
+    }
+    const controller = new AbortController();
+    slice.loadAllController = controller;
+    slice.isLoadAllRunning = true;
+    const taskId = createTask({
+        title,
+        detail: typeof getProgressDetail === 'function' ? (getProgressDetail() || '') : (getProgressDetail || ''),
+        onCancel: () => controller.abort()
+    });
+    slice.loadAllTaskId = taskId;
+
+    const pushProgress = () => {
+        const total = slice.total || 0;
+        const loaded = Array.isArray(slice.files) ? slice.files.length
+            : Array.isArray(slice.items) ? slice.items.length
+                : Array.isArray(slice.queue) ? slice.queue.length
+                    : (slice.offset || 0);
+        const current = total ? Math.min(loaded, total) : null;
+        updateTask(taskId, {
+            detail: typeof getProgressDetail === 'function' ? (getProgressDetail() || '') : (getProgressDetail || ''),
+            current,
+            total: total || null,
+            indeterminate: !total
+        });
+    };
+
+    pushProgress();
+    try {
+        await loadAllPages(loadNextPage, hasMore, {
+            signal: controller.signal,
+            onProgress: pushProgress
+        });
+        if (controller.signal.aborted) {
+            finishTask(taskId, { status: 'canceled', detail: 'Canceled' });
+        } else {
+            pushProgress();
+            finishTask(taskId, { status: 'done', detail: 'Done' });
+        }
+    } catch (e) {
+        if (e?.name === 'AbortError' || controller.signal.aborted) {
+            finishTask(taskId, { status: 'canceled', detail: 'Canceled' });
+        } else {
+            console.error('Load all failed:', e);
+            finishTask(taskId, { status: 'error', detail: e?.message || 'Failed' });
+        }
+    } finally {
+        if (slice.loadAllTaskId === taskId) slice.loadAllTaskId = null;
+        if (slice.loadAllController === controller) slice.loadAllController = null;
+        slice.isLoadAllRunning = false;
+    }
+}
+
+function cancelSliceLoadAll(slice, reason = 'Canceled') {
+    if (isTaskActive(slice.loadAllTaskId)) {
+        try { slice.loadAllController?.abort(); } catch (_e) { }
+        finishTask(slice.loadAllTaskId, { status: 'canceled', detail: reason });
+    }
+    slice.loadAllTaskId = null;
+    slice.loadAllController = null;
+    slice.isLoadAllRunning = false;
+}
 
 // ============ INITIALIZATION ============
 async function init() {
@@ -656,6 +1102,7 @@ async function init() {
 
         // Toast
         toastContainer: $('#toast-container'),
+        taskTracker: $('#task-tracker'),
 
         // Clear toggle
         clearGenBtn: $('#clear-gen-btn'),
@@ -707,6 +1154,12 @@ async function init() {
         builderPreviewText: $('#builder-preview-text'),
         builderCopy: $('#builder-copy'),
         historyMaxSetting: $('#history-max-setting')
+        ,
+        // Advanced settings
+        virtualListEnabled: $('#virtual-list-enabled'),
+        virtualBatchSize: $('#virtual-batch-size'),
+        virtualMaxBatches: $('#virtual-max-batches'),
+        autoLoadOnScroll: $('#auto-load-on-scroll')
     };
 
     // Initialize sync engine
@@ -714,6 +1167,7 @@ async function init() {
     await loadSyncSettings();
     await loadHotkeys();
     await loadUiPrefs();
+    applyVirtualPrefs();
     updateSidebarExportButton();
     await restoreDraft();
 
@@ -1380,7 +1834,16 @@ async function loadStats() {
 // ============ FILES MODAL ============
 function openFilesModal() {
     els.filesModal.classList.remove('hidden');
-    loadFilesModal(state.filesModal.currentFolder, { reset: true });
+    const hasActiveLoadAll = !!state.filesModal.loadAllTaskId && state.tasks.items.has(state.filesModal.loadAllTaskId);
+    const shouldReset = !hasActiveLoadAll && state.filesModal.files.length === 0;
+    if (shouldReset) {
+        loadFilesModal(state.filesModal.currentFolder, { reset: true });
+    } else {
+        renderFilesModalList();
+        updateFilesModalCount();
+        renderFilesPreview();
+        updateFilesPaginationUI();
+    }
 }
 
 function closeFilesModal() {
@@ -1399,10 +1862,41 @@ function mergeUniqueById(existing, incoming) {
     return merged;
 }
 
-async function loadAllPages(loadNextPage, hasMore) {
+function mergeReviewQueuePage(existing, incoming, insertAt) {
+    const head = existing.slice(0, insertAt);
+    const tail = existing.slice(insertAt);
+    const seen = new Set(head.map(item => item.id));
+    const mergedIncoming = [];
+    const mergedTail = [];
+
+    incoming.forEach(item => {
+        if (!seen.has(item.id)) {
+            mergedIncoming.push(item);
+            seen.add(item.id);
+        }
+    });
+
+    tail.forEach(item => {
+        if (!seen.has(item.id)) {
+            mergedTail.push(item);
+            seen.add(item.id);
+        }
+    });
+
+    return [...head, ...mergedIncoming, ...mergedTail];
+}
+
+async function loadAllPages(loadNextPage, hasMore, { signal = null, onProgress = null } = {}) {
+    const yieldToUI = () => new Promise(resolve => {
+        if (typeof requestAnimationFrame === 'function') requestAnimationFrame(() => resolve());
+        else setTimeout(resolve, 0);
+    });
     let guard = 0;
     while (hasMore() && guard < 200) {
+        if (signal?.aborted) break;
         await loadNextPage();
+        onProgress?.();
+        await yieldToUI();
         guard++;
     }
 }
@@ -1414,11 +1908,21 @@ function renderConversationMarkup(messages = []) {
     return messages.map(m => `
         <div class="bubble ${m.from}">
             <div class="bubble-header">
-                <span class="role-label">${m.from === 'human' ? 'USER' : 'GPT'}</span>
+                <span class="role-label">${getConversationRoleLabel(m.from)}</span>
             </div>
             <div class="bubble-content">${escapeHtml(m.value)}</div>
         </div>
     `).join('');
+}
+
+function getConversationRoleLabel(role) {
+    if (role === 'human') return 'USER';
+    if (role === 'system') return 'SYSTEM';
+    return 'GPT';
+}
+
+function countConversationTurns(messages = []) {
+    return messages.filter(m => m.from === 'human' || m.from === 'gpt').length;
 }
 
 function updateSelectionToolbar({ selectedIds, files, toggleButton, chip, countEl }) {
@@ -1438,29 +1942,86 @@ function clearSelectableSelection(slice) {
     slice.anchorId = null;
 }
 
+function escapeAttrSelector(value) {
+    const str = String(value ?? '');
+    if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') return CSS.escape(str);
+    return str.replace(/["\\]/g, '\\$&');
+}
+
+function updateSelectableRowUI(container, slice, id) {
+    if (!container || !id) return;
+    const el = container.querySelector(`.export-file-item[data-id="${escapeAttrSelector(id)}"]`);
+    if (!el) return;
+    const isSelected = slice.selectedIds.has(id);
+    const isPreviewing = slice.previewId === id;
+    el.classList.toggle('selected', isSelected);
+    el.classList.toggle('active-preview', isPreviewing);
+    const checkbox = el.querySelector('input.file-checkbox');
+    if (checkbox) checkbox.checked = isSelected;
+}
+
+function refreshSelectableListUI(container, slice) {
+    if (!container) return;
+    const rows = container.querySelectorAll('.export-file-item');
+    rows.forEach(row => {
+        const id = row.dataset.id;
+        if (!id) return;
+        const isSelected = slice.selectedIds.has(id);
+        const isPreviewing = slice.previewId === id;
+        row.classList.toggle('selected', isSelected);
+        row.classList.toggle('active-preview', isPreviewing);
+        const checkbox = row.querySelector('input.file-checkbox');
+        if (checkbox) checkbox.checked = isSelected;
+    });
+}
+
+function getSliceIndex(slice, items, id) {
+    if (slice?.idToIndex && typeof slice.idToIndex.get === 'function') {
+        const idx = slice.idToIndex.get(id);
+        if (typeof idx === 'number') return idx;
+    }
+    return items.findIndex(item => item.id === id);
+}
+
 function handleSelectableInteraction(slice, items, id, event, onPreview) {
-    const orderedIds = items.map(item => item.id);
     const wantsSelection = !!event.shiftKey || !!event.ctrlKey || !!event.metaKey || event.target.closest('input[type="checkbox"]');
+    const prevPreviewId = slice.previewId;
 
     if (!wantsSelection) {
         slice.previewId = id;
         slice.anchorId = id;
         onPreview?.(id);
-        return;
+        return { needsFullRefresh: false, changedSelectionIds: [], changedPreviewIds: [prevPreviewId, id] };
     }
 
-    if (event.shiftKey && slice.anchorId && orderedIds.includes(slice.anchorId)) {
-        const anchorIndex = orderedIds.indexOf(slice.anchorId);
-        const currentIndex = orderedIds.indexOf(id);
+    if (event.shiftKey && slice.anchorId) {
+        const anchorIndex = getSliceIndex(slice, items, slice.anchorId);
+        const currentIndex = getSliceIndex(slice, items, id);
+        if (anchorIndex === -1 || currentIndex === -1) {
+            // Fallback to a single-item toggle if we can't resolve indices.
+            if (slice.selectedIds.has(id)) slice.selectedIds.delete(id);
+            else slice.selectedIds.add(id);
+            slice.anchorId = id;
+            return { needsFullRefresh: false, changedSelectionIds: [id], changedPreviewIds: [] };
+        }
         const [start, end] = anchorIndex < currentIndex ? [anchorIndex, currentIndex] : [currentIndex, anchorIndex];
-        if (!(event.ctrlKey || event.metaKey)) slice.selectedIds.clear();
-        orderedIds.slice(start, end + 1).forEach(rangeId => slice.selectedIds.add(rangeId));
+        const rangeSize = end - start + 1;
+        const clearsExisting = !(event.ctrlKey || event.metaKey);
+        if (clearsExisting) slice.selectedIds.clear();
+        for (let i = start; i <= end; i++) {
+            const rangeId = items[i]?.id;
+            if (rangeId) slice.selectedIds.add(rangeId);
+        }
+        slice.anchorId = id;
+        // If we cleared existing selection or the range is big, it's cheaper to refresh DOM classes in-place.
+        return { needsFullRefresh: clearsExisting || rangeSize > 300, changedSelectionIds: [], changedPreviewIds: [] };
     } else {
         if (slice.selectedIds.has(id)) slice.selectedIds.delete(id);
         else slice.selectedIds.add(id);
     }
 
     slice.anchorId = id;
+    return { needsFullRefresh: false, changedSelectionIds: [id], changedPreviewIds: [] };
 }
 
 async function fetchConversationPreview(id, folder) {
@@ -1487,7 +2048,7 @@ function renderFilesPreview() {
 
 function updateFilesPaginationUI() {
     if (els.filesPaginationStatus) {
-        const loaded = state.filesModal.files.length;
+        const loaded = Math.min(state.filesModal.offset, state.filesModal.files.length);
         const total = state.filesModal.total || 0;
         els.filesPaginationStatus.textContent = total > 0 ? `Showing ${loaded} of ${total}` : '';
     }
@@ -1497,7 +2058,7 @@ function updateFilesPaginationUI() {
     }
 }
 
-async function loadFilesModal(folder = 'wanted', { reset = false } = {}) {
+async function loadFilesModal(folder = 'wanted', { reset = false, signal = null } = {}) {
     state.filesModal.currentFolder = folder;
     const search = els.filesSearchInput?.value?.trim() || '';
     if (reset) {
@@ -1508,12 +2069,22 @@ async function loadFilesModal(folder = 'wanted', { reset = false } = {}) {
         state.filesModal.hasMore = false;
         state.filesModal.previewId = null;
         state.filesModal.previewConversation = null;
+        state.filesModal.renderedCount = 0;
+        state.filesModal.seenIds.clear();
+        state.filesModal.idToIndex.clear();
+        if (els.filesModalList) els.filesModalList.innerHTML = '';
     }
     state.filesModal.isLoading = true;
+    if (!els.filesModal?.classList.contains('hidden')) {
+        // Show immediate feedback (spinner / "Loading...") and ensure virtual loading row state is correct.
+        renderFilesModalList();
+        updateFilesPaginationUI();
+    }
 
     // Update active tab styling
     $$('#files-modal .file-tab').forEach(t => t.classList.toggle('active', t.dataset.folder === folder));
 
+    let aborted = false;
     try {
         const params = new URLSearchParams({
             folder,
@@ -1522,33 +2093,42 @@ async function loadFilesModal(folder = 'wanted', { reset = false } = {}) {
         });
         if (search) params.set('search', search);
         const url = `/api/conversations?${params.toString()}`;
-        const res = await fetch(url);
+        const res = await fetch(url, signal ? { signal } : undefined);
         if (res.ok) {
             const data = await res.json();
             const items = Array.isArray(data) ? data : (data.conversations || []);
-            state.filesModal.files = reset ? items : mergeUniqueById(state.filesModal.files, items);
-            state.filesModal.total = Array.isArray(data) ? items.length : (data.total || items.length);
-            state.filesModal.offset = state.filesModal.files.length;
-            state.filesModal.hasMore = state.filesModal.files.length < state.filesModal.total;
+            for (const item of items) {
+                const itemId = item?.id;
+                if (!itemId || state.filesModal.seenIds.has(itemId)) continue;
+                state.filesModal.seenIds.add(itemId);
+                state.filesModal.idToIndex.set(itemId, state.filesModal.files.length);
+                state.filesModal.files.push(item);
+            }
+            state.filesModal.total = Array.isArray(data) ? items.length : (data.total || state.filesModal.files.length);
+            state.filesModal.offset += items.length;
+            if (items.length === 0) state.filesModal.hasMore = false;
+            else state.filesModal.hasMore = state.filesModal.offset < state.filesModal.total;
+            if (!els.filesModal?.classList.contains('hidden')) {
+                renderFilesModalList();
+            }
         }
 
-        // Clean up selected IDs that no longer exist
-        const currentIds = new Set(state.filesModal.files.map(f => f.id));
-        for (let id of state.filesModal.selectedIds) {
-            if (!currentIds.has(id)) state.filesModal.selectedIds.delete(id);
+        if (!els.filesModal?.classList.contains('hidden')) {
+            updateFilesModalCount();
+            if (reset) renderFilesPreview();
+            updateFilesPaginationUI();
         }
-        if (state.filesModal.previewId && !currentIds.has(state.filesModal.previewId)) {
-            state.filesModal.previewId = null;
-            state.filesModal.previewConversation = null;
+    } catch (e) {
+        if (e?.name === 'AbortError') aborted = true;
+        else console.error('Failed to load files:', e);
+    } finally {
+        state.filesModal.isLoading = false;
+        if (!aborted) updateFilesPaginationUI();
+        if (!els.filesModal?.classList.contains('hidden')) {
+            // Ensure the "Loading more..." row is hidden after paging completes.
+            renderFilesModalList();
         }
-
-        renderFilesModalList();
-        updateFilesModalCount();
-        renderFilesPreview();
-        updateFilesPaginationUI();
-    } catch (e) { console.error('Failed to load files:', e); }
-    state.filesModal.isLoading = false;
-    updateFilesPaginationUI();
+    }
 }
 
 function loadMoreFilesModal() {
@@ -1567,6 +2147,27 @@ function updateFilesModalCount() {
     });
 }
 
+function renderFilesRowHtml(f) {
+    const isSelected = state.filesModal.selectedIds.has(f.id);
+    const isPreviewing = state.filesModal.previewId === f.id;
+
+    const preview = f.preview || f.id || 'No preview';
+    const meta = [];
+    if (f.created_at) meta.push(formatDate(f.created_at));
+    if (f.turns) meta.push(`${f.turns} msgs`);
+    const metaStr = meta.join(' • ');
+
+    return `
+        <div class="export-file-item ${isSelected ? 'selected' : ''} ${isPreviewing ? 'active-preview' : ''}" data-id="${escapeHtml(f.id)}">
+            <input type="checkbox" class="file-checkbox" ${isSelected ? 'checked' : ''}>
+            <div class="export-file-info">
+                <div class="export-file-preview">${escapeHtml(preview)}</div>
+                <div class="export-file-meta">${metaStr ? metaStr : escapeHtml(f.id)}</div>
+            </div>
+        </div>
+    `;
+}
+
 function renderFilesModalList() {
     if (!els.filesModalList) return;
     const folder = state.filesModal.currentFolder;
@@ -1582,32 +2183,12 @@ function renderFilesModalList() {
         }
     });
 
-    if (state.filesModal.files.length === 0) {
-        els.filesModalList.innerHTML = '<div class="empty-files">No items found</div>';
-        updateFilesPaginationUI();
-        return;
-    }
-
-    els.filesModalList.innerHTML = state.filesModal.files.map(f => {
-        const isSelected = state.filesModal.selectedIds.has(f.id);
-        const isPreviewing = state.filesModal.previewId === f.id;
-
-        const preview = f.preview || f.id || 'No preview';
-        const meta = [];
-        if (f.created_at) meta.push(formatDate(f.created_at));
-        if (f.turns) meta.push(`${f.turns} msgs`);
-        const metaStr = meta.join(' • ');
-
-        return `
-            <div class="export-file-item ${isSelected ? 'selected' : ''} ${isPreviewing ? 'active-preview' : ''}" data-id="${escapeHtml(f.id)}">
-                <input type="checkbox" class="file-checkbox" ${isSelected ? 'checked' : ''}>
-                <div class="export-file-info">
-                    <div class="export-file-preview">${escapeHtml(preview)}</div>
-                    <div class="export-file-meta">${metaStr ? metaStr : escapeHtml(f.id)}</div>
-                </div>
-            </div>
-        `;
-    }).join('');
+    renderVirtualWindow({
+        slice: state.filesModal,
+        container: els.filesModalList,
+        items: state.filesModal.files,
+        renderRowHtml: renderFilesRowHtml
+    });
     updateFilesPaginationUI();
 }
 
@@ -1624,7 +2205,10 @@ async function handleBulkMove(from, to) {
             body: JSON.stringify({ ids, from, to })
         });
         if (res.ok) {
-            toast(`Moved ${ids.length} items to ${to}`, 'success');
+            const data = await res.json();
+            const movedCount = Array.isArray(data.moved) ? data.moved.length : 0;
+            const toastType = movedCount === ids.length ? 'success' : 'warning';
+            toast(`Moved ${movedCount}/${ids.length} items to ${to}`, toastType);
             clearSelectableSelection(state.filesModal);
             loadFilesModal(from, { reset: true });
             loadStats();
@@ -1646,7 +2230,10 @@ async function handleBulkDelete(folder) {
             body: JSON.stringify({ ids, folder })
         });
         if (res.ok) {
-            toast(`Deleted ${ids.length} items`, 'success');
+            const data = await res.json();
+            const deletedCount = Array.isArray(data.deleted) ? data.deleted.length : 0;
+            const toastType = deletedCount === ids.length ? 'success' : 'warning';
+            toast(`Deleted ${deletedCount}/${ids.length} items`, toastType);
             clearSelectableSelection(state.filesModal);
             loadFilesModal(folder, { reset: true });
             loadStats();
@@ -1663,6 +2250,7 @@ async function loadConversation(id, folder) {
             state.generate.conversation = conv;
             state.generate.rawText = conversationToRaw(conv.conversations);
             renderConversation(conv.conversations);
+            updateTurnCount(countConversationTurns(conv.conversations));
             enableActionButtons();
             switchTab('generate');
             if (window.innerWidth < 1024) toggleSidebar();
@@ -1671,7 +2259,10 @@ async function loadConversation(id, folder) {
 }
 
 function conversationToRaw(messages) {
-    return messages.map(m => `${m.from === 'human' ? 'user' : 'gpt'}: ${m.value}`).join('\n---\n');
+    return messages.map(m => {
+        const role = m.from === 'human' ? 'user' : (m.from === 'system' ? 'system' : 'gpt');
+        return `${role}: ${m.value}`;
+    }).join('\n---\n');
 }
 
 async function readSSEStream(reader, onMessage) {
@@ -1811,6 +2402,7 @@ async function bulkGenerate(count) {
     els.bulkProgress.classList.remove('hidden');
     updateBulkProgress();
     state.listIterators = {};
+    const generatedItems = [];
     for (let i = 0; i < count; i++) {
         if (state.bulk.abortController.signal.aborted) break;
         const promptText = applyVariables(els.systemPrompt.value);
@@ -1839,7 +2431,7 @@ async function bulkGenerate(count) {
                 for (const convRaw of conversationsRaw) {
                     const parsed = parseMinimalFormat(convRaw);
                     if (parsed.length > 0) {
-                        await addToReviewQueue({
+                        generatedItems.push({
                             conversations: parsed,
                             rawText: convRaw,
                             metadata: { model: getModelValue(), prompt: state.currentPromptName, variables: { ...state.generate.variables } }
@@ -1858,6 +2450,9 @@ async function bulkGenerate(count) {
     state.bulk.isRunning = false;
     state.bulk.abortController = null;
     els.bulkProgress.classList.add('hidden');
+    if (generatedItems.length > 0) {
+        await addReviewQueueItems(generatedItems);
+    }
     toast(`Generated ${state.bulk.completed}/${count} conversations`, 'success');
     updateReviewBadge();
     if (state.bulk.completed > 0) switchTab('review');
@@ -1877,7 +2472,7 @@ function parseAndRender() {
     const parsed = parseMinimalFormat(state.generate.rawText);
     state.generate.conversation = { conversations: parsed };
     renderConversation(parsed);
-    updateTurnCount(parsed.length);
+    updateTurnCount(countConversationTurns(parsed));
 }
 
 function extractOutput(text) {
@@ -1894,9 +2489,10 @@ function parseMinimalFormat(text) {
     for (const block of blocks) {
         const trimmed = block.trim();
         if (!trimmed) continue;
-        const match = trimmed.match(/^(user|gpt):\s*([\s\S]*)/);
+        const match = trimmed.match(/^(user|gpt|system):\s*([\s\S]*)/);
         if (match) {
-            conversations.push({ from: match[1] === 'user' ? 'human' : 'gpt', value: match[2].trim() });
+            const role = match[1] === 'user' ? 'human' : match[1];
+            conversations.push({ from: role, value: match[2].trim() });
         }
     }
     return conversations;
@@ -1910,7 +2506,7 @@ function renderConversation(messages) {
     els.conversationView.innerHTML = messages.map(m => `
         <div class="bubble ${m.from}">
             <div class="bubble-header">
-                <span class="role-label">${m.from === 'human' ? 'USER' : 'GPT'}</span>
+                <span class="role-label">${getConversationRoleLabel(m.from)}</span>
             </div>
             <div class="bubble-content">${escapeHtml(m.value)}</div>
         </div>
@@ -1969,6 +2565,7 @@ function resetGenerateTab() {
     state.generate.rawText = '';
     els.conversationEdit.value = '';
     renderConversation([]);
+    updateTurnCount(0);
     disableActionButtons();
 }
 
@@ -2303,50 +2900,61 @@ function enableChatButtons() { if (els.saveChatBtn) els.saveChatBtn.disabled = f
 function disableChatButtons() { if (els.saveChatBtn) els.saveChatBtn.disabled = true; }
 
 // ============ REVIEW QUEUE (Server-Synced) ============
-async function addToReviewQueue(item) {
+function createLocalReviewEntry(item) {
+    return {
+        id: 'local-' + Date.now() + '-' + Math.random().toString(36).slice(2),
+        conversations: item.conversations,
+        rawText: item.rawText,
+        metadata: item.metadata || {},
+        createdAt: new Date().toISOString()
+    };
+}
+
+function appendReviewQueueEntries(entries) {
+    if (!entries.length) return;
+    const hadMore = state.review.hasMore;
+    state.review.queue.push(...entries);
+    state.review.total = (state.review.total || 0) + entries.length;
+    if (!hadMore) {
+        state.review.offset += entries.length;
+    }
+    state.review.hasMore = state.review.offset < state.review.total;
+}
+
+async function addReviewQueueItems(items) {
+    if (!items.length) return [];
     try {
         const res = await fetch('/api/review-queue', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                conversations: item.conversations,
-                rawText: item.rawText,
-                metadata: item.metadata || {}
-            })
+            body: JSON.stringify({ items })
         });
-        if (res.ok) {
-            const data = await res.json();
-            // Update local state with server-assigned IDs
-            if (data.added) {
-                data.added.forEach(entry => state.review.queue.push(entry));
-            }
-        } else {
-            // Fallback: add locally with temp ID
-            const entry = {
-                id: 'local-' + Date.now() + '-' + Math.random(),
-                conversations: item.conversations,
-                rawText: item.rawText,
-                metadata: item.metadata || {},
-                createdAt: new Date().toISOString()
-            };
-            state.review.queue.push(entry);
-            try { await dbPut('reviewQueue', entry); } catch (e) { }
+        if (!res.ok) throw new Error('Failed to add review items');
+        const data = await res.json();
+        const added = data.added || [];
+        appendReviewQueueEntries(added);
+        if (typeof data.count === 'number') {
+            state.review.total = data.count;
+            state.review.hasMore = state.review.offset < state.review.total;
         }
+        updateReviewBadge();
+        renderReviewItem();
+        return added;
     } catch (e) {
-        // Offline fallback
-        const entry = {
-            id: 'local-' + Date.now() + '-' + Math.random(),
-            conversations: item.conversations,
-            rawText: item.rawText,
-            metadata: item.metadata || {},
-            createdAt: new Date().toISOString()
-        };
-        state.review.queue.push(entry);
-        try { await dbPut('reviewQueue', entry); } catch (e2) { }
+        const localEntries = items.map(createLocalReviewEntry);
+        appendReviewQueueEntries(localEntries);
+        for (const entry of localEntries) {
+            try { await dbPut('reviewQueue', entry); } catch (_err) { }
+        }
         console.error('Failed to add to server review queue, saved locally:', e);
+        updateReviewBadge();
+        renderReviewItem();
+        return localEntries;
     }
-    updateReviewBadge();
-    renderReviewItem();
+}
+
+async function addToReviewQueue(item) {
+    return addReviewQueueItems([item]);
 }
 
 function remapSelectableSliceIds(slice, syncedEntries) {
@@ -2385,19 +2993,15 @@ function remapReviewQueueState(syncedEntries) {
     remapSelectableSliceIds(state.reviewBrowser, syncedEntries);
 }
 
-async function createReviewQueueItemOnServer(item) {
+async function createReviewQueueItemsOnServer(items) {
     const res = await fetch('/api/review-queue', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            conversations: item.conversations,
-            rawText: item.rawText,
-            metadata: item.metadata || {}
-        })
+        body: JSON.stringify({ items })
     });
     if (!res.ok) throw new Error('Failed to sync review queue item');
     const data = await res.json();
-    return data.added?.[0] || null;
+    return data.added || [];
 }
 
 async function syncReviewQueueItemsToServer(ids = null) {
@@ -2420,8 +3024,16 @@ async function syncReviewQueueItemsToServer(ids = null) {
     if (pendingItems.length === 0) return new Map();
 
     const syncedEntries = new Map();
-    for (const item of pendingItems) {
-        const synced = await createReviewQueueItemOnServer(item);
+    const payloadItems = pendingItems.map(item => ({
+        conversations: item.conversations,
+        rawText: item.rawText,
+        metadata: item.metadata || {}
+    }));
+    const added = await createReviewQueueItemsOnServer(payloadItems);
+
+    for (let index = 0; index < pendingItems.length; index++) {
+        const item = pendingItems[index];
+        const synced = added[index];
         if (!synced?.id) continue;
         syncedEntries.set(item.id, synced);
         await dbDelete('reviewQueue', item.id);
@@ -2436,58 +3048,86 @@ async function ensureReviewQueueIdsSynced(ids) {
     return ids.map(id => idMap.get(id) || id);
 }
 
-async function loadReviewQueue() {
+async function loadReviewQueue({ reset = true, targetIndex = null } = {}) {
     const currentItemId = state.review.queue[state.review.currentIndex]?.id;
-    let nextCurrentItemId = currentItemId;
-    try {
-        const res = await fetch('/api/review-queue');
-        if (res.ok) {
-            const data = await res.json();
-            state.review.queue = data.queue || [];
-            state.review.currentIndex = Math.max(0, state.review.queue.findIndex(item => item.id === nextCurrentItemId));
-            if (state.review.currentIndex === -1) state.review.currentIndex = 0;
-            // Sync local IndexedDB items to server if any exist
-            try {
-                const synced = await syncReviewQueueItemsToServer();
-                if (synced.size > 0) {
-                    if (nextCurrentItemId && synced.has(nextCurrentItemId)) {
-                        nextCurrentItemId = synced.get(nextCurrentItemId);
-                    }
-                    // Re-fetch after sync
-                    const res2 = await fetch('/api/review-queue');
-                    if (res2.ok) {
-                        const data2 = await res2.json();
-                        state.review.queue = data2.queue || [];
-                        state.review.currentIndex = Math.max(0, state.review.queue.findIndex(item => item.id === nextCurrentItemId));
-                        if (state.review.currentIndex === -1) state.review.currentIndex = 0;
-                    }
-                }
-            } catch (e) { }
-            updateReviewBadge();
-            renderReviewItem();
-            return;
-        }
-    } catch (e) {
-        console.warn('Server unreachable, loading review queue from IndexedDB');
+    if (reset) {
+        state.review.queue = [];
+        state.review.offset = 0;
+        state.review.total = 0;
+        state.review.hasMore = false;
     }
-    // Fallback to IndexedDB
+    state.review.isLoading = true;
     try {
-        const items = await dbGetAll('reviewQueue');
-        state.review.queue = items || [];
-        state.review.currentIndex = Math.max(0, state.review.queue.findIndex(item => item.id === nextCurrentItemId));
-        if (state.review.currentIndex === -1) state.review.currentIndex = 0;
+        await syncReviewQueueItemsToServer();
+        const params = new URLSearchParams({
+            limit: String(MODAL_PAGE_SIZE),
+            offset: String(reset ? 0 : state.review.offset)
+        });
+        const res = await fetch(`/api/review-queue?${params.toString()}`);
+        if (!res.ok) throw new Error('Failed to load review queue');
+
+        const data = await res.json();
+        if (data.error) throw new Error(data.error);
+
+        const items = data.queue || [];
+        const start = reset ? 0 : state.review.offset;
+        state.review.queue = reset ? items : mergeReviewQueuePage(state.review.queue, items, start);
+        state.review.total = data.count || state.review.queue.length;
+        state.review.offset = start + items.length;
+        state.review.hasMore = state.review.offset < state.review.total;
+
+        if (typeof targetIndex === 'number') {
+            state.review.currentIndex = Math.max(0, Math.min(targetIndex, state.review.queue.length - 1));
+        } else if (currentItemId) {
+            const nextIndex = state.review.queue.findIndex(item => item.id === currentItemId);
+            state.review.currentIndex = nextIndex === -1 ? Math.min(state.review.currentIndex, Math.max(0, state.review.queue.length - 1)) : nextIndex;
+        } else {
+            state.review.currentIndex = Math.min(state.review.currentIndex, Math.max(0, state.review.queue.length - 1));
+        }
+
         updateReviewBadge();
         renderReviewItem();
-    } catch (e) { console.error('Failed to load review queue:', e); }
+    } catch (e) {
+        console.warn('Server unreachable, loading review queue from IndexedDB');
+        // Fallback to IndexedDB
+        try {
+            const items = await dbGetAll('reviewQueue');
+            const allItems = items || [];
+            const start = reset ? 0 : state.review.offset;
+            const nextItems = allItems.slice(start, start + MODAL_PAGE_SIZE);
+            state.review.queue = reset ? nextItems : mergeReviewQueuePage(state.review.queue, nextItems, start);
+            state.review.total = allItems.length;
+            state.review.offset = start + nextItems.length;
+            state.review.hasMore = state.review.offset < state.review.total;
+            if (typeof targetIndex === 'number') {
+                state.review.currentIndex = Math.max(0, Math.min(targetIndex, state.review.queue.length - 1));
+            } else {
+                state.review.currentIndex = Math.min(state.review.currentIndex, Math.max(0, state.review.queue.length - 1));
+            }
+            updateReviewBadge();
+            renderReviewItem();
+        } catch (err) {
+            console.error('Failed to load review queue:', err);
+        }
+    } finally {
+        state.review.isLoading = false;
+    }
+}
+
+function getLoadedReviewCount() {
+    return state.review.hasMore ? Math.min(state.review.offset, state.review.queue.length) : state.review.queue.length;
 }
 
 function updateReviewBadge() {
-    const count = state.review.queue.length;
+    const count = state.review.total || state.review.queue.length;
     if (els.reviewBadge) {
         els.reviewBadge.textContent = count;
         els.reviewBadge.classList.toggle('hidden', count === 0);
     }
-    if (els.reviewCount) els.reviewCount.textContent = `${count} items`;
+    if (els.reviewCount) {
+        const loaded = getLoadedReviewCount();
+        els.reviewCount.textContent = count > loaded ? `${count} items (${loaded} loaded)` : `${count} items`;
+    }
 }
 
 function renderReviewItem() {
@@ -2520,8 +3160,9 @@ function renderReviewItem() {
     els.reviewRejectBtn.disabled = false;
     els.reviewEditBtn.disabled = false;
     els.reviewPrev.disabled = idx <= 0;
-    els.reviewNext.disabled = idx >= queue.length - 1;
-    els.reviewPosition.textContent = `${idx + 1}/${queue.length}`;
+    els.reviewNext.disabled = idx >= getLoadedReviewCount() - 1 && !state.review.hasMore;
+    const total = state.review.total || queue.length;
+    els.reviewPosition.textContent = `${idx + 1}/${total}`;
     els.reviewEditBtn.textContent = state.review.isEditing ? 'Apply Edit' : 'Edit';
 }
 
@@ -2570,9 +3211,14 @@ function cancelReviewEdit() {
 
 async function reviewNext() {
     if (!(await persistCurrentReviewEdits())) return;
-    if (state.review.currentIndex < state.review.queue.length - 1) {
+    const loadedCount = getLoadedReviewCount();
+    if (state.review.currentIndex < loadedCount - 1) {
         state.review.currentIndex++;
         renderReviewItem();
+        return;
+    }
+    if (state.review.hasMore && !state.review.isLoading) {
+        await loadReviewQueue({ reset: false, targetIndex: loadedCount });
     }
 }
 
@@ -2603,7 +3249,15 @@ async function reviewKeep() {
                 hideSaveIndicator('Save failed');
                 return;
             }
-            await loadReviewQueue();
+            const removedIndex = state.review.currentIndex;
+            removeReviewQueueEntryAt(removedIndex, { removedFromServer: !String(item.id).startsWith('local-') });
+            state.review.total = typeof data.count === 'number' ? data.count : state.review.total;
+            state.review.hasMore = state.review.offset < state.review.total;
+            if (state.review.hasMore && state.review.currentIndex >= getLoadedReviewCount()) {
+                await loadReviewQueue({ reset: false, targetIndex: state.review.currentIndex });
+            } else {
+                renderReviewItem();
+            }
             toast('Kept!', 'success');
             hideSaveIndicator('Saved ✓');
             loadStats();
@@ -2630,7 +3284,15 @@ async function reviewReject() {
                 hideSaveIndicator('Reject failed');
                 return;
             }
-            await loadReviewQueue();
+            const removedIndex = state.review.currentIndex;
+            removeReviewQueueEntryAt(removedIndex, { removedFromServer: !String(item.id).startsWith('local-') });
+            state.review.total = typeof data.count === 'number' ? data.count : state.review.total;
+            state.review.hasMore = state.review.offset < state.review.total;
+            if (state.review.hasMore && state.review.currentIndex >= getLoadedReviewCount()) {
+                await loadReviewQueue({ reset: false, targetIndex: state.review.currentIndex });
+            } else {
+                renderReviewItem();
+            }
             toast('Rejected', 'info');
             hideSaveIndicator('Rejected ✓');
             loadStats();
@@ -2638,6 +3300,24 @@ async function reviewReject() {
             toast('Failed to reject', 'error'); hideSaveIndicator('Reject failed');
         }
     } catch (e) { toast('Failed to reject', 'error'); hideSaveIndicator('Reject failed'); }
+}
+
+function removeReviewQueueEntryAt(idx, { removedFromServer = true } = {}) {
+    const removed = state.review.queue[idx];
+    if (!removed) return null;
+
+    state.review.queue.splice(idx, 1);
+    state.review.total = Math.max(0, (state.review.total || state.review.queue.length + 1) - 1);
+    if (removedFromServer && idx < state.review.offset) {
+        state.review.offset = Math.max(0, state.review.offset - 1);
+    }
+    state.review.hasMore = state.review.offset < state.review.total;
+    if (state.review.currentIndex >= state.review.queue.length && state.review.currentIndex > 0) {
+        state.review.currentIndex--;
+    }
+    state.review.isEditing = false;
+    updateReviewBadge();
+    return removed;
 }
 
 async function removeFromReviewQueue(idx) {
@@ -2650,12 +3330,7 @@ async function removeFromReviewQueue(idx) {
         }
         try { await dbDelete('reviewQueue', item.id); } catch (e) { }
     }
-    state.review.queue.splice(idx, 1);
-    if (state.review.currentIndex >= state.review.queue.length && state.review.currentIndex > 0) {
-        state.review.currentIndex--;
-    }
-    state.review.isEditing = false;
-    updateReviewBadge();
+    removeReviewQueueEntryAt(idx, { removedFromServer: !!item && !String(item.id).startsWith('local-') });
     renderReviewItem();
 }
 
@@ -2671,67 +3346,136 @@ async function reviewEdit() {
     renderReviewItem();
 }
 
-async function keepAllReview() {
-    if (state.review.queue.length === 0) return;
-    if (!confirm(`Save all ${state.review.queue.length} conversations?`)) return;
-    showSaveIndicator('Saving all...');
+async function persistAllReviewQueueInBatches(action) {
+    const count = state.review.total || state.review.queue.length;
+    if (count === 0) return;
+
+    const isKeep = action === 'keep';
+    const verb = isKeep ? 'Save' : 'Reject';
+    const targetLabel = isKeep ? 'Wanted' : 'Rejected';
+
+    if (!confirm(`${verb} all ${count} conversations?`)) return;
+    if (!(await persistCurrentReviewEdits())) return;
+
+    showSaveIndicator(isKeep ? 'Saving...' : 'Rejecting...');
+    const controller = new AbortController();
+    const taskId = createTask({
+        title: `Review: ${verb} all`,
+        detail: `Queue -> ${targetLabel}`,
+        onCancel: () => controller.abort()
+    });
+
     try {
-        const ids = await ensureReviewQueueIdsSynced(state.review.queue.map(item => item.id));
-        const res = await fetch('/api/review-queue/bulk-keep', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ ids })
-        });
-        if (res.ok) {
-            const data = await res.json();
-            if (data.error_count > 0) {
-                toast(`Saved ${data.saved_count} conversations. ${data.error_count} failed and stayed in queue.`, 'warning');
-            } else {
-                toast(`Saved ${data.saved_count} conversations`, 'success');
+        await syncReviewQueueItemsToServer();
+
+        const batchLimit = 200; // server caps the review queue page size at 200
+        let processed = 0;
+        let total = null;
+        let lastRemaining = null;
+        let stagnant = 0;
+
+        while (!controller.signal.aborted) {
+            const idsRes = await fetch(`/api/review-queue?limit=${batchLimit}&offset=0&ids_only=1`, { signal: controller.signal });
+            if (!idsRes.ok) throw new Error('Failed to fetch queue ids');
+            const idsData = await idsRes.json().catch(() => ({}));
+
+            if (total === null && typeof idsData.count === 'number') total = idsData.count;
+            const ids = Array.isArray(idsData.ids) ? idsData.ids : [];
+            if (ids.length === 0) break;
+
+            updateTask(taskId, {
+                detail: `Queue -> ${targetLabel}`,
+                current: total ? Math.min(processed, total) : null,
+                total: total || null,
+                indeterminate: !total
+            });
+
+            const persistRes = await fetch(`/api/review-queue/bulk-${action}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ ids }),
+                signal: controller.signal
+            });
+            if (!persistRes.ok) throw new Error(`Bulk ${action} failed`);
+            const persistData = await persistRes.json().catch(() => ({}));
+
+            const savedCount = typeof persistData.saved_count === 'number' ? persistData.saved_count : ids.length;
+            const errorCount = typeof persistData.error_count === 'number' ? persistData.error_count : 0;
+            processed += savedCount;
+
+            const remaining = typeof persistData.count === 'number' ? persistData.count : null;
+            if (remaining !== null) {
+                if (total === null) total = processed + remaining;
+                if (lastRemaining !== null && remaining >= lastRemaining) stagnant++;
+                else stagnant = 0;
+                lastRemaining = remaining;
+                if (stagnant >= 4) throw new Error('Queue did not shrink; stopping to avoid an infinite loop');
+                if (remaining === 0) break;
             }
-            await loadReviewQueue();
-            loadStats();
-            hideSaveIndicator('Saved ✓');
+
+            updateTask(taskId, {
+                detail: `Queue -> ${targetLabel}`,
+                current: total ? Math.min(processed, total) : null,
+                total: total || null,
+                indeterminate: !total
+            });
+
+            if (savedCount === 0 && errorCount > 0) {
+                toast(`Stopped: ${errorCount} invalid item(s) stayed in the queue`, 'warning');
+                break;
+            }
+
+            // Yield so the UI stays responsive.
+            await new Promise(resolve => requestAnimationFrame(() => resolve()));
         }
-    } catch (e) { toast('Bulk save failed', 'error'); hideSaveIndicator('Save failed'); }
+
+        if (controller.signal.aborted) {
+            toast(`${verb} canceled`, 'info');
+            hideSaveIndicator('Canceled');
+            finishTask(taskId, { status: 'canceled', detail: 'Canceled' });
+            return;
+        }
+
+        await loadReviewQueue({ reset: true, targetIndex: 0 });
+        loadStats();
+        hideSaveIndicator(isKeep ? 'Saved ✓' : 'Rejected ✓');
+        toast(isKeep ? `Saved ${processed} conversations` : `Rejected ${processed} conversations`, isKeep ? 'success' : 'info');
+        finishTask(taskId, { status: 'done', detail: isKeep ? `Saved ${processed}` : `Rejected ${processed}` });
+    } catch (e) {
+        if (e?.name === 'AbortError' || controller.signal.aborted) {
+            toast(`${verb} canceled`, 'info');
+            hideSaveIndicator('Canceled');
+            finishTask(taskId, { status: 'canceled', detail: 'Canceled' });
+            return;
+        }
+        console.error(`Bulk ${action} failed:`, e);
+        toast(`Bulk ${action} failed`, 'error');
+        hideSaveIndicator('Failed');
+        finishTask(taskId, { status: 'error', detail: 'Failed' });
+    }
+}
+
+async function keepAllReview() {
+    return persistAllReviewQueueInBatches('keep');
 }
 
 async function rejectAllReview() {
-    if (state.review.queue.length === 0) return;
-    if (!confirm(`Reject all ${state.review.queue.length} conversations?`)) return;
-    showSaveIndicator('Rejecting all...');
-    try {
-        const ids = await ensureReviewQueueIdsSynced(state.review.queue.map(item => item.id));
-        const res = await fetch('/api/review-queue/bulk-reject', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ ids })
-        });
-        if (res.ok) {
-            const data = await res.json();
-            if (data.error_count > 0) {
-                toast(`Rejected ${data.saved_count} conversations. ${data.error_count} failed and stayed in queue.`, 'warning');
-            } else {
-                toast(`Rejected ${data.saved_count} conversations`, 'info');
-            }
-            hideSaveIndicator('Rejected ✓');
-            await loadReviewQueue();
-            loadStats();
-        } else {
-            toast('Bulk reject failed', 'error'); hideSaveIndicator('Reject failed');
-        }
-    } catch (e) { toast('Bulk reject failed', 'error'); hideSaveIndicator('Reject failed'); }
+    return persistAllReviewQueueInBatches('reject');
 }
 
 async function clearReviewQueue() {
-    if (state.review.queue.length === 0) return;
-    if (!confirm(`Discard all ${state.review.queue.length} conversations from the queue? This will NOT save them anywhere.`)) return;
+    const count = state.review.total || state.review.queue.length;
+    if (count === 0) return;
+    if (!confirm(`Discard all ${count} conversations from the queue? This will NOT save them anywhere.`)) return;
     showSaveIndicator('Clearing...');
     try {
         await fetch('/api/review-queue', { method: 'DELETE' });
         await dbClear('reviewQueue');
         state.review.queue = [];
         state.review.currentIndex = 0;
+        state.review.offset = 0;
+        state.review.total = 0;
+        state.review.hasMore = false;
         updateReviewBadge();
         renderReviewItem();
         hideSaveIndicator('Cleared');
@@ -2747,7 +3491,10 @@ function openReviewBrowserModal() {
     state.reviewBrowser.previewId = currentItem?.id || null;
     state.reviewBrowser.previewConversation = currentItem || null;
     els.reviewBrowserModal.classList.remove('hidden');
-    loadReviewBrowser({ reset: true });
+    const hasActiveLoadAll = !!state.reviewBrowser.loadAllTaskId && state.tasks.items.has(state.reviewBrowser.loadAllTaskId);
+    const shouldReset = !hasActiveLoadAll && state.reviewBrowser.items.length === 0;
+    if (shouldReset) loadReviewBrowser({ reset: true });
+    else { renderReviewBrowserList(); renderReviewBrowserPreview(); updateReviewBrowserPaginationUI(); }
 }
 
 function closeReviewBrowserModal() {
@@ -2756,7 +3503,7 @@ function closeReviewBrowserModal() {
 
 function updateReviewBrowserPaginationUI() {
     if (els.reviewBrowserPaginationStatus) {
-        const loaded = state.reviewBrowser.items.length;
+        const loaded = Math.min(state.reviewBrowser.offset, state.reviewBrowser.items.length);
         const total = state.reviewBrowser.total || 0;
         els.reviewBrowserPaginationStatus.textContent = total > 0 ? `Showing ${loaded} of ${total}` : '';
     }
@@ -2788,44 +3535,52 @@ function renderReviewBrowserPreview() {
 
 function renderReviewBrowserList() {
     if (!els.reviewBrowserList) return;
-    if (!state.reviewBrowser.items.length) {
-        els.reviewBrowserList.innerHTML = '<div class="empty-files">No queued items found</div>';
-        updateReviewBrowserCount();
-        updateReviewBrowserPaginationUI();
-        return;
-    }
-
-    els.reviewBrowserList.innerHTML = state.reviewBrowser.items.map(item => {
-        const isSelected = state.reviewBrowser.selectedIds.has(item.id);
-        const isPreviewing = state.reviewBrowser.previewId === item.id;
-        const firstMsg = item.conversations?.find(msg => msg.from === 'human') || item.conversations?.[0];
-        const preview = firstMsg?.value || 'Empty conversation';
-        const meta = item.createdAt ? formatDate(item.createdAt) : '';
-        return `
-            <div class="export-file-item ${isSelected ? 'selected' : ''} ${isPreviewing ? 'active-preview' : ''}" data-id="${escapeHtml(item.id)}">
-                <input type="checkbox" class="file-checkbox" ${isSelected ? 'checked' : ''}>
-                <div class="export-file-info">
-                    <div class="export-file-preview">${escapeHtml(preview)}</div>
-                    <div class="export-file-meta">${escapeHtml(meta)}</div>
-                </div>
-            </div>
-        `;
-    }).join('');
-
+    renderVirtualWindow({
+        slice: state.reviewBrowser,
+        container: els.reviewBrowserList,
+        items: state.reviewBrowser.items,
+        renderRowHtml: renderReviewBrowserRowHtml
+    });
     updateReviewBrowserCount();
     updateReviewBrowserPaginationUI();
 }
 
-async function loadReviewBrowser({ reset = false } = {}) {
+function renderReviewBrowserRowHtml(item) {
+    const isSelected = state.reviewBrowser.selectedIds.has(item.id);
+    const isPreviewing = state.reviewBrowser.previewId === item.id;
+    const firstMsg = item.conversations?.find(msg => msg.from === 'human') || item.conversations?.[0];
+    const preview = firstMsg?.value || 'Empty conversation';
+    const meta = item.createdAt ? formatDate(item.createdAt) : '';
+    return `
+        <div class="export-file-item ${isSelected ? 'selected' : ''} ${isPreviewing ? 'active-preview' : ''}" data-id="${escapeHtml(item.id)}">
+            <input type="checkbox" class="file-checkbox" ${isSelected ? 'checked' : ''}>
+            <div class="export-file-info">
+                <div class="export-file-preview">${escapeHtml(preview)}</div>
+                <div class="export-file-meta">${escapeHtml(meta)}</div>
+            </div>
+        </div>
+    `;
+}
+
+async function loadReviewBrowser({ reset = false, signal = null } = {}) {
     if (reset) {
         state.reviewBrowser.items = [];
         clearSelectableSelection(state.reviewBrowser);
         state.reviewBrowser.offset = 0;
         state.reviewBrowser.total = 0;
         state.reviewBrowser.hasMore = false;
+        state.reviewBrowser.renderedCount = 0;
+        state.reviewBrowser.seenIds.clear();
+        state.reviewBrowser.idToIndex.clear();
+        if (els.reviewBrowserList) els.reviewBrowserList.innerHTML = '';
     }
 
     state.reviewBrowser.isLoading = true;
+    if (!els.reviewBrowserModal?.classList.contains('hidden')) {
+        // Show immediate feedback (spinner / "Loading...") and ensure virtual loading row state is correct.
+        renderReviewBrowserList();
+        updateReviewBrowserPaginationUI();
+    }
     try {
         const params = new URLSearchParams({
             limit: String(MODAL_PAGE_SIZE),
@@ -2833,22 +3588,58 @@ async function loadReviewBrowser({ reset = false } = {}) {
         });
         const search = els.reviewBrowserSearchInput?.value?.trim() || '';
         if (search) params.set('search', search);
-        const res = await fetch(`/api/review-queue?${params.toString()}`);
-        if (res.ok) {
-            const data = await res.json();
-            const items = data.queue || [];
-            state.reviewBrowser.items = reset ? items : mergeUniqueById(state.reviewBrowser.items, items);
-            state.reviewBrowser.total = data.count || items.length;
-            state.reviewBrowser.offset += items.length;
-            state.reviewBrowser.hasMore = state.reviewBrowser.offset < state.reviewBrowser.total;
+        const res = await fetch(`/api/review-queue?${params.toString()}`, signal ? { signal } : undefined);
+        if (!res.ok) throw new Error('Failed to load review browser');
+        const data = await res.json();
+        const items = data.queue || [];
+        for (const item of items) {
+            const itemId = item?.id;
+            if (!itemId || state.reviewBrowser.seenIds.has(itemId)) continue;
+            state.reviewBrowser.seenIds.add(itemId);
+            state.reviewBrowser.idToIndex.set(itemId, state.reviewBrowser.items.length);
+            state.reviewBrowser.items.push(item);
+        }
+        state.reviewBrowser.total = data.count || state.reviewBrowser.items.length;
+        state.reviewBrowser.offset += items.length;
+        if (items.length === 0) state.reviewBrowser.hasMore = false;
+        else state.reviewBrowser.hasMore = state.reviewBrowser.offset < state.reviewBrowser.total;
+        if (!els.reviewBrowserModal?.classList.contains('hidden')) {
+            renderReviewBrowserList();
         }
     } catch (e) {
-        state.reviewBrowser.items = [];
+        if (e?.name === 'AbortError') {
+            state.reviewBrowser.isLoading = false;
+            return;
+        }
+        const search = els.reviewBrowserSearchInput?.value?.trim().toLowerCase() || '';
+        const localItems = await dbGetAll('reviewQueue').catch(() => []);
+        const filtered = (localItems || []).filter(item => {
+            if (!search) return true;
+            return (item.rawText || '').toLowerCase().includes(search);
+        });
+        const page = reset ? filtered.slice(0, MODAL_PAGE_SIZE) : filtered.slice(state.reviewBrowser.offset, state.reviewBrowser.offset + MODAL_PAGE_SIZE);
+        for (const item of page) {
+            const itemId = item?.id;
+            if (!itemId || state.reviewBrowser.seenIds.has(itemId)) continue;
+            state.reviewBrowser.seenIds.add(itemId);
+            state.reviewBrowser.idToIndex.set(itemId, state.reviewBrowser.items.length);
+            state.reviewBrowser.items.push(item);
+        }
+        state.reviewBrowser.total = filtered.length;
+        state.reviewBrowser.offset += page.length;
+        if (page.length === 0) state.reviewBrowser.hasMore = false;
+        else state.reviewBrowser.hasMore = state.reviewBrowser.offset < state.reviewBrowser.total;
+        if (!els.reviewBrowserModal?.classList.contains('hidden')) {
+            renderReviewBrowserList();
+        }
     }
     state.reviewBrowser.isLoading = false;
-    renderReviewBrowserList();
-    renderReviewBrowserPreview();
-    updateReviewBrowserPaginationUI();
+    if (!els.reviewBrowserModal?.classList.contains('hidden')) {
+        renderReviewBrowserPreview();
+        updateReviewBrowserPaginationUI();
+        // Ensure the "Loading more..." row is hidden after paging completes.
+        renderReviewBrowserList();
+    }
 }
 
 function loadMoreReviewBrowser() {
@@ -2860,7 +3651,8 @@ function loadMoreReviewBrowser() {
 function toggleAllReviewBrowser() {
     if (state.reviewBrowser.selectedIds.size > 0) clearSelectableSelection(state.reviewBrowser);
     else state.reviewBrowser.selectedIds = new Set(state.reviewBrowser.items.map(item => item.id));
-    renderReviewBrowserList();
+    refreshSelectableListUI(els.reviewBrowserList, state.reviewBrowser);
+    updateReviewBrowserCount();
 }
 
 async function handleReviewBrowserBulk(action) {
@@ -3095,9 +3887,12 @@ async function openExportModal(format) {
         if (els.exportSystemPrompt) els.exportSystemPrompt.value = state.export.systemPrompt;
     }
 
-    await loadExportFiles({ reset: true });
-    renderExportPreview();
     els.exportModal.classList.remove('hidden');
+    const hasActiveLoadAll = !!state.export.loadAllTaskId && state.tasks.items.has(state.export.loadAllTaskId);
+    const shouldReset = !hasActiveLoadAll && state.export.files.length === 0;
+    if (shouldReset) await loadExportFiles({ reset: true });
+    else { renderExportFileList(); updateExportCount(); }
+    renderExportPreview();
 }
 
 function getSelectedExportPromptSource() {
@@ -3118,7 +3913,7 @@ function updateExportPromptState() {
 
 function updateExportPaginationUI() {
     if (els.exportPaginationStatus) {
-        const loaded = state.export.files.length;
+        const loaded = Math.min(state.export.offset, state.export.files.length);
         const total = state.export.total || 0;
         els.exportPaginationStatus.textContent = total > 0 ? `Showing ${loaded} of ${total}` : '';
     }
@@ -3128,7 +3923,7 @@ function updateExportPaginationUI() {
     }
 }
 
-async function loadExportFiles({ reset = false } = {}) {
+async function loadExportFiles({ reset = false, signal = null } = {}) {
     if (reset) {
         state.export.files = [];
         clearSelectableSelection(state.export);
@@ -3137,8 +3932,18 @@ async function loadExportFiles({ reset = false } = {}) {
         state.export.hasMore = false;
         state.export.previewId = null;
         state.export.previewConversation = null;
+        state.export.renderedCount = 0;
+        state.export.seenIds.clear();
+        state.export.idToIndex.clear();
+        if (els.exportFileList) els.exportFileList.innerHTML = '';
     }
     state.export.isLoading = true;
+    if (!els.exportModal?.classList.contains('hidden')) {
+        // Show immediate feedback (spinner / "Loading...") and ensure virtual loading row state is correct.
+        renderExportFileList();
+        updateExportPaginationUI();
+    }
+    let aborted = false;
     try {
         const params = new URLSearchParams({
             folder: 'wanted',
@@ -3147,22 +3952,39 @@ async function loadExportFiles({ reset = false } = {}) {
         });
         const search = els.exportSearchInput?.value?.trim() || '';
         if (search) params.set('search', search);
-        const res = await fetch(`/api/conversations?${params.toString()}`);
+        const res = await fetch(`/api/conversations?${params.toString()}`, signal ? { signal } : undefined);
         if (res.ok) {
             const data = await res.json();
             const items = Array.isArray(data) ? data : (data.conversations || []);
-            state.export.files = reset ? items : mergeUniqueById(state.export.files, items);
-            state.export.total = Array.isArray(data) ? items.length : (data.total || items.length);
-            state.export.offset = state.export.files.length;
-            state.export.hasMore = state.export.files.length < state.export.total;
-            renderExportFileList();
-            updateExportCount();
-            renderExportPreview();
-            updateExportPaginationUI();
+            for (const item of items) {
+                const itemId = item?.id;
+                if (!itemId || state.export.seenIds.has(itemId)) continue;
+                state.export.seenIds.add(itemId);
+                state.export.idToIndex.set(itemId, state.export.files.length);
+                state.export.files.push(item);
+            }
+            state.export.total = Array.isArray(data) ? items.length : (data.total || state.export.files.length);
+            state.export.offset += items.length;
+            if (items.length === 0) state.export.hasMore = false;
+            else state.export.hasMore = state.export.offset < state.export.total;
+            if (!els.exportModal?.classList.contains('hidden')) {
+                renderExportFileList();
+                updateExportCount();
+                if (reset) renderExportPreview();
+                updateExportPaginationUI();
+            }
         }
-    } catch (e) { state.export.files = []; renderExportFileList(); renderExportPreview(); }
-    state.export.isLoading = false;
-    updateExportPaginationUI();
+    } catch (e) {
+        if (e?.name === 'AbortError') aborted = true;
+        else { state.export.files = []; renderExportFileList(); renderExportPreview(); }
+    } finally {
+        state.export.isLoading = false;
+        if (!aborted) updateExportPaginationUI();
+        if (!els.exportModal?.classList.contains('hidden')) {
+            // Ensure the "Loading more..." row is hidden after paging completes.
+            renderExportFileList();
+        }
+    }
 }
 
 function loadMoreExportFiles() {
@@ -3173,25 +3995,27 @@ function loadMoreExportFiles() {
 
 function renderExportFileList() {
     if (!els.exportFileList) return;
-    if (!state.export.files || state.export.files.length === 0) {
-        els.exportFileList.innerHTML = '<div class="empty-files">No conversations to export</div>';
-        updateExportPaginationUI();
-        return;
-    }
-    els.exportFileList.innerHTML = state.export.files.map(file => {
-        const isSelected = state.export.selectedIds.has(file.id);
-        const isPreviewing = state.export.previewId === file.id;
-        const preview = file.preview || file.id || 'No preview';
-        const meta = [file.created_at ? formatDate(file.created_at) : '', file.turns ? `${file.turns} msgs` : ''].filter(Boolean).join(' • ');
-        return `<div class="export-file-item ${isSelected ? 'selected' : ''} ${isPreviewing ? 'active-preview' : ''}" data-id="${file.id}">
-            <input type="checkbox" class="file-checkbox" ${isSelected ? 'checked' : ''}>
-            <div class="export-file-info">
-                <div class="export-file-preview">${escapeHtml(preview)}</div>
-                <div class="export-file-meta">${meta || file.id}</div>
-            </div>
-        </div>`;
-    }).join('');
+    renderVirtualWindow({
+        slice: state.export,
+        container: els.exportFileList,
+        items: state.export.files,
+        renderRowHtml: renderExportRowHtml
+    });
     updateExportPaginationUI();
+}
+
+function renderExportRowHtml(file) {
+    const isSelected = state.export.selectedIds.has(file.id);
+    const isPreviewing = state.export.previewId === file.id;
+    const preview = file.preview || file.id || 'No preview';
+    const meta = [file.created_at ? formatDate(file.created_at) : '', file.turns ? `${file.turns} msgs` : ''].filter(Boolean).join(' • ');
+    return `<div class="export-file-item ${isSelected ? 'selected' : ''} ${isPreviewing ? 'active-preview' : ''}" data-id="${escapeHtml(file.id)}">
+        <input type="checkbox" class="file-checkbox" ${isSelected ? 'checked' : ''}>
+        <div class="export-file-info">
+            <div class="export-file-preview">${escapeHtml(preview)}</div>
+            <div class="export-file-meta">${escapeHtml(meta || file.id)}</div>
+        </div>
+    </div>`;
 }
 
 function renderExportPreview() {
@@ -3217,7 +4041,7 @@ function updateExportCount() {
 function toggleAllExportFiles() {
     if (state.export.selectedIds.size > 0) clearSelectableSelection(state.export);
     else state.export.selectedIds = new Set(state.export.files.map(f => f.id));
-    renderExportFileList();
+    refreshSelectableListUI(els.exportFileList, state.export);
     updateExportCount();
 }
 
@@ -3684,6 +4508,7 @@ function setupEventListeners() {
     // Files Search
     let filesSearchTimer = null;
     els.filesSearchInput?.addEventListener('input', () => {
+        cancelSliceLoadAll(state.filesModal, 'Canceled');
         if (filesSearchTimer) clearTimeout(filesSearchTimer);
         filesSearchTimer = setTimeout(() => loadFilesModal(state.filesModal.currentFolder, { reset: true }), 300);
     });
@@ -3691,6 +4516,7 @@ function setupEventListeners() {
     // Files Modal Tabs
     $$('#files-modal .file-tab').forEach(tab => {
         tab.addEventListener('click', (e) => {
+            cancelSliceLoadAll(state.filesModal, 'Canceled');
             loadFilesModal(e.target.dataset.folder, { reset: true });
         });
     });
@@ -3711,18 +4537,21 @@ function setupEventListeners() {
     els.filesSelectToggle?.addEventListener('click', () => {
         if (state.filesModal.selectedIds.size > 0) clearSelectableSelection(state.filesModal);
         else state.filesModal.selectedIds = new Set(state.filesModal.files.map(f => f.id));
-        renderFilesModalList();
+        refreshSelectableListUI(els.filesModalList, state.filesModal);
         updateFilesModalCount();
     });
     els.filesClearSelection?.addEventListener('click', () => {
         clearSelectableSelection(state.filesModal);
-        renderFilesModalList();
+        refreshSelectableListUI(els.filesModalList, state.filesModal);
         updateFilesModalCount();
     });
-    els.filesLoadAll?.addEventListener('click', () => loadAllPages(
-        () => loadFilesModal(state.filesModal.currentFolder),
-        () => state.filesModal.hasMore && !state.filesModal.isLoading
-    ));
+    els.filesLoadAll?.addEventListener('click', () => startLoadAllForSlice({
+        slice: state.filesModal,
+        title: 'Files: Loading conversations',
+        loadNextPage: () => loadFilesModal(state.filesModal.currentFolder, { reset: false, signal: state.filesModal.loadAllController?.signal || null }),
+        hasMore: () => state.filesModal.hasMore && !state.filesModal.isLoading,
+        getProgressDetail: () => state.filesModal.currentFolder === 'rejected' ? 'Rejected' : 'Wanted'
+    }));
     els.filesLoadMore?.addEventListener('click', loadMoreFilesModal);
     $('#files-bulk-reject')?.addEventListener('click', () => handleBulkMove('wanted', 'rejected'));
     $('#files-bulk-restore')?.addEventListener('click', () => handleBulkMove('rejected', 'wanted'));
@@ -3733,16 +4562,22 @@ function setupEventListeners() {
         const item = e.target.closest('.export-file-item');
         if (!item) return;
         const id = item.dataset.id;
-        handleSelectableInteraction(state.filesModal, state.filesModal.files, id, e, (previewId) => {
+        const diff = handleSelectableInteraction(state.filesModal, state.filesModal.files, id, e, (previewId) => {
+            const requestedId = previewId;
             fetchConversationPreview(previewId, state.filesModal.currentFolder)
                 .then(conv => {
+                    if (state.filesModal.previewId !== requestedId) return;
                     state.filesModal.previewConversation = conv;
-                    renderFilesModalList();
                     renderFilesPreview();
                 })
                 .catch(() => toast('Failed to preview conversation', 'error'));
         });
-        renderFilesModalList();
+        if (diff?.needsFullRefresh) {
+            refreshSelectableListUI(els.filesModalList, state.filesModal);
+        } else {
+            (diff?.changedSelectionIds || []).forEach(changedId => updateSelectableRowUI(els.filesModalList, state.filesModal, changedId));
+            (diff?.changedPreviewIds || []).forEach(changedId => updateSelectableRowUI(els.filesModalList, state.filesModal, changedId));
+        }
         updateFilesModalCount();
     });
     els.filesPreview?.addEventListener('click', (e) => {
@@ -3785,32 +4620,41 @@ function setupEventListeners() {
     els.newExportPreset?.addEventListener('click', newExportPreset);
     els.deleteExportPreset?.addEventListener('click', deleteExportPreset);
 
-    els.exportSearchInput?.addEventListener('input', () => loadExportFiles({ reset: true }));
+    els.exportSearchInput?.addEventListener('input', () => { cancelSliceLoadAll(state.export, 'Canceled'); loadExportFiles({ reset: true }); });
     els.exportSelectToggle?.addEventListener('click', toggleAllExportFiles);
     els.exportClearSelection?.addEventListener('click', () => {
         clearSelectableSelection(state.export);
-        renderExportFileList();
+        refreshSelectableListUI(els.exportFileList, state.export);
         updateExportCount();
     });
-    els.exportLoadAll?.addEventListener('click', () => loadAllPages(
-        () => loadExportFiles(),
-        () => state.export.hasMore && !state.export.isLoading
-    ));
+    els.exportLoadAll?.addEventListener('click', () => startLoadAllForSlice({
+        slice: state.export,
+        title: 'Export: Loading conversations',
+        loadNextPage: () => loadExportFiles({ reset: false, signal: state.export.loadAllController?.signal || null }),
+        hasMore: () => state.export.hasMore && !state.export.isLoading,
+        getProgressDetail: 'Wanted'
+    }));
     els.exportLoadMore?.addEventListener('click', loadMoreExportFiles);
     els.exportFileList?.addEventListener('click', (e) => {
         const item = e.target.closest('.export-file-item');
         if (!item) return;
         const id = item.dataset.id;
-        handleSelectableInteraction(state.export, state.export.files, id, e, (previewId) => {
+        const diff = handleSelectableInteraction(state.export, state.export.files, id, e, (previewId) => {
+            const requestedId = previewId;
             fetchConversationPreview(previewId, 'wanted')
                 .then(conv => {
+                    if (state.export.previewId !== requestedId) return;
                     state.export.previewConversation = conv;
-                    renderExportFileList();
                     renderExportPreview();
                 })
                 .catch(() => toast('Failed to preview conversation', 'error'));
         });
-        renderExportFileList();
+        if (diff?.needsFullRefresh) {
+            refreshSelectableListUI(els.exportFileList, state.export);
+        } else {
+            (diff?.changedSelectionIds || []).forEach(changedId => updateSelectableRowUI(els.exportFileList, state.export, changedId));
+            (diff?.changedPreviewIds || []).forEach(changedId => updateSelectableRowUI(els.exportFileList, state.export, changedId));
+        }
         updateExportCount();
     });
     $('#export-modal .modal-backdrop')?.addEventListener('click', closeExportModal);
@@ -3906,16 +4750,20 @@ function setupEventListeners() {
     // Review browser modal
     els.closeReviewBrowserModal?.addEventListener('click', closeReviewBrowserModal);
     $('#review-browser-modal .modal-backdrop')?.addEventListener('click', closeReviewBrowserModal);
-    els.reviewBrowserSearchInput?.addEventListener('input', () => loadReviewBrowser({ reset: true }));
+    els.reviewBrowserSearchInput?.addEventListener('input', () => { cancelSliceLoadAll(state.reviewBrowser, 'Canceled'); loadReviewBrowser({ reset: true }); });
     els.reviewBrowserSelectToggle?.addEventListener('click', toggleAllReviewBrowser);
     els.reviewBrowserClearSelection?.addEventListener('click', () => {
         clearSelectableSelection(state.reviewBrowser);
-        renderReviewBrowserList();
+        refreshSelectableListUI(els.reviewBrowserList, state.reviewBrowser);
+        updateReviewBrowserCount();
     });
-    els.reviewBrowserLoadAll?.addEventListener('click', () => loadAllPages(
-        () => loadReviewBrowser(),
-        () => state.reviewBrowser.hasMore && !state.reviewBrowser.isLoading
-    ));
+    els.reviewBrowserLoadAll?.addEventListener('click', () => startLoadAllForSlice({
+        slice: state.reviewBrowser,
+        title: 'Review: Loading queue',
+        loadNextPage: () => loadReviewBrowser({ reset: false, signal: state.reviewBrowser.loadAllController?.signal || null }),
+        hasMore: () => state.reviewBrowser.hasMore && !state.reviewBrowser.isLoading,
+        getProgressDetail: 'Browse queue'
+    }));
     els.reviewBrowserLoadMore?.addEventListener('click', loadMoreReviewBrowser);
     els.reviewBrowserBulkKeep?.addEventListener('click', () => handleReviewBrowserBulk('keep'));
     els.reviewBrowserBulkReject?.addEventListener('click', () => handleReviewBrowserBulk('reject'));
@@ -3923,7 +4771,7 @@ function setupEventListeners() {
         const item = e.target.closest('.export-file-item');
         if (!item) return;
         const id = item.dataset.id;
-        handleSelectableInteraction(state.reviewBrowser, state.reviewBrowser.items, id, e, (previewId) => {
+        const diff = handleSelectableInteraction(state.reviewBrowser, state.reviewBrowser.items, id, e, (previewId) => {
             const queueIndex = state.review.queue.findIndex(entry => entry.id === previewId);
             if (queueIndex !== -1) {
                 state.review.currentIndex = queueIndex;
@@ -3932,10 +4780,15 @@ function setupEventListeners() {
             }
             state.reviewBrowser.previewId = previewId;
             state.reviewBrowser.previewConversation = state.reviewBrowser.items.find(entry => entry.id === previewId) || null;
-            renderReviewBrowserList();
             renderReviewBrowserPreview();
         });
-        renderReviewBrowserList();
+        if (diff?.needsFullRefresh) {
+            refreshSelectableListUI(els.reviewBrowserList, state.reviewBrowser);
+        } else {
+            (diff?.changedSelectionIds || []).forEach(changedId => updateSelectableRowUI(els.reviewBrowserList, state.reviewBrowser, changedId));
+            (diff?.changedPreviewIds || []).forEach(changedId => updateSelectableRowUI(els.reviewBrowserList, state.reviewBrowser, changedId));
+        }
+        updateReviewBrowserCount();
     });
 
     // Clear generate tab
@@ -3996,6 +4849,42 @@ function setupEventListeners() {
     });
     els.maxOutputTokens?.addEventListener('change', saveDefaultMaxTokens);
     els.maxOutputTokens?.addEventListener('input', debouncedSaveDraft);
+
+    // Advanced UI settings
+    els.virtualListEnabled?.addEventListener('change', () => {
+        state.uiPrefs.virtualListEnabled = !!els.virtualListEnabled.checked;
+        saveUiPrefs();
+        applyVirtualPrefs();
+        renderFilesModalList();
+        renderExportFileList();
+        renderReviewBrowserList();
+    });
+    els.virtualBatchSize?.addEventListener('change', () => {
+        state.uiPrefs.virtualBatchSize = clampNumber(els.virtualBatchSize.value, { min: 50, max: 2000, fallback: 200 });
+        saveUiPrefs();
+        applyVirtualPrefs();
+        renderFilesModalList();
+        renderExportFileList();
+        renderReviewBrowserList();
+    });
+    els.virtualMaxBatches?.addEventListener('change', () => {
+        state.uiPrefs.virtualMaxBatches = clampNumber(els.virtualMaxBatches.value, { min: 1, max: 20, fallback: 3 });
+        saveUiPrefs();
+        applyVirtualPrefs();
+        renderFilesModalList();
+        renderExportFileList();
+        renderReviewBrowserList();
+    });
+    els.autoLoadOnScroll?.addEventListener('change', () => {
+        state.uiPrefs.autoLoadOnScroll = !!els.autoLoadOnScroll.checked;
+        saveUiPrefs();
+        applyVirtualPrefs();
+    });
+
+    // Virtual list scroll handlers (renders window + auto-load)
+    setupVirtualListScroll({ slice: state.filesModal, container: els.filesModalList, render: renderFilesModalList, loadMore: loadMoreFilesModal });
+    setupVirtualListScroll({ slice: state.export, container: els.exportFileList, render: renderExportFileList, loadMore: loadMoreExportFiles });
+    setupVirtualListScroll({ slice: state.reviewBrowser, container: els.reviewBrowserList, render: renderReviewBrowserList, loadMore: loadMoreReviewBrowser });
 
     // Setup advanced features
     setupSwipeGestures();
