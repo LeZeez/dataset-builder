@@ -21,15 +21,6 @@ It is built around a simple model:
 - Work with local-first drafts and offline-safe review queue syncing
 - Configure hotkeys, sync behavior, and provider defaults from the UI
 
-## Performance Notes
-
-- Large lists (Files, Export selection, Review Browser) are virtualized by default so only nearby rows are rendered while scrolling.
-  You can tune this under `Settings -> Advanced`:
-  - "Rows per chunk" (how many rows render at a time)
-  - "Chunks kept around you" (render distance)
-- "Load All" fetches pages in the background and is cancelable from the on-screen loading tracker.
-- Review "Keep All" and "Reject All" process the queue in batches for stability (progress + cancel support) instead of loading the full queue into RAM.
-
 ## Quick Start
 
 ### 1. Install

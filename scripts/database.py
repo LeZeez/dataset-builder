@@ -1,6 +1,7 @@
 """SQLite database layer for Synthetic Dataset Builder."""
 
 import json
+import re
 import sqlite3
 import threading
 import uuid
@@ -281,10 +282,17 @@ def list_conversations(folder: str = 'wanted', search: str = '',
         where_clauses = ["c.folder = ?"]
 
         if search:
-            safe_search = search.replace('"', '""')
-            where_clauses.append("(c.rowid IN (SELECT rowid FROM conversations_fts WHERE conversations_fts MATCH ?) OR c.messages LIKE ?)")
-            params.append(f'"{safe_search}"*')
-            params.append(f'%{search}%')
+            # Prefer FTS5 instead of slow LIKE scans over large JSON blobs.
+            safe_search = search.replace('"', '""').strip()
+            # Tokenize on non-word boundaries so searches like "late-needle-xyz" still match.
+            tokens = [t for t in re.findall(r'\w+', safe_search, flags=re.UNICODE) if t]
+            if tokens:
+                fts_query = " AND ".join([f"\"{t}\"*" for t in tokens])
+            else:
+                # Fallback: treat the whole thing as a phrase prefix query.
+                fts_query = f"\"{safe_search}\"*"
+            where_clauses.append("c.rowid IN (SELECT rowid FROM conversations_fts WHERE conversations_fts MATCH ?)")
+            params.append(fts_query)
 
         if tag:
             where_clauses.append(
