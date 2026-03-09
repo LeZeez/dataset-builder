@@ -1000,7 +1000,7 @@ label {
 
 .streaming-text {
     white-space: pre-wrap;
-    word-break: break-word;
+    overflow-wrap: anywhere;
 }
 
 .conversation-card {
@@ -1237,7 +1237,7 @@ label {
     line-height: 1.6;
     white-space: pre-wrap;
     color: var(--text-primary);
-    word-break: break-word;
+    overflow-wrap: anywhere;
 }
 
 /* Editing state */
@@ -1300,7 +1300,7 @@ label {
     font-size: 0.88rem;
     line-height: 1.6;
     white-space: pre-wrap;
-    word-break: break-word;
+    overflow-wrap: anywhere;
 }
 
 .conversation-edit {
@@ -2109,7 +2109,7 @@ kbd {
 
 .history-item-text {
     white-space: pre-wrap;
-    word-break: break-word;
+    overflow-wrap: anywhere;
     max-height: 72px;
     overflow: hidden;
     color: var(--text-primary);
@@ -2502,7 +2502,7 @@ kbd {
     opacity: 0;
     transition: transform 0.28s ease, opacity 0.28s ease;
     will-change: transform, opacity;
-    cursor: pointer;
+    cursor: default;
     user-select: none;
 }
 
@@ -2561,6 +2561,44 @@ kbd {
     text-overflow: ellipsis;
 }
 
+.model-activity-actions {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    flex: 0 0 auto;
+}
+
+.model-activity-open,
+.model-activity-dismiss {
+    -webkit-appearance: none;
+    appearance: none;
+    font-family: inherit;
+}
+
+.model-activity-open {
+    flex: 0 0 auto;
+    height: 32px;
+    padding: 0 0.65rem;
+    border-radius: 10px;
+    border: 1px solid var(--border-glass);
+    background: rgba(255, 255, 255, 0.04);
+    color: rgba(255, 255, 255, 0.88);
+    font-weight: 800;
+    font-size: 0.78rem;
+    letter-spacing: 0.02em;
+    cursor: pointer;
+    transition: background 0.15s ease, transform 0.15s ease;
+}
+
+.model-activity-open:hover {
+    background: rgba(255, 255, 255, 0.08);
+    transform: translateY(-1px);
+}
+
+.model-activity-open:active {
+    transform: translateY(0px);
+}
+
 .model-activity-dismiss {
     flex: 0 0 auto;
     width: 32px;
@@ -2610,7 +2648,7 @@ kbd {
     font-size: 0.85rem;
     line-height: 1.35;
     white-space: pre-wrap;
-    word-break: break-word;
+    overflow-wrap: anywhere;
 }
 
 .task-card {

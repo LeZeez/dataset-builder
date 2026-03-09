@@ -524,6 +524,69 @@ def normalize_credentials_override(value) -> dict:
     return out
 
 
+def _resolve_credentials(provider_label: str,
+                         provider_config: dict,
+                         env_var: str,
+                         default_base_url: str,
+                         config: dict,
+                         credentials_override: dict | None) -> tuple[str, str]:
+    """Resolve API key/base_url for a request, preventing key exfil via base_url-only overrides."""
+    override_key = (credentials_override or {}).get('api_key', '') or ''
+    override_url = (credentials_override or {}).get('base_url', '') or ''
+
+    # Critical: if the client overrides the endpoint, they must also provide the key.
+    # Otherwise the server would send its stored key to an attacker-controlled URL.
+    if override_url and not override_key:
+        raise ValueError(f"{provider_label}: 'api_key' is required when overriding 'base_url'.")
+
+    api_key = override_key or provider_config.get('api_key') or os.environ.get(env_var)
+    if not api_key:
+        raise ValueError(f'{provider_label} API key not set. Configure it in Settings.')
+
+    base_url = override_url or provider_config.get('base_url') or default_base_url
+    if base_url and not validate_base_url(base_url, config):
+        raise ValueError(f'Invalid base URL configured for {provider_label}.')
+
+    return api_key, base_url
+
+
+def _google_api_endpoint(base_url: str) -> str:
+    """Convert a configured base URL to a GAPIC api_endpoint."""
+    if not base_url:
+        return ''
+    parsed = urlparse(base_url)
+    if parsed.scheme and parsed.netloc:
+        # Drop any /v1beta path component; the GAPIC client owns request routing.
+        return f"{parsed.scheme}://{parsed.netloc}"
+    return base_url
+
+
+def _build_google_clients(api_key: str, base_url: str):
+    """Build per-request Google Generative Language clients (avoids genai.configure global state)."""
+    try:
+        from google.api_core.client_options import ClientOptions
+        try:
+            from google.ai.generativelanguage_v1beta.services.generative_service import GenerativeServiceClient
+            from google.ai.generativelanguage_v1beta.services.model_service import ModelServiceClient
+        except ImportError:
+            from google.ai.generativelanguage.services.generative_service import GenerativeServiceClient
+            from google.ai.generativelanguage.services.model_service import ModelServiceClient
+    except Exception as e:
+        raise RuntimeError("Google client libraries not available; install dependencies from requirements.txt.") from e
+
+    endpoint = _google_api_endpoint(base_url)
+    try:
+        opts = ClientOptions(api_key=api_key, **({'api_endpoint': endpoint} if endpoint else {}))
+    except TypeError:
+        # Older google-api-core may not support api_key on ClientOptions; fall back to dict.
+        opts = {'api_key': api_key, **({'api_endpoint': endpoint} if endpoint else {})}
+
+    return (
+        GenerativeServiceClient(client_options=opts),
+        ModelServiceClient(client_options=opts),
+    )
+
+
 # ============ GENERATION ============
 
 @app.route('/api/generate', methods=['POST'])
@@ -548,9 +611,10 @@ def generate_conversation():
             content = generate_google(prompt, model, temperature, config, custom_params, credentials_override)
         else:
             return jsonify({'error': 'Unknown provider'}), 400
-        
+
         return jsonify({'content': content})
-    
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
@@ -563,16 +627,14 @@ def generate_openai(prompt: str, model: str, temperature: float, config: dict, c
     provider_config = api_settings.get('providers', {}).get('openai', {})
 
     # Try DB first, then environment variable
-    credentials_override = normalize_credentials_override(credentials_override)
-    override_key = credentials_override.get('api_key', '')
-    override_url = credentials_override.get('base_url', '')
-    api_key = override_key or provider_config.get('api_key') or os.environ.get('OPENAI_API_KEY')
-    if not api_key:
-        raise ValueError('OpenAI API key not set. Configure it in Settings.')
-
-    base_url = override_url or provider_config.get('base_url') or 'https://api.openai.com/v1'
-    if not validate_base_url(base_url, config):
-        raise ValueError('Invalid base URL configured for OpenAI.')
+    api_key, base_url = _resolve_credentials(
+        'OpenAI',
+        provider_config,
+        'OPENAI_API_KEY',
+        'https://api.openai.com/v1',
+        config,
+        credentials_override,
+    )
 
     client = openai.OpenAI(api_key=api_key, base_url=base_url)
 
@@ -598,16 +660,14 @@ def generate_anthropic(prompt: str, model: str, temperature: float, config: dict
     api_settings = db.get_provider_settings()
     provider_config = api_settings.get('providers', {}).get('anthropic', {})
 
-    credentials_override = normalize_credentials_override(credentials_override)
-    override_key = credentials_override.get('api_key', '')
-    override_url = credentials_override.get('base_url', '')
-    api_key = override_key or provider_config.get('api_key') or os.environ.get('ANTHROPIC_API_KEY')
-    if not api_key:
-        raise ValueError('Anthropic API key not set. Configure it in Settings.')
-
-    base_url = override_url or provider_config.get('base_url') or 'https://api.anthropic.com/v1'
-    if not validate_base_url(base_url, config):
-        raise ValueError('Invalid base URL configured for Anthropic.')
+    api_key, base_url = _resolve_credentials(
+        'Anthropic',
+        provider_config,
+        'ANTHROPIC_API_KEY',
+        'https://api.anthropic.com/v1',
+        config,
+        credentials_override,
+    )
 
     client = anthropic.Anthropic(api_key=api_key, base_url=base_url)
 
@@ -633,21 +693,15 @@ def generate_google(prompt: str, model: str, temperature: float, config: dict, c
     api_settings = db.get_provider_settings()
     provider_config = api_settings.get('providers', {}).get('google', {})
 
-    credentials_override = normalize_credentials_override(credentials_override)
-    override_key = credentials_override.get('api_key', '')
-    override_url = credentials_override.get('base_url', '')
-    api_key = override_key or provider_config.get('api_key') or os.environ.get('GOOGLE_API_KEY')
-    if not api_key:
-        raise ValueError('Google API key not set. Configure it in Settings.')
-
-    base_url = override_url or provider_config.get('base_url', '')
-    # Configure with base_url if provided (for proxy/custom endpoints)
-    if base_url:
-        if not validate_base_url(base_url, config):
-            raise ValueError('Invalid base URL configured for Google.')
-        genai.configure(api_key=api_key, client_options={'api_endpoint': base_url})
-    else:
-        genai.configure(api_key=api_key)
+    api_key, base_url = _resolve_credentials(
+        'Google',
+        provider_config,
+        'GOOGLE_API_KEY',
+        '',
+        config,
+        credentials_override,
+    )
+    gen_client, _model_client = _build_google_clients(api_key, base_url)
 
     max_tokens = api_settings.get('max_tokens', 2048)
     gen_config = dict(
@@ -658,6 +712,7 @@ def generate_google(prompt: str, model: str, temperature: float, config: dict, c
         gen_config.update(custom_params)
 
     gen_model = genai.GenerativeModel(model or 'gemini-1.5-flash')
+    gen_model._client = gen_client
     response = gen_model.generate_content(
         prompt,
         generation_config=genai.types.GenerationConfig(**gen_config)
@@ -1010,6 +1065,8 @@ def list_models():
         credentials_override = {}
     if provider not in VALID_PROVIDERS:
         provider = 'openai'
+    if credentials_override.get('base_url') and not credentials_override.get('api_key'):
+        return jsonify({'models': [], 'error': "api_key is required when overriding base_url."}), 400
     api_settings = db.get_provider_settings()
     provider_config = api_settings.get('providers', {}).get(provider, {})
     if credentials_override.get('api_key'):
@@ -1088,12 +1145,22 @@ def fetch_google_models(provider_config: dict) -> list:
     if base_url:
         if not validate_base_url(base_url, load_config()):
             return []
-        genai.configure(api_key=api_key, client_options={'api_endpoint': base_url})
-    else:
-        genai.configure(api_key=api_key)
+    try:
+        _gen_client, model_client = _build_google_clients(api_key, base_url)
+    except Exception:
+        return []
 
-    models = genai.list_models()
-    result = [m.name.replace('models/', '') for m in models if 'generateContent' in m.supported_generation_methods]
+    try:
+        models = model_client.list_models()
+    except TypeError:
+        models = model_client.list_models(request={})
+
+    result = []
+    for m in models:
+        name = getattr(m, 'name', '') or ''
+        methods = getattr(m, 'supported_generation_methods', None) or []
+        if 'generateContent' in methods:
+            result.append(name.replace('models/', ''))
     return result
 
 
@@ -1138,17 +1205,17 @@ def stream_openai(prompt: str, model: str, temperature: float, config: dict, sys
 
     api_settings = db.get_provider_settings()
     provider_config = api_settings.get('providers', {}).get('openai', {})
-    credentials_override = normalize_credentials_override(credentials_override)
-    override_key = credentials_override.get('api_key', '')
-    override_url = credentials_override.get('base_url', '')
-    api_key = override_key or provider_config.get('api_key') or os.environ.get('OPENAI_API_KEY')
-    if not api_key:
-        yield f"data: {json.dumps({'error': 'OpenAI API key not set'})}\n\n"
-        return
-
-    base_url = override_url or provider_config.get('base_url') or 'https://api.openai.com/v1'
-    if not validate_base_url(base_url, config):
-        yield f"data: {json.dumps({'error': 'Invalid base URL configured for OpenAI'})}\n\n"
+    try:
+        api_key, base_url = _resolve_credentials(
+            'OpenAI',
+            provider_config,
+            'OPENAI_API_KEY',
+            'https://api.openai.com/v1',
+            config,
+            credentials_override,
+        )
+    except ValueError as e:
+        yield f"data: {json.dumps({'error': str(e)})}\n\n"
         return
     client = openai.OpenAI(api_key=api_key, base_url=base_url)
 
@@ -1181,17 +1248,17 @@ def stream_anthropic(prompt: str, model: str, temperature: float, config: dict, 
 
     api_settings = db.get_provider_settings()
     provider_config = api_settings.get('providers', {}).get('anthropic', {})
-    credentials_override = normalize_credentials_override(credentials_override)
-    override_key = credentials_override.get('api_key', '')
-    override_url = credentials_override.get('base_url', '')
-    api_key = override_key or provider_config.get('api_key') or os.environ.get('ANTHROPIC_API_KEY')
-    if not api_key:
-        yield f"data: {json.dumps({'error': 'Anthropic API key not set'})}\n\n"
-        return
-
-    base_url = override_url or provider_config.get('base_url') or 'https://api.anthropic.com/v1'
-    if not validate_base_url(base_url, config):
-        yield f"data: {json.dumps({'error': 'Invalid base URL configured for Anthropic'})}\n\n"
+    try:
+        api_key, base_url = _resolve_credentials(
+            'Anthropic',
+            provider_config,
+            'ANTHROPIC_API_KEY',
+            'https://api.anthropic.com/v1',
+            config,
+            credentials_override,
+        )
+    except ValueError as e:
+        yield f"data: {json.dumps({'error': str(e)})}\n\n"
         return
 
     client = anthropic.Anthropic(api_key=api_key, base_url=base_url)
@@ -1218,22 +1285,19 @@ def stream_google(prompt: str, model: str, temperature: float, config: dict, sys
 
     api_settings = db.get_provider_settings()
     provider_config = api_settings.get('providers', {}).get('google', {})
-    credentials_override = normalize_credentials_override(credentials_override)
-    override_key = credentials_override.get('api_key', '')
-    override_url = credentials_override.get('base_url', '')
-    api_key = override_key or provider_config.get('api_key') or os.environ.get('GOOGLE_API_KEY')
-    if not api_key:
-        yield f"data: {json.dumps({'error': 'Google API key not set'})}\n\n"
+    try:
+        api_key, base_url = _resolve_credentials(
+            'Google',
+            provider_config,
+            'GOOGLE_API_KEY',
+            '',
+            config,
+            credentials_override,
+        )
+    except ValueError as e:
+        yield f"data: {json.dumps({'error': str(e)})}\n\n"
         return
-
-    base_url = override_url or provider_config.get('base_url', '')
-    if base_url:
-        if not validate_base_url(base_url, config):
-            yield f"data: {json.dumps({'error': 'Invalid base URL configured for Google'})}\n\n"
-            return
-        genai.configure(api_key=api_key, client_options={'api_endpoint': base_url})
-    else:
-        genai.configure(api_key=api_key)
+    gen_client, _model_client = _build_google_clients(api_key, base_url)
 
     max_tokens = api_settings.get('max_tokens', 2048)
     gen_config = dict(
@@ -1247,6 +1311,7 @@ def stream_google(prompt: str, model: str, temperature: float, config: dict, sys
         model or 'gemini-1.5-flash',
         system_instruction=system_prompt if system_prompt else None
     )
+    gen_model._client = gen_client
     
     response = gen_model.generate_content(
         prompt,

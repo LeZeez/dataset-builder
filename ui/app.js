@@ -284,7 +284,7 @@ let syncSettings = {
     autoSyncEnabled: true,
     syncInterval: 30,
     autoSaveEnabled: true,
-    saveInterval: 20,
+    saveInterval: 2000,
     askRejectReason: false
 };
 
@@ -301,7 +301,7 @@ async function saveSyncSettings() {
     syncSettings.autoSyncEnabled = el('auto-sync-enabled')?.checked ?? true;
     syncSettings.syncInterval = parseInt(el('sync-interval')?.value) || 30;
     syncSettings.autoSaveEnabled = el('auto-save-enabled')?.checked ?? true;
-    syncSettings.saveInterval = parseInt(el('save-interval')?.value) || 20;
+    syncSettings.saveInterval = parseInt(el('save-interval')?.value) || 2000;
     syncSettings.askRejectReason = el('ask-reject-reason')?.checked ?? false;
     await dbSet('settings', 'syncSettings', syncSettings);
     syncEngine.stopAutoSync();
@@ -392,9 +392,19 @@ function saveUiPrefs() {
 }
 
 // ============ CREDENTIAL DRAFT (Local-only) ============
+const CRED_DRAFT_SESSION_KEY = 'credentialDraft';
 async function loadCredentialDraft() {
     try {
-        const saved = await dbGet('settings', 'credentialDraft');
+        let saved = null;
+        try {
+            const raw = sessionStorage.getItem(CRED_DRAFT_SESSION_KEY);
+            if (raw) saved = JSON.parse(raw);
+        } catch (e) { }
+        if (!saved) {
+            saved = await dbGet('settings', 'credentialDraft');
+            // Legacy cleanup: older builds persisted sensitive drafts to IndexedDB.
+            if (saved) dbDelete('settings', 'credentialDraft').catch(() => { });
+        }
         if (!saved || typeof saved !== 'object') return;
         const safe = {
             openai: { api_key: '', base_url: '' },
@@ -410,11 +420,15 @@ async function loadCredentialDraft() {
             };
         }
         state.credentialDraft = safe;
+        saveCredentialDraft();
     } catch (e) { }
 }
 
 function saveCredentialDraft() {
-    return dbSet('settings', 'credentialDraft', state.credentialDraft).catch(() => { });
+    try {
+        sessionStorage.setItem(CRED_DRAFT_SESSION_KEY, JSON.stringify(state.credentialDraft));
+    } catch (e) { }
+    return Promise.resolve();
 }
 
 function getCredentialOverride(provider) {
@@ -1213,6 +1227,7 @@ async function init() {
         modelActivitySpinner: $('#model-activity-spinner'),
         modelActivityLabel: $('#model-activity-label'),
         modelActivityMeta: $('#model-activity-meta'),
+        modelActivityOpen: $('#model-activity-open'),
         modelActivityDismiss: $('#model-activity-dismiss'),
         modelInspectorModal: $('#model-inspector-modal'),
         closeModelInspectorModal: $('#close-model-inspector-modal'),
@@ -1392,7 +1407,9 @@ function updateProviderUI() {
 
     const keyPreset = cached.key_presets?.find(p => p.name === activeKeyName) || null;
     const keyTail = keyPreset?.last4 ? `*****${keyPreset.last4}` : (activeKeyName ? '*****----' : '');
-    const keyActiveLabel = activeKeyName ? `${activeKeyName} ${keyTail}`.trim() : (providerConfig.api_key ? String(providerConfig.api_key) : 'Not set');
+    const rawKey = providerConfig.api_key ? String(providerConfig.api_key) : '';
+    const maskedKey = rawKey ? `*****${rawKey.slice(-4)}` : '';
+    const keyActiveLabel = activeKeyName ? `${activeKeyName} ${keyTail}`.trim() : (maskedKey || 'Not set');
 
     const urlPreset = cached.url_presets?.find(p => p.name === activeUrlName) || null;
     const activeUrlValue = (urlPreset?.base_url || '').trim() || (providerConfig.base_url ? String(providerConfig.base_url) : 'Default');
@@ -1427,13 +1444,23 @@ async function loadModels() {
             populateModelSelect(data.models);
             return;
         }
-        // Fallback for older servers
-        const fallback = await fetch(`/api/models?provider=${encodeURIComponent(provider)}`);
-        if (fallback.ok) {
-            const data = await fallback.json();
-            if (data.error) console.warn('Model fetch warning:', data.error);
-            populateModelSelect(data.models);
+        if (res.status === 404 || res.status === 405) {
+            // Fallback for older servers
+            const fallback = await fetch(`/api/models?provider=${encodeURIComponent(provider)}`);
+            if (fallback.ok) {
+                const data = await fallback.json();
+                if (data.error) console.warn('Model fetch warning:', data.error);
+                populateModelSelect(data.models);
+            }
+            return;
         }
+        let errMsg = `Model fetch failed (${res.status})`;
+        try {
+            const data = await res.json();
+            if (data?.error) errMsg = String(data.error);
+        } catch (e) { }
+        console.warn(errMsg);
+        toast(errMsg, 'error');
     } catch (e) { console.error('Failed to load models:', e); }
 }
 
@@ -2700,6 +2727,8 @@ function updateModelInspectorUI() {
 }
 
 function dismissModelActivity() {
+    // Invalidate the current run so in-flight callbacks can't revive the UI.
+    state.modelActivity.runId = Number(state.modelActivity.runId || 0) + 1;
     state.modelActivity.phase = 'idle';
     state.modelActivity.label = '';
     state.modelActivity.provider = '';
@@ -4354,27 +4383,42 @@ function renderCredPicker() {
 
     const activeName = credPickerState.tab === 'url' ? (cache.active?.url_preset || '') : (cache.active?.key_preset || '');
     const items = getFilteredCredItems(provider);
+    els.credPickerList.textContent = '';
     if (!items.length) {
-        els.credPickerList.innerHTML = '<div class="empty-files">No presets found</div>';
+        const empty = document.createElement('div');
+        empty.className = 'empty-files';
+        empty.textContent = 'No presets found';
+        els.credPickerList.appendChild(empty);
         return;
     }
 
-    els.credPickerList.innerHTML = items.map(it => {
-        const name = escapeHtml(it.name || '');
-        const isActive = (it.name || '') === activeName;
-        const right = credPickerState.tab === 'url'
-            ? escapeHtml(String(it.base_url || '') || 'Default')
-            : escapeHtml(formatKeyTail(it.last4));
-        const cls = `cred-picker-row${isActive ? ' active' : ''}`;
-        return `
-            <button class="${cls}" type="button" data-name="${escapeHtml(it.name || '')}">
-                <div class="cred-picker-left">
-                    <div class="cred-picker-name">${name}</div>
-                </div>
-                <div class="cred-picker-right">${right}</div>
-            </button>
-        `;
-    }).join('');
+    items.forEach(it => {
+        const name = String(it.name || '');
+        const isActive = name === activeName;
+        const rightText = credPickerState.tab === 'url'
+            ? (String(it.base_url || '') || 'Default')
+            : formatKeyTail(it.last4);
+
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'cred-picker-row' + (isActive ? ' active' : '');
+        btn.dataset.name = name;
+
+        const left = document.createElement('div');
+        left.className = 'cred-picker-left';
+        const nameEl = document.createElement('div');
+        nameEl.className = 'cred-picker-name';
+        nameEl.textContent = name;
+        left.appendChild(nameEl);
+
+        const right = document.createElement('div');
+        right.className = 'cred-picker-right';
+        right.textContent = rightText;
+
+        btn.appendChild(left);
+        btn.appendChild(right);
+        els.credPickerList.appendChild(btn);
+    });
 }
 
 async function sidebarSaveKeyPreset({ forceNew = false } = {}) {
@@ -4847,7 +4891,7 @@ function debouncedSaveDraft() {
     // Respect the autoSave setting
     if (!syncSettings.autoSaveEnabled) return;
     if (saveDraftTimer) clearTimeout(saveDraftTimer);
-    const delay = syncSettings.saveInterval || 20;
+    const delay = syncSettings.saveInterval || 2000;
     saveDraftTimer = setTimeout(async () => {
         await saveDraftToLocal();
         syncEngine.markDirty();
@@ -5358,12 +5402,7 @@ function setupEventListeners() {
     }, { capture: true });
 
     // Model activity indicator + inspector
-    els.modelActivityIndicator?.addEventListener('click', (e) => {
-        if (e.target === els.modelActivityDismiss) return;
-        openModelInspector();
-    });
-    els.modelActivityIndicator?.addEventListener('keydown', (e) => {
-        if (e.key !== 'Enter' && e.key !== ' ') return;
+    els.modelActivityOpen?.addEventListener('click', (e) => {
         e.preventDefault();
         openModelInspector();
     });
@@ -5417,7 +5456,12 @@ function setupEventListeners() {
     // Credentials (sidebar presets + draft inputs)
     els.sidebarCredKeyToggle?.addEventListener('click', () => {
         if (!els.sidebarCredKeyDraft) return;
-        els.sidebarCredKeyDraft.type = els.sidebarCredKeyDraft.type === 'password' ? 'text' : 'password';
+        const show = els.sidebarCredKeyDraft.type === 'password';
+        els.sidebarCredKeyDraft.type = show ? 'text' : 'password';
+        const label = show ? 'Hide API key' : 'Show API key';
+        els.sidebarCredKeyToggle.setAttribute('aria-pressed', show ? 'true' : 'false');
+        els.sidebarCredKeyToggle.setAttribute('aria-label', label);
+        els.sidebarCredKeyToggle.title = show ? 'Hide key' : 'Show key';
     });
     els.sidebarCredKeyDraft?.addEventListener('input', () => {
         setCredentialDraft(getSidebarCredProvider(), { api_key: els.sidebarCredKeyDraft.value });

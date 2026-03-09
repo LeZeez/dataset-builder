@@ -332,11 +332,11 @@ def list_conversations(folder: str = 'wanted', search: str = '',
                     return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
                 like_param = f"%{_escape_like(search_str)}%"
-                like_params = [folder, relaxed_fts_query, like_param]
+                like_params = [folder, relaxed_fts_query, like_param, like_param]
                 like_where_clauses = [
                     "c.folder = ?",
                     "c.rowid IN (SELECT rowid FROM conversations_fts WHERE conversations_fts MATCH ?)",
-                    "c.messages LIKE ? ESCAPE '\\'",
+                    "(c.search_text LIKE ? ESCAPE '\\' OR c.messages LIKE ? ESCAPE '\\')",
                 ]
 
                 if tag:

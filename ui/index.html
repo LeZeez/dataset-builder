@@ -151,7 +151,7 @@
                                     <div id="sidebar-cred-key-active" class="sidebar-cred-active-value">—</div>
                                     <div class="sidebar-cred-input">
                                         <input id="sidebar-cred-key-draft" type="password" class="input" placeholder="Draft override (local-only)">
-                                        <button id="sidebar-cred-key-toggle" class="icon-btn" title="Show key">
+                                        <button id="sidebar-cred-key-toggle" class="icon-btn" title="Show key" aria-label="Show API key" aria-controls="sidebar-cred-key-draft" aria-pressed="false">
                                             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
                                                 <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
                                                 <circle cx="12" cy="12" r="3" />
@@ -933,7 +933,7 @@ gpt: response"></textarea>
                                         <span class="hint" title="How often drafts are saved locally while you type.">i</span>
                                     </label>
                                     <div class="settings-row-control">
-                                        <input type="number" id="save-interval" class="input input-sm" value="20" min="20" max="10000" step="10">
+                                        <input type="number" id="save-interval" class="input input-sm" value="2000" min="500" max="60000" step="500">
                                     </div>
                                 </div>
                                 <div class="settings-row">
@@ -1260,7 +1260,7 @@ gpt: response"></textarea>
         </div>
 
         <!-- Toast Container -->
-        <div id="model-activity-indicator" class="model-activity hidden" role="button" tabindex="0" title="Model activity (click to inspect)">
+        <div id="model-activity-indicator" class="model-activity hidden">
             <div class="model-activity-main">
                 <span id="model-activity-spinner" class="model-activity-spinner" aria-hidden="true"></span>
                 <div class="model-activity-text">
@@ -1268,7 +1268,10 @@ gpt: response"></textarea>
                     <div id="model-activity-meta" class="model-activity-meta">—</div>
                 </div>
             </div>
-            <button id="model-activity-dismiss" class="model-activity-dismiss" type="button" title="Dismiss">×</button>
+            <div class="model-activity-actions">
+                <button id="model-activity-open" class="model-activity-open" type="button" title="Inspect">Inspect</button>
+                <button id="model-activity-dismiss" class="model-activity-dismiss" type="button" title="Dismiss">×</button>
+            </div>
         </div>
 
         <div id="toast-container" class="toast-container"></div>
