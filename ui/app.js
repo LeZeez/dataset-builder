@@ -285,7 +285,7 @@ let syncSettings = {
     syncInterval: 30,
     autoSaveEnabled: true,
     saveInterval: 2000,
-    askRejectReason: true
+    askRejectReason: false
 };
 
 async function loadSyncSettings() {
@@ -302,7 +302,7 @@ async function saveSyncSettings() {
     syncSettings.syncInterval = parseInt(el('sync-interval')?.value) || 30;
     syncSettings.autoSaveEnabled = el('auto-save-enabled')?.checked ?? true;
     syncSettings.saveInterval = parseInt(el('save-interval')?.value) || 2000;
-    syncSettings.askRejectReason = el('ask-reject-reason')?.checked ?? true;
+    syncSettings.askRejectReason = el('ask-reject-reason')?.checked ?? false;
     await dbSet('settings', 'syncSettings', syncSettings);
     syncEngine.stopAutoSync();
     syncEngine.startAutoSync();
@@ -391,6 +391,75 @@ function saveUiPrefs() {
     dbSet('settings', UI_PREFS_KEY, state.uiPrefs).catch(() => { });
 }
 
+// ============ CREDENTIAL DRAFT (Local-only) ============
+const CRED_DRAFT_SESSION_KEY = 'credentialDraft';
+async function loadCredentialDraft() {
+    try {
+        let saved = null;
+        try {
+            const raw = sessionStorage.getItem(CRED_DRAFT_SESSION_KEY);
+            if (raw) saved = JSON.parse(raw);
+        } catch (e) { }
+        if (!saved) {
+            saved = await dbGet('settings', 'credentialDraft');
+            // Legacy cleanup: older builds persisted sensitive drafts to IndexedDB.
+            if (saved) dbDelete('settings', 'credentialDraft').catch(() => { });
+        }
+        if (!saved || typeof saved !== 'object') return;
+        const safe = {
+            openai: { api_key: '', base_url: '' },
+            anthropic: { api_key: '', base_url: '' },
+            google: { api_key: '', base_url: '' },
+            ...saved
+        };
+        // Normalize shape
+        for (const p of ['openai', 'anthropic', 'google']) {
+            safe[p] = {
+                api_key: String(safe[p]?.api_key || ''),
+                base_url: String(safe[p]?.base_url || '')
+            };
+        }
+        state.credentialDraft = safe;
+        saveCredentialDraft();
+    } catch (e) { }
+}
+
+function saveCredentialDraft() {
+    try {
+        sessionStorage.setItem(CRED_DRAFT_SESSION_KEY, JSON.stringify(state.credentialDraft));
+    } catch (e) { }
+    return Promise.resolve();
+}
+
+function getCredentialOverride(provider) {
+    const d = state.credentialDraft?.[provider] || {};
+    const api_key = String(d.api_key || '').trim();
+    const base_url = String(d.base_url || '').trim();
+    if (!api_key && !base_url) return null;
+    return {
+        ...(api_key ? { api_key } : {}),
+        ...(base_url ? { base_url } : {})
+    };
+}
+
+function setCredentialDraft(provider, patch) {
+    if (!provider) return;
+    const prev = state.credentialDraft?.[provider] || { api_key: '', base_url: '' };
+    state.credentialDraft[provider] = {
+        api_key: String(patch.api_key ?? prev.api_key ?? ''),
+        base_url: String(patch.base_url ?? prev.base_url ?? '')
+    };
+    saveCredentialDraft();
+    updateProviderUI();
+}
+
+function clearCredentialDraft(provider) {
+    if (!provider) return;
+    state.credentialDraft[provider] = { api_key: '', base_url: '' };
+    saveCredentialDraft();
+    updateProviderUI();
+}
+
 function clampNumber(val, { min = -Infinity, max = Infinity, fallback = 0 } = {}) {
     const num = Number(val);
     if (!Number.isFinite(num)) return fallback;
@@ -434,6 +503,16 @@ function matchesHotkey(e, hotkeyStr) {
 // ============ STATE ============
 const state = {
     config: null,
+    credentialDraft: {
+        openai: { api_key: '', base_url: '' },
+        anthropic: { api_key: '', base_url: '' },
+        google: { api_key: '', base_url: '' }
+    },
+    credentialPresets: {
+        openai: { key_presets: [], url_presets: [], active: { key_preset: '', url_preset: '' } },
+        anthropic: { key_presets: [], url_presets: [], active: { key_preset: '', url_preset: '' } },
+        google: { key_presets: [], url_presets: [], active: { key_preset: '', url_preset: '' } }
+    },
     currentTab: 'generate',
     prompts: [],
     currentPromptName: '',
@@ -442,6 +521,7 @@ const state = {
         prompt: '',
         variables: {},
         variableNames: [],
+        variablePresetName: '',
         conversation: null,
         rawText: '',
         isEditing: false,
@@ -452,6 +532,7 @@ const state = {
         messages: [],
         isStreaming: false,
         systemPrompt: '',
+        presetName: '',
         abortController: null,
         editingIndex: null,
         zoomLevel: 1,
@@ -491,6 +572,7 @@ const state = {
         previewConversation: null,
         files: [],
         systemPrompt: '',
+        presetName: '',
         offset: 0,
         total: 0,
         hasMore: false,
@@ -551,6 +633,16 @@ const state = {
     tasks: {
         nextId: 1,
         items: new Map()
+    },
+    modelActivity: {
+        runId: 0,
+        phase: 'idle', // idle|waiting|thinking|writing|done|error|canceled
+        label: '',
+        provider: '',
+        model: '',
+        source: '',
+        raw: '',
+        hasFirstToken: false
     },
     uiPrefs: {
         currentTab: 'generate',
@@ -791,7 +883,10 @@ function renderTasks() {
     const tasks = Array.from(state.tasks.items.values());
 
     if (tasks.length === 0) {
-        cards.forEach(card => card.remove());
+        cards.forEach(card => {
+            card.classList.add('leaving');
+            setTimeout(() => card.remove(), 240);
+        });
         cards.clear();
         els.taskTracker.innerHTML = '';
         return;
@@ -800,7 +895,8 @@ function renderTasks() {
     const activeIds = new Set(tasks.map(t => t.id));
     for (const [id, card] of cards.entries()) {
         if (!activeIds.has(id)) {
-            card.remove();
+            card.classList.add('leaving');
+            setTimeout(() => card.remove(), 240);
             cards.delete(id);
         }
     }
@@ -811,7 +907,10 @@ function renderTasks() {
             card = buildTaskCard(task.id);
             cards.set(task.id, card);
             els.taskTracker.appendChild(card);
+            requestAnimationFrame(() => card.classList.add('show'));
         } else {
+            card.classList.remove('leaving');
+            card.classList.add('show');
             // Keep DOM order aligned with current task order.
             if (card !== els.taskTracker.lastElementChild) {
                 // Append moves the node if it already exists.
@@ -900,12 +999,17 @@ async function startLoadAllForSlice({ slice, title, loadNextPage, hasMore, getPr
     });
     slice.loadAllTaskId = taskId;
 
-    const pushProgress = () => {
-        const total = slice.total || 0;
-        const loaded = Array.isArray(slice.files) ? slice.files.length
+    const getLoadedCount = () => (
+        Array.isArray(slice.files) ? slice.files.length
             : Array.isArray(slice.items) ? slice.items.length
                 : Array.isArray(slice.queue) ? slice.queue.length
-                    : (slice.offset || 0);
+                    : (slice.offset || 0)
+    );
+    const loadedAtStart = getLoadedCount();
+
+    const pushProgress = () => {
+        const total = slice.total || 0;
+        const loaded = getLoadedCount();
         const current = total ? Math.min(loaded, total) : null;
         updateTask(taskId, {
             detail: typeof getProgressDetail === 'function' ? (getProgressDetail() || '') : (getProgressDetail || ''),
@@ -924,8 +1028,10 @@ async function startLoadAllForSlice({ slice, title, loadNextPage, hasMore, getPr
         if (controller.signal.aborted) {
             finishTask(taskId, { status: 'canceled', detail: 'Canceled' });
         } else {
+            const loadedAtEnd = getLoadedCount();
+            const nothingLoaded = loadedAtEnd <= loadedAtStart && (!hasMore() || (slice.total || 0) === 0);
             pushProgress();
-            finishTask(taskId, { status: 'done', detail: 'Done' });
+            finishTask(taskId, { status: 'done', detail: nothingLoaded ? 'Nothing to load' : 'Done' });
         }
     } catch (e) {
         if (e?.name === 'AbortError' || controller.signal.aborted) {
@@ -979,12 +1085,21 @@ async function init() {
         temperature: $('#temperature'),
         tempValue: $('#temp-value'),
         maxOutputTokens: $('#max-output-tokens'),
-        apiKey: $('#api-key'),
-        toggleKey: $('#toggle-key'),
-        saveKey: $('#save-key'),
-        baseUrl: $('#base-url'),
-        saveUrl: $('#save-url'),
         apiStatus: $('#api-status'),
+        credDraftWarning: $('#cred-draft-warning'),
+        sidebarCredKeyActive: $('#sidebar-cred-key-active'),
+        sidebarCredUrlActive: $('#sidebar-cred-url-active'),
+        sidebarCredKeyDraft: $('#sidebar-cred-key-draft'),
+        sidebarCredUrlDraft: $('#sidebar-cred-url-draft'),
+        sidebarCredKeyToggle: $('#sidebar-cred-key-toggle'),
+        sidebarCredKeyLoad: $('#sidebar-cred-key-load'),
+        sidebarCredKeySave: $('#sidebar-cred-key-save'),
+        sidebarCredKeyAdd: $('#sidebar-cred-key-add'),
+        sidebarCredKeyDel: $('#sidebar-cred-key-del'),
+        sidebarCredUrlLoad: $('#sidebar-cred-url-load'),
+        sidebarCredUrlSave: $('#sidebar-cred-url-save'),
+        sidebarCredUrlAdd: $('#sidebar-cred-url-add'),
+        sidebarCredUrlDel: $('#sidebar-cred-url-del'),
         // Files Modal
         openFilesBtn: $('#open-files-btn'),
         filesModal: $('#files-modal'),
@@ -993,11 +1108,15 @@ async function init() {
         filesModalList: $('#files-modal-list'),
         filesModalCount: $('#files-modal-count'),
         filesSelectToggle: $('#files-select-toggle'),
+        filesSelectToggleRejected: $('#files-select-toggle-rejected'),
         filesClearSelection: $('#files-clear-selection'),
         filesSelectionChip: $('#files-selection-chip'),
         filesLoadAll: $('#files-load-all'),
+        filesLoadAllRejected: $('#files-load-all-rejected'),
         filesPreview: $('#files-preview'),
-        filesBulkActions: $('#files-bulk-actions'),
+        filesBulkActionsWanted: $('#files-bulk-actions-wanted'),
+        filesBulkActionsRejected: $('#files-bulk-actions-rejected'),
+        filesBulkDeleteRejected: $('#files-bulk-delete-rejected'),
 
         // Tabs
         tabs: $$('.tab'),
@@ -1016,6 +1135,7 @@ async function init() {
         variablesGrid: $('#variables-grid'),
         presetSelect: $('#preset-select'),
         savePreset: $('#save-preset'),
+        newPreset: $('#new-preset'),
         deletePreset: $('#delete-preset'),
         tokenCount: $('#token-count'),
         bulkCount: $('#bulk-count'),
@@ -1103,6 +1223,35 @@ async function init() {
         // Toast
         toastContainer: $('#toast-container'),
         taskTracker: $('#task-tracker'),
+        modelActivityIndicator: $('#model-activity-indicator'),
+        modelActivitySpinner: $('#model-activity-spinner'),
+        modelActivityLabel: $('#model-activity-label'),
+        modelActivityMeta: $('#model-activity-meta'),
+        modelActivityOpen: $('#model-activity-open'),
+        modelActivityDismiss: $('#model-activity-dismiss'),
+        modelInspectorModal: $('#model-inspector-modal'),
+        closeModelInspectorModal: $('#close-model-inspector-modal'),
+        modelInspectorStatus: $('#model-inspector-status'),
+        modelInspectorMeta: $('#model-inspector-meta'),
+        modelInspectorRaw: $('#model-inspector-raw'),
+        modelInspectorCopy: $('#model-inspector-copy'),
+        modelInspectorClear: $('#model-inspector-clear'),
+        credPickerModal: $('#cred-picker-modal'),
+        credPickerClose: $('#cred-picker-close'),
+        credPickerTabKey: $('#cred-picker-tab-key'),
+        credPickerTabUrl: $('#cred-picker-tab-url'),
+        credPickerSearch: $('#cred-picker-search'),
+        credPickerList: $('#cred-picker-list'),
+        popupModal: $('#popup-modal'),
+        popupTitle: $('#popup-title'),
+        popupMessage: $('#popup-message'),
+        popupInputGroup: $('#popup-input-group'),
+        popupInputLabel: $('#popup-input-label'),
+        popupInput: $('#popup-input'),
+        popupHint: $('#popup-hint'),
+        popupClose: $('#popup-close'),
+        popupCancel: $('#popup-cancel'),
+        popupConfirm: $('#popup-confirm'),
 
         // Clear toggle
         clearGenBtn: $('#clear-gen-btn'),
@@ -1167,12 +1316,14 @@ async function init() {
     await loadSyncSettings();
     await loadHotkeys();
     await loadUiPrefs();
+    await loadCredentialDraft();
     applyVirtualPrefs();
     updateSidebarExportButton();
     await restoreDraft();
 
     // Load data
     await loadConfig();
+    await loadCredentialPresets(els.provider.value);
     await loadPrompts();
     await loadStats();
     await loadModels();
@@ -1244,20 +1395,72 @@ async function loadConfig() {
 function updateProviderUI() {
     const provider = els.provider.value;
     const providerConfig = state.config?.providers?.[provider] || {};
-    els.apiKey.value = providerConfig.api_key || '';
-    els.baseUrl.value = providerConfig.base_url || '';
+
+    const draft = state.credentialDraft?.[provider] || { api_key: '', base_url: '' };
+    const draftKey = String(draft.api_key || '').trim();
+    const draftUrl = String(draft.base_url || '').trim();
+    const hasDraft = !!draftKey || !!draftUrl;
+
+    const cached = state.credentialPresets?.[provider] || { key_presets: [], url_presets: [], active: { key_preset: '', url_preset: '' } };
+    const activeKeyName = (cached.active?.key_preset || providerConfig.active_key_preset || '').trim();
+    const activeUrlName = (cached.active?.url_preset || providerConfig.active_url_preset || '').trim();
+
+    const keyPreset = cached.key_presets?.find(p => p.name === activeKeyName) || null;
+    const keyTail = keyPreset?.last4 ? `*****${keyPreset.last4}` : (activeKeyName ? '*****----' : '');
+    const rawKey = providerConfig.api_key ? String(providerConfig.api_key) : '';
+    const maskedKey = rawKey ? `*****${rawKey.slice(-4)}` : '';
+    const keyActiveLabel = activeKeyName ? `${activeKeyName} ${keyTail}`.trim() : (maskedKey || 'Not set');
+
+    const urlPreset = cached.url_presets?.find(p => p.name === activeUrlName) || null;
+    const activeUrlValue = (urlPreset?.base_url || '').trim() || (providerConfig.base_url ? String(providerConfig.base_url) : 'Default');
+    const urlActiveLabel = activeUrlName ? `${activeUrlName} (${activeUrlValue})` : activeUrlValue;
+
+    if (els.sidebarCredKeyActive) els.sidebarCredKeyActive.textContent = keyActiveLabel;
+    if (els.sidebarCredUrlActive) els.sidebarCredUrlActive.textContent = urlActiveLabel;
+
+    if (els.sidebarCredKeyDraft && document.activeElement !== els.sidebarCredKeyDraft) {
+        els.sidebarCredKeyDraft.value = draftKey;
+    }
+    if (els.sidebarCredUrlDraft && document.activeElement !== els.sidebarCredUrlDraft) {
+        els.sidebarCredUrlDraft.value = draftUrl;
+    }
+
+    if (els.credDraftWarning) els.credDraftWarning.classList.toggle('hidden', !hasDraft);
 }
 
 // ============ MODELS ============
 async function loadModels() {
     const provider = els.provider.value;
     try {
-        const res = await fetch(`/api/models?provider=${provider}`);
+        const override = getCredentialOverride(provider);
+        const res = await fetch('/api/models', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ provider, credentials_override: override })
+        });
         if (res.ok) {
             const data = await res.json();
             if (data.error) console.warn('Model fetch warning:', data.error);
             populateModelSelect(data.models);
+            return;
         }
+        if (res.status === 404 || res.status === 405) {
+            // Fallback for older servers
+            const fallback = await fetch(`/api/models?provider=${encodeURIComponent(provider)}`);
+            if (fallback.ok) {
+                const data = await fallback.json();
+                if (data.error) console.warn('Model fetch warning:', data.error);
+                populateModelSelect(data.models);
+            }
+            return;
+        }
+        let errMsg = `Model fetch failed (${res.status})`;
+        try {
+            const data = await res.json();
+            if (data?.error) errMsg = String(data.error);
+        } catch (e) { }
+        console.warn(errMsg);
+        toast(errMsg, 'error');
     } catch (e) { console.error('Failed to load models:', e); }
 }
 
@@ -1367,7 +1570,14 @@ async function refreshPrompt() {
 async function savePrompt() {
     let name = state.currentPromptName;
     if (!name) {
-        name = prompt('Prompt template name:');
+        name = await popupPrompt({
+            title: 'Save Prompt',
+            message: 'Enter a prompt template name.',
+            label: 'Prompt name',
+            placeholder: 'e.g. Default',
+            confirmText: 'Save',
+            required: true
+        });
         if (!name) return;
     }
     const content = els.systemPrompt.value;
@@ -1388,7 +1598,14 @@ async function savePrompt() {
 }
 
 async function newPrompt() {
-    const name = prompt('New prompt template name:');
+    const name = await popupPrompt({
+        title: 'New Prompt',
+        message: 'Create a new prompt template.',
+        label: 'Prompt name',
+        placeholder: 'e.g. MyPrompt',
+        confirmText: 'Create',
+        required: true
+    });
     if (!name) return;
 
     const safeName = sanitizePromptName(name);
@@ -1418,7 +1635,14 @@ async function newPrompt() {
 async function deletePrompt() {
     const name = state.currentPromptName || els.promptSelect.value;
     if (!name) { toast('Select a prompt to delete', 'info'); return; }
-    if (!confirm(`Delete prompt "${name}"?`)) return;
+    const ok = await popupConfirm({
+        title: 'Delete Prompt',
+        message: `Delete prompt "${name}"?`,
+        confirmText: 'Delete',
+        cancelText: 'Cancel',
+        danger: true
+    });
+    if (!ok) return;
     try {
         const res = await fetch(`/api/prompts/${encodeURIComponent(name)}`, { method: 'DELETE' });
         if (res.ok) {
@@ -1539,6 +1763,7 @@ async function loadPresets() {
 }
 
 function renderPresetSelect(presets) {
+    const desired = state.generate.variablePresetName || els.presetSelect?.value || '';
     els.presetSelect.innerHTML = '<option value="">Load preset...</option>';
     presets.forEach(p => {
         const opt = document.createElement('option');
@@ -1546,46 +1771,108 @@ function renderPresetSelect(presets) {
         opt.dataset.values = JSON.stringify(p.values);
         els.presetSelect.appendChild(opt);
     });
+    if (desired && presets.some(p => p.name === desired)) {
+        els.presetSelect.value = desired;
+    } else {
+        els.presetSelect.value = '';
+        state.generate.variablePresetName = '';
+    }
 }
 
 function loadPresetAction() {
+    const selectedName = els.presetSelect.value || '';
+    state.generate.variablePresetName = selectedName;
     const selected = els.presetSelect.selectedOptions[0];
     if (selected && selected.dataset.values) {
         const values = JSON.parse(selected.dataset.values);
         state.generate.variables = values;
         renderVariableInputs(state.generate.variableNames);
     }
+    debouncedSaveDraft();
 }
 
 async function savePresetAction() {
-    const name = prompt('Preset name:');
+    const selectedName = els.presetSelect?.value?.trim() || state.generate.variablePresetName || '';
+    const name = selectedName || await popupPrompt({
+        title: 'Save Preset',
+        message: 'Save variables to a preset.',
+        label: 'Preset name',
+        placeholder: 'e.g. Default',
+        confirmText: 'Save',
+        required: true
+    });
     if (!name) return;
     try {
         const res = await fetch('/api/presets', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name, values: state.generate.variables })
+            body: JSON.stringify({ name, values: state.generate.variables, overwrite: true })
         });
         if (res.ok) {
             const data = await res.json();
             renderPresetSelect(data.presets);
             if (els.presetSelect) {
                 els.presetSelect.value = name;
-                state.presetName = name;
+                state.generate.variablePresetName = name;
                 debouncedSaveDraft();
             }
             toast('Preset saved!', 'success');
+        } else {
+            const data = await res.json().catch(() => ({}));
+            toast(data.error || 'Failed to save preset', 'error');
         }
     } catch (e) { toast('Failed to save preset', 'error'); }
+}
+
+async function newPresetAction() {
+    const name = await popupPrompt({
+        title: 'New Preset',
+        message: 'Create a new variables preset.',
+        label: 'Preset name',
+        placeholder: 'e.g. RunA',
+        confirmText: 'Create',
+        required: true
+    });
+    if (!name) return;
+    try {
+        const res = await fetch('/api/presets', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name, values: state.generate.variables, overwrite: false })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.ok) {
+            renderPresetSelect(data.presets || []);
+            if (els.presetSelect) els.presetSelect.value = name;
+            state.generate.variablePresetName = name;
+            debouncedSaveDraft();
+            toast('Preset created!', 'success');
+        } else {
+            toast(data.error || 'Failed to create preset', 'error');
+        }
+    } catch (e) { toast('Failed to create preset', 'error'); }
 }
 
 async function deletePresetAction() {
     const name = els.presetSelect.value;
     if (!name) { toast('Select a preset to delete', 'info'); return; }
-    if (!confirm(`Delete preset "${name}"?`)) return;
+    const ok = await popupConfirm({
+        title: 'Delete Preset',
+        message: `Delete preset "${name}"?`,
+        confirmText: 'Delete',
+        cancelText: 'Cancel',
+        danger: true
+    });
+    if (!ok) return;
     try {
         const res = await fetch(`/api/presets/${encodeURIComponent(name)}`, { method: 'DELETE' });
-        if (res.ok) { await loadPresets(); toast('Preset deleted!', 'success'); }
+        if (res.ok) {
+            state.generate.variablePresetName = '';
+            els.presetSelect.value = '';
+            await loadPresets();
+            debouncedSaveDraft();
+            toast('Preset deleted!', 'success');
+        }
         else toast('Failed to delete preset', 'error');
     } catch (e) { toast('Failed to delete preset', 'error'); }
 }
@@ -1687,6 +1974,7 @@ async function loadSystemPresets(type) {
 function renderSystemPresetSelect(type, presets) {
     const selectEl = els[`${type}PresetSelect`];
     if (!selectEl) return;
+    const desired = (state[type]?.presetName || selectEl.value || '').trim();
     selectEl.innerHTML = '<option value="">Load preset...</option>';
     presets.forEach(p => {
         const opt = document.createElement('option');
@@ -1694,12 +1982,19 @@ function renderSystemPresetSelect(type, presets) {
         opt.dataset.prompt = p.prompt;
         selectEl.appendChild(opt);
     });
+    if (desired && presets.some(p => p.name === desired)) {
+        selectEl.value = desired;
+    } else {
+        selectEl.value = '';
+        if (state[type]) state[type].presetName = '';
+    }
 }
 
 function loadSystemPreset(type) {
     const selectEl = els[`${type}PresetSelect`];
     const targetEl = els[`${type}SystemPrompt`];
     const selected = selectEl.selectedOptions[0];
+    if (state[type]) state[type].presetName = selectEl.value || '';
 
     if (selected && selected.dataset.prompt) {
         targetEl.value = selected.dataset.prompt;
@@ -1712,10 +2007,17 @@ function loadSystemPreset(type) {
 async function saveSystemPreset(type) {
     const selectEl = els[`${type}PresetSelect`];
     const targetEl = els[`${type}SystemPrompt`];
-    let name = selectEl?.value;
+    let name = (state[type]?.presetName || selectEl?.value || '').trim();
 
     if (!name) {
-        name = prompt('Preset name:');
+        name = await popupPrompt({
+            title: `Save ${type === 'chat' ? 'Chat' : 'Export'} Preset`,
+            message: 'Save the current system prompt to a preset.',
+            label: 'Preset name',
+            placeholder: 'e.g. Default',
+            confirmText: 'Save',
+            required: true
+        });
         if (!name) return;
     }
 
@@ -1724,22 +2026,33 @@ async function saveSystemPreset(type) {
         const res = await fetch(`/api/${type}-presets`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ name, prompt: promptText })
+            body: JSON.stringify({ name, prompt: promptText, overwrite: true })
         });
         if (res.ok) {
             const data = await res.json();
             renderSystemPresetSelect(type, data.presets || []);
             if (selectEl) {
                 selectEl.value = name;
-                loadSystemPreset(type);
+                if (state[type]) state[type].presetName = name;
+                debouncedSaveDraft();
             }
             toast(`${type === 'chat' ? 'Chat' : 'Export'} preset saved!`, 'success');
+        } else {
+            const data = await res.json().catch(() => ({}));
+            toast(data.error || 'Failed to save preset', 'error');
         }
     } catch (e) { toast('Failed to save preset', 'error'); }
 }
 
 async function newSystemPreset(type) {
-    const name = prompt('New preset name:');
+    const name = await popupPrompt({
+        title: `New ${type === 'chat' ? 'Chat' : 'Export'} Preset`,
+        message: 'Create a new preset from the current system prompt.',
+        label: 'Preset name',
+        placeholder: 'e.g. RunA',
+        confirmText: 'Create',
+        required: true
+    });
     if (!name) return;
 
     const selectEl = els[`${type}PresetSelect`];
@@ -1757,6 +2070,8 @@ async function newSystemPreset(type) {
         if (res.ok) {
             renderSystemPresetSelect(type, data.presets || []);
             if (selectEl) selectEl.value = name;
+            if (state[type]) state[type].presetName = name;
+            debouncedSaveDraft();
             toast(`New ${type === 'chat' ? 'chat' : 'export'} preset created!`, 'success');
         } else {
             toast(data.error || 'Failed to create preset', 'error');
@@ -1769,7 +2084,14 @@ async function deleteSystemPreset(type) {
     const selected = selectEl?.value;
 
     if (!selected) { toast('Select a preset to delete', 'info'); return; }
-    if (!confirm(`Delete preset "${selected}"?`)) return;
+    const ok = await popupConfirm({
+        title: `Delete ${type === 'chat' ? 'Chat' : 'Export'} Preset`,
+        message: `Delete preset "${selected}"?`,
+        confirmText: 'Delete',
+        cancelText: 'Cancel',
+        danger: true
+    });
+    if (!ok) return;
 
     try {
         const res = await fetch(`/api/${type}-presets/${encodeURIComponent(selected)}`, { method: 'DELETE' });
@@ -1778,6 +2100,7 @@ async function deleteSystemPreset(type) {
             const targetEl = els[`${type}SystemPrompt`];
             if (targetEl) targetEl.value = '';
             if (state[type]) state[type].systemPrompt = '';
+            if (state[type]) state[type].presetName = '';
             debouncedSaveDraft();
             toast('Preset deleted!', 'success');
         }
@@ -1928,13 +2251,12 @@ function countConversationTurns(messages = []) {
 function updateSelectionToolbar({ selectedIds, files, toggleButton, chip, countEl }) {
     const selectedCount = selectedIds.size;
     if (countEl) countEl.textContent = `${selectedCount} selected`;
-    if (chip) chip.classList.toggle('hidden', selectedCount === 0);
-    if (toggleButton) {
-        const shouldClear = selectedCount > 0;
-        toggleButton.textContent = shouldClear ? 'Clear Selection' : 'Select All';
-        toggleButton.classList.toggle('btn-danger', shouldClear);
-        toggleButton.classList.toggle('btn-secondary', !shouldClear);
+    if (chip) {
+        const hideClass = chip.classList.contains('slot-hidden') ? 'slot-hidden' : 'hidden';
+        chip.classList.toggle(hideClass, selectedCount === 0);
+        if (hideClass === 'slot-hidden') chip.classList.remove('hidden');
     }
+    // Keep action buttons layout stable; clearing is done via the detached selection chip.
 }
 
 function clearSelectableSelection(slice) {
@@ -2060,6 +2382,7 @@ function updateFilesPaginationUI() {
 
 async function loadFilesModal(folder = 'wanted', { reset = false, signal = null } = {}) {
     state.filesModal.currentFolder = folder;
+    updateFilesBulkActionsVisibility(folder);
     const search = els.filesSearchInput?.value?.trim() || '';
     if (reset) {
         state.filesModal.files = [];
@@ -2138,13 +2461,20 @@ function loadMoreFilesModal() {
 }
 
 function updateFilesModalCount() {
+    const isRejected = state.filesModal.currentFolder === 'rejected';
     updateSelectionToolbar({
         selectedIds: state.filesModal.selectedIds,
         files: state.filesModal.files,
-        toggleButton: els.filesSelectToggle,
+        toggleButton: isRejected ? els.filesSelectToggleRejected : els.filesSelectToggle,
         chip: els.filesSelectionChip,
         countEl: els.filesModalCount
     });
+}
+
+function updateFilesBulkActionsVisibility(folder) {
+    const isRejected = folder === 'rejected';
+    if (els.filesBulkActionsWanted) els.filesBulkActionsWanted.classList.toggle('hidden', isRejected);
+    if (els.filesBulkActionsRejected) els.filesBulkActionsRejected.classList.toggle('hidden', !isRejected);
 }
 
 function renderFilesRowHtml(f) {
@@ -2172,16 +2502,7 @@ function renderFilesModalList() {
     if (!els.filesModalList) return;
     const folder = state.filesModal.currentFolder;
 
-    // Update bulk action buttons visibility
-    const buttons = Array.from(els.filesBulkActions.querySelectorAll('button[data-folder]'));
-    buttons.forEach(btn => {
-        const folders = btn.dataset.folder.split(' ');
-        if (folders.includes(folder)) {
-            btn.removeAttribute('hidden');
-        } else {
-            btn.setAttribute('hidden', '');
-        }
-    });
+    updateFilesBulkActionsVisibility(folder);
 
     renderVirtualWindow({
         slice: state.filesModal,
@@ -2220,7 +2541,14 @@ async function handleBulkMove(from, to) {
 async function handleBulkDelete(folder) {
     const ids = Array.from(state.filesModal.selectedIds);
     if (ids.length === 0) return;
-    if (!confirm(`Permanently delete ${ids.length} conversations?`)) return;
+    const ok = await popupConfirm({
+        title: 'Delete Conversations',
+        message: `Permanently delete ${ids.length} conversation(s)?`,
+        confirmText: 'Delete',
+        cancelText: 'Cancel',
+        danger: true
+    });
+    if (!ok) return;
 
     showSaveIndicator('Deleting...');
     try {
@@ -2298,13 +2626,142 @@ async function readSSEStream(reader, onMessage) {
     }
 }
 
+// ============ MODEL ACTIVITY (Bottom-right indicator + inspector) ============
+function formatProviderLabel(provider) {
+    if (provider === 'openai') return 'OpenAI';
+    if (provider === 'anthropic') return 'Anthropic';
+    if (provider === 'google') return 'Google';
+    return String(provider || '—');
+}
+
+function beginModelActivity({ provider, model, source } = {}) {
+    state.modelActivity.runId += 1;
+    const runId = state.modelActivity.runId;
+    state.modelActivity.phase = 'waiting';
+    state.modelActivity.label = 'Waiting for request...';
+    state.modelActivity.provider = String(provider || '');
+    state.modelActivity.model = String(model || '');
+    state.modelActivity.source = String(source || '');
+    state.modelActivity.raw = '';
+    state.modelActivity.hasFirstToken = false;
+    updateModelActivityUI();
+    return runId;
+}
+
+function setModelActivityPhase(runId, phase) {
+    if (runId !== state.modelActivity.runId) return;
+    state.modelActivity.phase = phase;
+    if (phase === 'waiting') state.modelActivity.label = 'Waiting for request...';
+    else if (phase === 'thinking') state.modelActivity.label = 'Thinking...';
+    else if (phase === 'writing') state.modelActivity.label = 'Writing...';
+    else if (phase === 'done') state.modelActivity.label = 'Done';
+    else if (phase === 'canceled') state.modelActivity.label = 'Canceled';
+    else if (phase === 'error') state.modelActivity.label = 'Error';
+    updateModelActivityUI();
+}
+
+function appendModelActivityText(runId, text) {
+    if (runId !== state.modelActivity.runId) return;
+    const chunk = String(text || '');
+    if (!chunk) return;
+    const MAX = 300_000;
+    state.modelActivity.raw = (state.modelActivity.raw || '') + chunk;
+    if (state.modelActivity.raw.length > MAX) {
+        state.modelActivity.raw = '…' + state.modelActivity.raw.slice(-MAX);
+    }
+    updateModelInspectorUI();
+}
+
+function updateModelActivityUI() {
+    if (!els.modelActivityIndicator) return;
+
+    const isIdle = state.modelActivity.phase === 'idle';
+    const showSpinner = ['waiting', 'thinking', 'writing'].includes(state.modelActivity.phase);
+    const pausedSpinner = !showSpinner;
+
+    const providerLabel = formatProviderLabel(state.modelActivity.provider);
+    const modelLabel = state.modelActivity.model || '—';
+    const sourceLabel = state.modelActivity.source || '—';
+    const meta = `${providerLabel} · ${modelLabel} · ${sourceLabel}`;
+
+    if (els.modelActivityLabel) els.modelActivityLabel.textContent = state.modelActivity.label || '—';
+    if (els.modelActivityMeta) els.modelActivityMeta.textContent = meta;
+    if (els.modelActivitySpinner) {
+        els.modelActivitySpinner.classList.toggle('paused', pausedSpinner);
+        els.modelActivitySpinner.style.opacity = showSpinner ? '1' : '0.55';
+    }
+
+    if (isIdle) return;
+
+    if (els.modelActivityIndicator.classList.contains('hidden')) {
+        els.modelActivityIndicator.classList.remove('hidden');
+        requestAnimationFrame(() => els.modelActivityIndicator.classList.add('show'));
+    } else {
+        els.modelActivityIndicator.classList.add('show');
+    }
+
+    updateModelInspectorUI();
+    updateStatusStackLayout();
+}
+
+function openModelInspector() {
+    if (!els.modelInspectorModal) return;
+    if (state.modelActivity.phase === 'idle') return;
+    els.modelInspectorModal.classList.remove('hidden');
+    updateModelInspectorUI();
+}
+
+function closeModelInspector() {
+    if (!els.modelInspectorModal) return;
+    els.modelInspectorModal.classList.add('hidden');
+}
+
+function updateModelInspectorUI() {
+    if (!els.modelInspectorModal || els.modelInspectorModal.classList.contains('hidden')) return;
+    const providerLabel = formatProviderLabel(state.modelActivity.provider);
+    const modelLabel = state.modelActivity.model || '—';
+    const sourceLabel = state.modelActivity.source || '—';
+    if (els.modelInspectorStatus) els.modelInspectorStatus.textContent = state.modelActivity.label || '—';
+    if (els.modelInspectorMeta) els.modelInspectorMeta.textContent = `${providerLabel} · ${modelLabel} · ${sourceLabel}`;
+    if (els.modelInspectorRaw) els.modelInspectorRaw.textContent = state.modelActivity.raw || '';
+}
+
+function dismissModelActivity() {
+    // Invalidate the current run so in-flight callbacks can't revive the UI.
+    state.modelActivity.runId = Number(state.modelActivity.runId || 0) + 1;
+    state.modelActivity.phase = 'idle';
+    state.modelActivity.label = '';
+    state.modelActivity.provider = '';
+    state.modelActivity.model = '';
+    state.modelActivity.source = '';
+    state.modelActivity.raw = '';
+    state.modelActivity.hasFirstToken = false;
+
+    closeModelInspector();
+
+    if (els.modelActivityIndicator) {
+        els.modelActivityIndicator.classList.remove('show');
+        setTimeout(() => {
+            if (state.modelActivity.phase !== 'idle') return;
+            els.modelActivityIndicator.classList.add('hidden');
+            updateStatusStackLayout();
+        }, 300);
+    }
+    updateStatusStackLayout();
+}
+
 // ============ GENERATION (Single & Bulk) ============
 async function generate() {
     const count = parseInt(els.bulkCount?.value) || 1;
     if (count > 1) { await bulkGenerate(count); return; }
 
     if (state.generate.isLoading) {
-        if (state.generate.abortController) { state.generate.abortController.abort(); state.generate.abortController = null; toast('Generation stopped', 'info'); }
+        if (state.generate.abortController) {
+            state.generate.abortController.abort();
+            state.generate.abortController = null;
+            setModelActivityPhase(state.modelActivity.runId, 'canceled');
+            toast('Generation stopped', 'info');
+        }
         return;
     }
     state.generate.isLoading = true;
@@ -2315,6 +2772,7 @@ async function generate() {
 
     const promptText = applyVariables(els.systemPrompt.value);
     addToPromptHistory(promptText);
+    const modelRunId = beginModelActivity({ provider: els.provider.value, model: getModelValue(), source: 'Generate' });
     try {
         const response = await fetch('/api/generate/stream', {
             method: 'POST',
@@ -2324,11 +2782,13 @@ async function generate() {
                 provider: els.provider.value,
                 model: getModelValue(),
                 temperature: parseFloat(els.temperature.value),
-                custom_params: state.customParams
+                custom_params: state.customParams,
+                credentials_override: getCredentialOverride(els.provider.value)
             }),
             signal: state.generate.abortController.signal
         });
         if (!response.ok) throw new Error('Generation failed');
+        setModelActivityPhase(modelRunId, 'thinking');
 
         const reader = response.body.getReader();
         let fullText = '';
@@ -2339,12 +2799,19 @@ async function generate() {
 
         await readSSEStream(reader, async (data) => {
             if (data.content) {
+                if (modelRunId === state.modelActivity.runId && !state.modelActivity.hasFirstToken) {
+                    state.modelActivity.hasFirstToken = true;
+                    setModelActivityPhase(modelRunId, 'writing');
+                }
                 if (thinkingShown) { thinkingEl.style.display = 'none'; streamingEl.style.display = ''; thinkingShown = false; }
                 fullText += data.content;
+                appendModelActivityText(modelRunId, data.content);
                 streamingEl.textContent = fullText;
             }
+            if (data.done) setModelActivityPhase(modelRunId, 'done');
             if (data.error) throw new Error(data.error);
         });
+        setModelActivityPhase(modelRunId, 'done');
 
         const extractedText = extractOutput(fullText);
 
@@ -2378,7 +2845,12 @@ async function generate() {
             enableActionButtons();
         }
     } catch (e) {
-        if (e.name !== 'AbortError') toast(e.message || 'Generation failed', 'error');
+        if (e.name === 'AbortError') {
+            setModelActivityPhase(modelRunId, 'canceled');
+        } else {
+            setModelActivityPhase(modelRunId, 'error');
+            toast(e.message || 'Generation failed', 'error');
+        }
     } finally {
         state.generate.isLoading = false;
         state.generate.abortController = null;
@@ -2416,7 +2888,8 @@ async function bulkGenerate(count) {
                     provider: els.provider.value,
                     model: getModelValue(),
                     temperature: parseFloat(els.temperature.value),
-                    custom_params: state.customParams
+                    custom_params: state.customParams,
+                    credentials_override: getCredentialOverride(els.provider.value)
                 }),
                 signal: state.bulk.abortController.signal
             });
@@ -2614,7 +3087,12 @@ function setButtonToSend(button) {
 
 async function sendChatMessage() {
     if (state.chat.isStreaming) {
-        if (state.chat.abortController) { state.chat.abortController.abort(); state.chat.abortController = null; toast('Chat stopped', 'info'); }
+        if (state.chat.abortController) {
+            state.chat.abortController.abort();
+            state.chat.abortController = null;
+            setModelActivityPhase(state.modelActivity.runId, 'canceled');
+            toast('Chat stopped', 'info');
+        }
         return;
     }
     const message = els.chatInput.value.trim();
@@ -2639,6 +3117,7 @@ async function sendChatMessage() {
 
     const streamingMsg = { from: 'gpt', value: '', timestamp: new Date().toISOString(), streaming: true };
 
+    const modelRunId = beginModelActivity({ provider: els.provider.value, model: getModelValue(), source: 'Chat' });
     try {
         const response = await fetch('/api/generate/stream', {
             method: 'POST',
@@ -2647,10 +3126,13 @@ async function sendChatMessage() {
                 prompt: message, system_prompt: systemPrompt,
                 provider: els.provider.value, model: getModelValue(),
                 temperature: parseFloat(els.temperature.value),
-                custom_params: state.customParams
+                custom_params: state.customParams,
+                credentials_override: getCredentialOverride(els.provider.value)
             }),
             signal: state.chat.abortController.signal
         });
+        if (!response.ok) throw new Error('Failed to send message');
+        setModelActivityPhase(modelRunId, 'thinking');
         const reader = response.body.getReader();
         let fullText = '';
         state.chat.messages.push(streamingMsg);
@@ -2660,21 +3142,29 @@ async function sendChatMessage() {
             if (data.error) throw new Error(data.error);
             if (data.done) return;
             if (data.content) {
+                if (modelRunId === state.modelActivity.runId && !state.modelActivity.hasFirstToken) {
+                    state.modelActivity.hasFirstToken = true;
+                    setModelActivityPhase(modelRunId, 'writing');
+                }
                 fullText += data.content;
+                appendModelActivityText(modelRunId, data.content);
                 streamingMsg.value = fullText;
                 throttledRenderChat();
             }
         });
+        setModelActivityPhase(modelRunId, 'done');
         streamingMsg.streaming = false;
         renderChatMessages();
         updateChatTurns();
         enableChatButtons();
     } catch (e) {
         if (e.name !== 'AbortError') {
+            setModelActivityPhase(modelRunId, 'error');
             toast(e.message || 'Failed to send message', 'error');
             const idx = state.chat.messages.indexOf(streamingMsg);
             if (idx > -1) state.chat.messages.splice(idx, 1);
         } else {
+            setModelActivityPhase(modelRunId, 'canceled');
             streamingMsg.streaming = false;
             if (!streamingMsg.value) { const idx = state.chat.messages.indexOf(streamingMsg); if (idx > -1) state.chat.messages.splice(idx, 1); }
         }
@@ -2765,13 +3255,19 @@ function saveEditMessage(index) {
 
 function cancelEditMessage() { state.chat.editingIndex = null; renderChatMessages(); }
 
-function deleteMessage(index) {
-    if (confirm('Delete this message?')) {
-        state.chat.messages.splice(index, 1);
-        renderChatMessages();
-        updateChatTurns();
-        debouncedSaveDraft();
-    }
+async function deleteMessage(index) {
+    const ok = await popupConfirm({
+        title: 'Delete Message',
+        message: 'Delete this message?',
+        confirmText: 'Delete',
+        cancelText: 'Cancel',
+        danger: true
+    });
+    if (!ok) return;
+    state.chat.messages.splice(index, 1);
+    renderChatMessages();
+    updateChatTurns();
+    debouncedSaveDraft();
 }
 
 async function continueFromMessage(index) {
@@ -2786,14 +3282,22 @@ function updateChatTurns() {
     els.chatTurns.textContent = `${turns} turns`;
 }
 
-function clearChat() {
-    if (confirm('Clear all messages?')) {
-        state.chat.messages = [];
-        renderChatMessages();
-        updateChatTurns();
-        disableChatButtons();
-        debouncedSaveDraft();
+async function clearChat({ confirm = true } = {}) {
+    if (confirm) {
+        const ok = await popupConfirm({
+            title: 'Clear Chat',
+            message: 'Clear all messages?',
+            confirmText: 'Clear',
+            cancelText: 'Cancel',
+            danger: true
+        });
+        if (!ok) return;
     }
+    state.chat.messages = [];
+    renderChatMessages();
+    updateChatTurns();
+    disableChatButtons();
+    debouncedSaveDraft();
 }
 
 async function saveChat() {
@@ -2806,7 +3310,7 @@ async function saveChat() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ conversation, folder: 'wanted', metadata: { source: 'chat', model: getModelValue() } })
         });
-        if (res.ok) { toast('Chat saved!', 'success'); hideSaveIndicator('Saved ✓'); clearChat(); loadStats(); }
+        if (res.ok) { toast('Chat saved!', 'success'); hideSaveIndicator('Saved ✓'); await clearChat({ confirm: false }); loadStats(); }
     } catch (e) { toast('Failed to save chat', 'error'); hideSaveIndicator('Save failed'); }
 }
 
@@ -2827,7 +3331,11 @@ async function regenerateFrom(index) {
 
 async function generateAIResponse() {
     if (state.chat.isStreaming) {
-        if (state.chat.abortController) { state.chat.abortController.abort(); state.chat.abortController = null; }
+        if (state.chat.abortController) {
+            state.chat.abortController.abort();
+            state.chat.abortController = null;
+            setModelActivityPhase(state.modelActivity.runId, 'canceled');
+        }
         return;
     }
     if (state.chat.messages.length === 0) { toast('No context to regenerate from', 'info'); return; }
@@ -2846,6 +3354,7 @@ async function generateAIResponse() {
     state.chat.messages.push(streamingMsg);
     renderChatMessages();
 
+    const modelRunId = beginModelActivity({ provider: els.provider.value, model: getModelValue(), source: 'Chat' });
     try {
         const response = await fetch('/api/generate/stream', {
             method: 'POST',
@@ -2854,10 +3363,13 @@ async function generateAIResponse() {
                 prompt: promptText, system_prompt: systemPrompt,
                 provider: els.provider.value, model: getModelValue(),
                 temperature: parseFloat(els.temperature.value),
-                custom_params: state.customParams
+                custom_params: state.customParams,
+                credentials_override: getCredentialOverride(els.provider.value)
             }),
             signal: state.chat.abortController.signal
         });
+        if (!response.ok) throw new Error('Failed to generate response');
+        setModelActivityPhase(modelRunId, 'thinking');
         const reader = response.body.getReader();
         let fullText = '';
 
@@ -2865,21 +3377,29 @@ async function generateAIResponse() {
             if (data.error) throw new Error(data.error);
             if (data.done) return;
             if (data.content) {
+                if (modelRunId === state.modelActivity.runId && !state.modelActivity.hasFirstToken) {
+                    state.modelActivity.hasFirstToken = true;
+                    setModelActivityPhase(modelRunId, 'writing');
+                }
                 fullText += data.content;
+                appendModelActivityText(modelRunId, data.content);
                 streamingMsg.value = fullText;
                 throttledRenderChat();
             }
         });
+        setModelActivityPhase(modelRunId, 'done');
         streamingMsg.streaming = false;
         renderChatMessages();
         updateChatTurns();
         enableChatButtons();
     } catch (e) {
         if (e.name !== 'AbortError') {
+            setModelActivityPhase(modelRunId, 'error');
             toast(e.message || 'Failed to generate response', 'error');
             const idx = state.chat.messages.indexOf(streamingMsg);
             if (idx > -1) state.chat.messages.splice(idx, 1);
         } else {
+            setModelActivityPhase(modelRunId, 'canceled');
             streamingMsg.streaming = false;
             if (!streamingMsg.value) { const idx = state.chat.messages.indexOf(streamingMsg); if (idx > -1) state.chat.messages.splice(idx, 1); }
         }
@@ -3354,7 +3874,14 @@ async function persistAllReviewQueueInBatches(action) {
     const verb = isKeep ? 'Save' : 'Reject';
     const targetLabel = isKeep ? 'Wanted' : 'Rejected';
 
-    if (!confirm(`${verb} all ${count} conversations?`)) return;
+    const ok = await popupConfirm({
+        title: `Review: ${verb} All`,
+        message: `${verb} all ${count} conversation(s)?`,
+        confirmText: verb,
+        cancelText: 'Cancel',
+        danger: !isKeep
+    });
+    if (!ok) return;
     if (!(await persistCurrentReviewEdits())) return;
 
     showSaveIndicator(isKeep ? 'Saving...' : 'Rejecting...');
@@ -3466,7 +3993,14 @@ async function rejectAllReview() {
 async function clearReviewQueue() {
     const count = state.review.total || state.review.queue.length;
     if (count === 0) return;
-    if (!confirm(`Discard all ${count} conversations from the queue? This will NOT save them anywhere.`)) return;
+    const ok = await popupConfirm({
+        title: 'Discard Review Queue',
+        message: `Discard all ${count} conversation(s) from the queue?\nThis will NOT save them anywhere.`,
+        confirmText: 'Discard',
+        cancelText: 'Cancel',
+        danger: true
+    });
+    if (!ok) return;
     showSaveIndicator('Clearing...');
     try {
         await fetch('/api/review-queue', { method: 'DELETE' });
@@ -3649,8 +4183,7 @@ function loadMoreReviewBrowser() {
 }
 
 function toggleAllReviewBrowser() {
-    if (state.reviewBrowser.selectedIds.size > 0) clearSelectableSelection(state.reviewBrowser);
-    else state.reviewBrowser.selectedIds = new Set(state.reviewBrowser.items.map(item => item.id));
+    state.reviewBrowser.selectedIds = new Set(state.reviewBrowser.items.map(item => item.id));
     refreshSelectableListUI(els.reviewBrowserList, state.reviewBrowser);
     updateReviewBrowserCount();
 }
@@ -3762,43 +4295,294 @@ function closeCustomParamsModal() {
     els.customParamsModal?.classList.add('hidden');
 }
 
-// ============ API SETTINGS ============
-async function saveApiKey() {
-    const key = els.apiKey.value.trim();
-    if (key.startsWith('•')) { toast('Enter a new key', 'info'); return; }
-    // Preserve the current base URL value before config reload wipes it
-    const currentBaseUrl = els.baseUrl.value;
-    try {
-        const res = await fetch('/api/config/key', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ provider: els.provider.value, api_key: key })
-        });
-        if (res.ok) {
-            toast('API key saved!', 'success');
-            await loadConfig();
-            // Restore base URL that loadConfig() overwrote from disk
-            els.baseUrl.value = currentBaseUrl;
-        } else {
-            const data = await res.json().catch(() => ({}));
-            toast(data.error || 'Failed to save key', 'error');
-        }
-    } catch (e) { toast('Failed to save key', 'error'); }
+// ============ CREDENTIALS (Sidebar Presets + Picker Modal) ============
+const credPickerState = { tab: 'key', query: '' };
+
+function getSidebarCredProvider() {
+    return els.provider?.value || 'openai';
 }
 
-async function saveBaseUrl() {
+function formatKeyTail(last4) {
+    const tail = String(last4 || '').trim();
+    return `*****${tail || '----'}`;
+}
+
+async function loadCredentialPresets(provider = null) {
+    const p = provider || getSidebarCredProvider();
     try {
-        const res = await fetch('/api/config/baseurl', {
+        const res = await fetch(`/api/credentials/${encodeURIComponent(p)}`);
+        if (!res.ok) throw new Error('Failed to load credentials');
+        const data = await res.json();
+        state.credentialPresets[p] = {
+            key_presets: Array.isArray(data.key_presets) ? data.key_presets : [],
+            url_presets: Array.isArray(data.url_presets) ? data.url_presets : [],
+            active: data.active || { key_preset: '', url_preset: '' }
+        };
+        updateProviderUI();
+        return state.credentialPresets[p];
+    } catch (e) {
+        console.error('Failed to load credential presets:', e);
+        toast('Failed to load credentials', 'error');
+        return state.credentialPresets[p];
+    }
+}
+
+async function applyCredentialsActive({ provider, keyName = null, urlName = null } = {}) {
+    const p = provider || getSidebarCredProvider();
+    try {
+        const res = await fetch(`/api/credentials/${encodeURIComponent(p)}/apply`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ provider: els.provider.value, base_url: els.baseUrl.value.trim() })
+            body: JSON.stringify({ key_name: keyName, url_name: urlName })
         });
-        if (res.ok) toast('Base URL saved!', 'success');
-        else {
-            const data = await res.json().catch(() => ({}));
-            toast(data.error || 'Failed to save URL', 'error');
-        }
-    } catch (e) { toast('Failed to save URL', 'error'); }
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || 'Apply failed');
+        await loadCredentialPresets(p);
+        await loadConfig();
+    } catch (e) {
+        toast(e.message || 'Failed to apply credentials', 'error');
+    }
+}
+
+function openCredPicker(tab) {
+    credPickerState.tab = tab === 'url' ? 'url' : 'key';
+    credPickerState.query = '';
+    if (els.credPickerSearch) els.credPickerSearch.value = '';
+    renderCredPicker();
+    els.credPickerModal?.classList.remove('hidden');
+}
+
+function closeCredPicker() {
+    els.credPickerModal?.classList.add('hidden');
+}
+
+function setCredPickerTab(tab) {
+    credPickerState.tab = tab === 'url' ? 'url' : 'key';
+    renderCredPicker();
+}
+
+function getFilteredCredItems(provider) {
+    const cache = state.credentialPresets?.[provider] || { key_presets: [], url_presets: [], active: {} };
+    const query = (credPickerState.query || '').trim().toLowerCase();
+    const items = credPickerState.tab === 'url' ? (cache.url_presets || []) : (cache.key_presets || []);
+    if (!query) return items;
+    return items.filter(it => {
+        const name = String(it.name || '').toLowerCase();
+        const val = credPickerState.tab === 'url' ? String(it.base_url || '').toLowerCase() : String(it.last4 || '').toLowerCase();
+        return name.includes(query) || val.includes(query);
+    });
+}
+
+function renderCredPicker() {
+    if (!els.credPickerModal || !els.credPickerList) return;
+    const provider = getSidebarCredProvider();
+    const cache = state.credentialPresets?.[provider] || { key_presets: [], url_presets: [], active: {} };
+
+    if (els.credPickerTabKey) els.credPickerTabKey.classList.toggle('active', credPickerState.tab === 'key');
+    if (els.credPickerTabUrl) els.credPickerTabUrl.classList.toggle('active', credPickerState.tab === 'url');
+
+    const activeName = credPickerState.tab === 'url' ? (cache.active?.url_preset || '') : (cache.active?.key_preset || '');
+    const items = getFilteredCredItems(provider);
+    els.credPickerList.textContent = '';
+    if (!items.length) {
+        const empty = document.createElement('div');
+        empty.className = 'empty-files';
+        empty.textContent = 'No presets found';
+        els.credPickerList.appendChild(empty);
+        return;
+    }
+
+    items.forEach(it => {
+        const name = String(it.name || '');
+        const isActive = name === activeName;
+        const rightText = credPickerState.tab === 'url'
+            ? (String(it.base_url || '') || 'Default')
+            : formatKeyTail(it.last4);
+
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'cred-picker-row' + (isActive ? ' active' : '');
+        btn.dataset.name = name;
+
+        const left = document.createElement('div');
+        left.className = 'cred-picker-left';
+        const nameEl = document.createElement('div');
+        nameEl.className = 'cred-picker-name';
+        nameEl.textContent = name;
+        left.appendChild(nameEl);
+
+        const right = document.createElement('div');
+        right.className = 'cred-picker-right';
+        right.textContent = rightText;
+
+        btn.appendChild(left);
+        btn.appendChild(right);
+        els.credPickerList.appendChild(btn);
+    });
+}
+
+async function sidebarSaveKeyPreset({ forceNew = false } = {}) {
+    const provider = getSidebarCredProvider();
+    const cache = state.credentialPresets?.[provider] || { active: {} };
+    const current = String(cache.active?.key_preset || '').trim();
+    const name = (!forceNew && current) ? current : await popupPrompt({
+        title: 'Save API Key Preset',
+        message: 'Name this API key preset.',
+        label: 'Preset name',
+        placeholder: 'e.g. MainKey',
+        confirmText: 'Save',
+        required: true
+    });
+    if (!name) return;
+    const apiKey = String(els.sidebarCredKeyDraft?.value || '').trim();
+    if (!apiKey) { toast('Enter a draft API key value first', 'error'); return; }
+    try {
+        const res = await fetch(`/api/credentials/${encodeURIComponent(provider)}/keys`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name, api_key: apiKey, overwrite: true })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || 'Save failed');
+        await applyCredentialsActive({ provider, keyName: name });
+        toast('API key preset saved', 'success');
+    } catch (e) {
+        toast(e.message || 'Failed to save key preset', 'error');
+    }
+}
+
+async function sidebarAddKeyPreset() {
+    const provider = getSidebarCredProvider();
+    const name = await popupPrompt({
+        title: 'Add API Key Preset',
+        message: 'Create a new API key preset.',
+        label: 'Preset name',
+        placeholder: 'e.g. NewKey',
+        confirmText: 'Add',
+        required: true
+    });
+    if (!name) return;
+    const apiKey = String(els.sidebarCredKeyDraft?.value || '').trim();
+    if (!apiKey) { toast('Enter a draft API key value first', 'error'); return; }
+    try {
+        const res = await fetch(`/api/credentials/${encodeURIComponent(provider)}/keys`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name, api_key: apiKey, overwrite: false })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || 'Add failed');
+        await applyCredentialsActive({ provider, keyName: name });
+        toast('API key preset added', 'success');
+    } catch (e) {
+        toast(e.message || 'Failed to add key preset', 'error');
+    }
+}
+
+async function sidebarDeleteKeyPreset() {
+    const provider = getSidebarCredProvider();
+    const cache = state.credentialPresets?.[provider] || { active: {} };
+    const name = String(cache.active?.key_preset || '').trim();
+    if (!name) { toast('No active key preset to delete', 'info'); return; }
+    const ok = await popupConfirm({
+        title: 'Delete API Key Preset',
+        message: `Delete key preset "${name}"?`,
+        confirmText: 'Delete',
+        cancelText: 'Cancel',
+        danger: true
+    });
+    if (!ok) return;
+    try {
+        const res = await fetch(`/api/credentials/${encodeURIComponent(provider)}/keys/${encodeURIComponent(name)}`, { method: 'DELETE' });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || 'Delete failed');
+        await loadCredentialPresets(provider);
+        await loadConfig();
+        toast('Key preset deleted', 'success');
+    } catch (e) {
+        toast(e.message || 'Failed to delete key preset', 'error');
+    }
+}
+
+async function sidebarSaveUrlPreset({ forceNew = false } = {}) {
+    const provider = getSidebarCredProvider();
+    const cache = state.credentialPresets?.[provider] || { active: {} };
+    const current = String(cache.active?.url_preset || '').trim();
+    const name = (!forceNew && current) ? current : await popupPrompt({
+        title: 'Save Base URL Preset',
+        message: 'Name this base URL preset.',
+        label: 'Preset name',
+        placeholder: 'e.g. DefaultURL',
+        confirmText: 'Save',
+        required: true
+    });
+    if (!name) return;
+    const baseUrl = String(els.sidebarCredUrlDraft?.value || '').trim();
+    try {
+        const res = await fetch(`/api/credentials/${encodeURIComponent(provider)}/urls`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name, base_url: baseUrl, overwrite: true })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || 'Save failed');
+        await applyCredentialsActive({ provider, urlName: name });
+        toast('Base URL preset saved', 'success');
+    } catch (e) {
+        toast(e.message || 'Failed to save URL preset', 'error');
+    }
+}
+
+async function sidebarAddUrlPreset() {
+    const provider = getSidebarCredProvider();
+    const name = await popupPrompt({
+        title: 'Add Base URL Preset',
+        message: 'Create a new base URL preset.',
+        label: 'Preset name',
+        placeholder: 'e.g. NewURL',
+        confirmText: 'Add',
+        required: true
+    });
+    if (!name) return;
+    const baseUrl = String(els.sidebarCredUrlDraft?.value || '').trim();
+    try {
+        const res = await fetch(`/api/credentials/${encodeURIComponent(provider)}/urls`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name, base_url: baseUrl, overwrite: false })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || 'Add failed');
+        await applyCredentialsActive({ provider, urlName: name });
+        toast('Base URL preset added', 'success');
+    } catch (e) {
+        toast(e.message || 'Failed to add URL preset', 'error');
+    }
+}
+
+async function sidebarDeleteUrlPreset() {
+    const provider = getSidebarCredProvider();
+    const cache = state.credentialPresets?.[provider] || { active: {} };
+    const name = String(cache.active?.url_preset || '').trim();
+    if (!name) { toast('No active URL preset to delete', 'info'); return; }
+    const ok = await popupConfirm({
+        title: 'Delete Base URL Preset',
+        message: `Delete base URL preset "${name}"?`,
+        confirmText: 'Delete',
+        cancelText: 'Cancel',
+        danger: true
+    });
+    if (!ok) return;
+    try {
+        const res = await fetch(`/api/credentials/${encodeURIComponent(provider)}/urls/${encodeURIComponent(name)}`, { method: 'DELETE' });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || 'Delete failed');
+        await loadCredentialPresets(provider);
+        await loadConfig();
+        toast('URL preset deleted', 'success');
+    } catch (e) {
+        toast(e.message || 'Failed to delete URL preset', 'error');
+    }
 }
 
 async function saveDefaultModel() {
@@ -4039,8 +4823,7 @@ function updateExportCount() {
 }
 
 function toggleAllExportFiles() {
-    if (state.export.selectedIds.size > 0) clearSelectableSelection(state.export);
-    else state.export.selectedIds = new Set(state.export.files.map(f => f.id));
+    state.export.selectedIds = new Set(state.export.files.map(f => f.id));
     refreshSelectableListUI(els.exportFileList, state.export);
     updateExportCount();
 }
@@ -4141,16 +4924,17 @@ async function buildDraftObject() {
         generate: {
             prompt: els.systemPrompt?.value || '',
             variables: state.generate.variables,
+            presetName: state.generate.variablePresetName || els.presetSelect?.value || '',
             rawText: state.generate.rawText
         },
         chat: {
             messages: state.chat.messages.filter(m => !m.streaming),
             systemPrompt: els.chatSystemPrompt?.value || '',
-            presetName: els.chatPresetSelect?.value || ''
+            presetName: state.chat.presetName || els.chatPresetSelect?.value || ''
         },
         export: {
             systemPrompt: els.exportSystemPrompt?.value || '',
-            presetName: els.exportPresetSelect?.value || ''
+            presetName: state.export.presetName || els.exportPresetSelect?.value || ''
         },
         _localTime: new Date().toISOString()
     };
@@ -4197,6 +4981,10 @@ function applyDraft(draft) {
         state.generate.variables = draft.generate.variables;
         renderVariableInputs(state.generate.variableNames);
     }
+    if (draft.generate?.presetName) {
+        state.generate.variablePresetName = draft.generate.presetName;
+        if (els.presetSelect) els.presetSelect.value = draft.generate.presetName;
+    }
     if (draft.chat?.messages?.length) {
         state.chat.messages = draft.chat.messages;
         renderChatMessages();
@@ -4208,6 +4996,7 @@ function applyDraft(draft) {
         state.chat.systemPrompt = draft.chat.systemPrompt;
     }
     if (draft.chat?.presetName && els.chatPresetSelect) {
+        state.chat.presetName = draft.chat.presetName;
         els.chatPresetSelect.value = draft.chat.presetName;
     }
     if (draft.export?.systemPrompt && els.exportSystemPrompt) {
@@ -4215,6 +5004,7 @@ function applyDraft(draft) {
         state.export.systemPrompt = draft.export.systemPrompt;
     }
     if (draft.export?.presetName && els.exportPresetSelect) {
+        state.export.presetName = draft.export.presetName;
         els.exportPresetSelect.value = draft.export.presetName;
     }
 }
@@ -4279,13 +5069,146 @@ function formatDate(isoString) {
     return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
+// ============ POPUP MODAL (replaces prompt()/confirm()) ============
+const popupState = {
+    resolve: null,
+    requiresInput: false,
+};
+
+function isPopupOpen() {
+    return !!els.popupModal && !els.popupModal.classList.contains('hidden');
+}
+
+function closePopup({ confirmed = false, value = '' } = {}) {
+    if (!els.popupModal) return;
+    els.popupModal.classList.add('hidden');
+    const resolve = popupState.resolve;
+    popupState.resolve = null;
+    popupState.requiresInput = false;
+    resolve?.({ confirmed, value });
+}
+
+function setPopupHint(text = '') {
+    if (!els.popupHint) return;
+    const t = String(text || '').trim();
+    els.popupHint.textContent = t;
+    els.popupHint.classList.toggle('hidden', !t);
+}
+
+function openPopup({
+    title = 'Confirm',
+    message = '',
+    confirmText = 'OK',
+    cancelText = 'Cancel',
+    danger = false,
+    input = null, // { label, value, placeholder, required, hint }
+} = {}) {
+    if (!els.popupModal) return Promise.resolve({ confirmed: false, value: '' });
+    if (popupState.resolve) closePopup({ confirmed: false, value: '' });
+
+    els.popupTitle.textContent = String(title || 'Confirm');
+    els.popupMessage.textContent = String(message || '');
+
+    els.popupCancel.textContent = String(cancelText || 'Cancel');
+    els.popupConfirm.textContent = String(confirmText || 'OK');
+
+    els.popupConfirm.classList.toggle('btn-danger', !!danger);
+    els.popupConfirm.classList.toggle('btn-primary', !danger);
+
+    const wantsInput = !!input;
+    popupState.requiresInput = !!(input && input.required);
+    els.popupInputGroup.classList.toggle('hidden', !wantsInput);
+
+    if (wantsInput) {
+        els.popupInputLabel.textContent = String(input.label || 'Name');
+        els.popupInput.type = String(input.type || 'text');
+        els.popupInput.value = String(input.value || '');
+        els.popupInput.placeholder = String(input.placeholder || '');
+        setPopupHint(input.hint || '');
+    } else {
+        els.popupInput.type = 'text';
+        els.popupInput.value = '';
+        els.popupInput.placeholder = '';
+        setPopupHint('');
+    }
+
+    els.popupModal.classList.remove('hidden');
+
+    // Focus
+    setTimeout(() => {
+        if (wantsInput) {
+            els.popupInput.focus();
+            els.popupInput.select();
+        } else {
+            els.popupConfirm.focus();
+        }
+    }, 0);
+
+    return new Promise(resolve => {
+        popupState.resolve = resolve;
+    });
+}
+
+async function popupConfirm({
+    title = 'Confirm',
+    message = '',
+    confirmText = 'OK',
+    cancelText = 'Cancel',
+    danger = false,
+} = {}) {
+    const res = await openPopup({ title, message, confirmText, cancelText, danger });
+    return !!res.confirmed;
+}
+
+async function popupPrompt({
+    title = 'Enter value',
+    message = '',
+    label = 'Name',
+    value = '',
+    placeholder = '',
+    type = 'text',
+    confirmText = 'Save',
+    cancelText = 'Cancel',
+    required = true,
+    hint = '',
+} = {}) {
+    const res = await openPopup({
+        title,
+        message,
+        confirmText,
+        cancelText,
+        danger: false,
+        input: { label, value, placeholder, required, hint, type }
+    });
+    if (!res.confirmed) return null;
+    return String(res.value || '').trim();
+}
+
 function toast(message, type = 'info') {
     const t = document.createElement('div');
     t.className = `toast toast-${type}`;
     t.textContent = message;
     els.toastContainer.appendChild(t);
     setTimeout(() => t.classList.add('show'), 10);
-    setTimeout(() => { t.classList.remove('show'); setTimeout(() => t.remove(), 300); }, 3000);
+    updateStatusStackLayout();
+    setTimeout(() => {
+        t.classList.remove('show');
+        setTimeout(() => {
+            t.remove();
+            updateStatusStackLayout();
+        }, 300);
+    }, 3000);
+}
+
+function updateStatusStackLayout() {
+    const h = els.toastContainer?.offsetHeight || 0;
+    const pad = h > 0 ? 8 : 0;
+    document.documentElement.style.setProperty('--toast-stack-height', `${h + pad}px`);
+
+    const modelVisible = !!els.modelActivityIndicator && !els.modelActivityIndicator.classList.contains('hidden');
+    const mh = modelVisible ? (els.modelActivityIndicator.offsetHeight || 0) : 0;
+    const mpad = mh > 0 ? 10 : 0;
+    document.documentElement.style.setProperty('--model-indicator-height', `${mh + mpad}px`);
 }
 
 // ============ MACROS MODAL ============
@@ -4431,8 +5354,15 @@ function showHistoryDetail(idx) {
 
 
 
-function clearPromptHistory() {
-    if (!confirm('Clear all prompt history?')) return;
+async function clearPromptHistory() {
+    const ok = await popupConfirm({
+        title: 'Clear History',
+        message: 'Clear all prompt history?',
+        confirmText: 'Clear',
+        cancelText: 'Cancel',
+        danger: true
+    });
+    if (!ok) return;
     state.promptHistory = [];
     dbSet('settings', 'promptHistory', []).catch(() => { });
     renderPromptHistory();
@@ -4441,6 +5371,58 @@ function clearPromptHistory() {
 
 // ============ EVENT LISTENERS ============
 function setupEventListeners() {
+    // Unified popup modal
+    els.popupClose?.addEventListener('click', () => closePopup({ confirmed: false, value: '' }));
+    els.popupCancel?.addEventListener('click', () => closePopup({ confirmed: false, value: '' }));
+    els.popupConfirm?.addEventListener('click', () => {
+        const value = els.popupInputGroup?.classList.contains('hidden') ? '' : (els.popupInput?.value || '');
+        if (popupState.requiresInput && !String(value).trim()) {
+            setPopupHint('Value required.');
+            els.popupInput?.focus();
+            return;
+        }
+        closePopup({ confirmed: true, value });
+    });
+    $('#popup-modal .modal-backdrop')?.addEventListener('click', () => closePopup({ confirmed: false, value: '' }));
+    document.addEventListener('keydown', (e) => {
+        if (!isPopupOpen()) return;
+        if (e.key === 'Escape') {
+            e.preventDefault();
+            e.stopPropagation();
+            closePopup({ confirmed: false, value: '' });
+            return;
+        }
+        if (e.key === 'Enter') {
+            // Only consume Enter for input popups (avoids interfering with other hotkeys).
+            if (els.popupInputGroup?.classList.contains('hidden')) return;
+            e.preventDefault();
+            e.stopPropagation();
+            els.popupConfirm?.click();
+        }
+    }, { capture: true });
+
+    // Model activity indicator + inspector
+    els.modelActivityOpen?.addEventListener('click', (e) => {
+        e.preventDefault();
+        openModelInspector();
+    });
+    els.modelActivityDismiss?.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        dismissModelActivity();
+    });
+    els.closeModelInspectorModal?.addEventListener('click', closeModelInspector);
+    $('#model-inspector-modal .modal-backdrop')?.addEventListener('click', closeModelInspector);
+    els.modelInspectorCopy?.addEventListener('click', () => {
+        const text = state.modelActivity.raw || '';
+        if (!text) { toast('Nothing to copy', 'info'); return; }
+        navigator.clipboard.writeText(text).then(() => toast('Copied', 'success')).catch(() => toast('Copy failed', 'error'));
+    });
+    els.modelInspectorClear?.addEventListener('click', () => {
+        dismissModelActivity();
+        toast('Cleared', 'info');
+    });
+
     // Sidebar
     els.sidebarToggle.addEventListener('click', toggleSidebar);
     els.sidebarOverlay?.addEventListener('click', closeSidebar);
@@ -4454,6 +5436,7 @@ function setupEventListeners() {
     // Provider change
     els.provider.addEventListener('change', () => {
         updateProviderUI();
+        loadCredentialPresets(els.provider.value);
         loadModels();
         // Save provider choice to DB
         fetch('/api/config', {
@@ -4470,10 +5453,55 @@ function setupEventListeners() {
     els.temperature.addEventListener('input', (e) => { els.tempValue.textContent = e.target.value; debouncedSaveDraft(); });
     els.temperature.addEventListener('change', saveDefaultTemperature);
 
-    // API settings
-    els.toggleKey.addEventListener('click', () => { els.apiKey.type = els.apiKey.type === 'password' ? 'text' : 'password'; });
-    els.saveKey.addEventListener('click', saveApiKey);
-    els.saveUrl.addEventListener('click', saveBaseUrl);
+    // Credentials (sidebar presets + draft inputs)
+    els.sidebarCredKeyToggle?.addEventListener('click', () => {
+        if (!els.sidebarCredKeyDraft) return;
+        const show = els.sidebarCredKeyDraft.type === 'password';
+        els.sidebarCredKeyDraft.type = show ? 'text' : 'password';
+        const label = show ? 'Hide API key' : 'Show API key';
+        els.sidebarCredKeyToggle.setAttribute('aria-pressed', show ? 'true' : 'false');
+        els.sidebarCredKeyToggle.setAttribute('aria-label', label);
+        els.sidebarCredKeyToggle.title = show ? 'Hide key' : 'Show key';
+    });
+    els.sidebarCredKeyDraft?.addEventListener('input', () => {
+        setCredentialDraft(getSidebarCredProvider(), { api_key: els.sidebarCredKeyDraft.value });
+    });
+    els.sidebarCredUrlDraft?.addEventListener('input', () => {
+        setCredentialDraft(getSidebarCredProvider(), { base_url: els.sidebarCredUrlDraft.value });
+    });
+    els.sidebarCredKeyLoad?.addEventListener('click', async () => {
+        await loadCredentialPresets(getSidebarCredProvider());
+        openCredPicker('key');
+    });
+    els.sidebarCredUrlLoad?.addEventListener('click', async () => {
+        await loadCredentialPresets(getSidebarCredProvider());
+        openCredPicker('url');
+    });
+    els.sidebarCredKeySave?.addEventListener('click', () => sidebarSaveKeyPreset({ forceNew: false }));
+    els.sidebarCredKeyAdd?.addEventListener('click', sidebarAddKeyPreset);
+    els.sidebarCredKeyDel?.addEventListener('click', sidebarDeleteKeyPreset);
+    els.sidebarCredUrlSave?.addEventListener('click', () => sidebarSaveUrlPreset({ forceNew: false }));
+    els.sidebarCredUrlAdd?.addEventListener('click', sidebarAddUrlPreset);
+    els.sidebarCredUrlDel?.addEventListener('click', sidebarDeleteUrlPreset);
+
+    // Credentials picker modal
+    els.credPickerClose?.addEventListener('click', closeCredPicker);
+    $('#cred-picker-modal .modal-backdrop')?.addEventListener('click', closeCredPicker);
+    els.credPickerTabKey?.addEventListener('click', () => setCredPickerTab('key'));
+    els.credPickerTabUrl?.addEventListener('click', () => setCredPickerTab('url'));
+    els.credPickerSearch?.addEventListener('input', () => {
+        credPickerState.query = String(els.credPickerSearch.value || '');
+        renderCredPicker();
+    });
+    els.credPickerList?.addEventListener('click', async (e) => {
+        const row = e.target.closest('.cred-picker-row');
+        if (!row) return;
+        const name = row.dataset.name || '';
+        const provider = getSidebarCredProvider();
+        if (credPickerState.tab === 'url') await applyCredentialsActive({ provider, urlName: name });
+        else await applyCredentialsActive({ provider, keyName: name });
+        closeCredPicker();
+    });
 
     // Sync settings
     document.querySelectorAll('#auto-sync-enabled, #sync-interval, #auto-save-enabled, #save-interval, #ask-reject-reason').forEach(el => {
@@ -4524,6 +5552,7 @@ function setupEventListeners() {
     // Settings modal
     els.openSettingsBtn?.addEventListener('click', () => {
         openSettingsModal();
+        scrollSettingsSection('settings-misc-section');
         closeSidebar();
     });
     els.closeSettingsModal?.addEventListener('click', closeSettingsModal);
@@ -4534,30 +5563,39 @@ function setupEventListeners() {
     });
 
     // Files Modal Bulk Actions Static Listeners
-    els.filesSelectToggle?.addEventListener('click', () => {
-        if (state.filesModal.selectedIds.size > 0) clearSelectableSelection(state.filesModal);
-        else state.filesModal.selectedIds = new Set(state.filesModal.files.map(f => f.id));
+    const selectAllFiles = () => {
+        state.filesModal.selectedIds = new Set(state.filesModal.files.map(f => f.id));
         refreshSelectableListUI(els.filesModalList, state.filesModal);
         updateFilesModalCount();
-    });
+    };
+    els.filesSelectToggle?.addEventListener('click', selectAllFiles);
+    els.filesSelectToggleRejected?.addEventListener('click', selectAllFiles);
     els.filesClearSelection?.addEventListener('click', () => {
         clearSelectableSelection(state.filesModal);
         refreshSelectableListUI(els.filesModalList, state.filesModal);
         updateFilesModalCount();
     });
-    els.filesLoadAll?.addEventListener('click', () => startLoadAllForSlice({
+    const loadAllFiles = () => startLoadAllForSlice({
         slice: state.filesModal,
         title: 'Files: Loading conversations',
         loadNextPage: () => loadFilesModal(state.filesModal.currentFolder, { reset: false, signal: state.filesModal.loadAllController?.signal || null }),
         hasMore: () => state.filesModal.hasMore && !state.filesModal.isLoading,
         getProgressDetail: () => state.filesModal.currentFolder === 'rejected' ? 'Rejected' : 'Wanted'
-    }));
+    });
+    els.filesLoadAll?.addEventListener('click', loadAllFiles);
+    els.filesLoadAllRejected?.addEventListener('click', loadAllFiles);
     els.filesLoadMore?.addEventListener('click', loadMoreFilesModal);
     $('#files-bulk-reject')?.addEventListener('click', () => handleBulkMove('wanted', 'rejected'));
     $('#files-bulk-restore')?.addEventListener('click', () => handleBulkMove('rejected', 'wanted'));
     $('#files-bulk-delete')?.addEventListener('click', () => handleBulkDelete(state.filesModal.currentFolder));
+    els.filesBulkDeleteRejected?.addEventListener('click', () => handleBulkDelete(state.filesModal.currentFolder));
 
     // Event Delegation for Files Modal List Items
+    els.filesModalList?.addEventListener('mousedown', (e) => {
+        if (!(e.shiftKey || e.ctrlKey || e.metaKey)) return;
+        if (e.target.closest('input, textarea, select, button')) return;
+        e.preventDefault();
+    });
     els.filesModalList?.addEventListener('click', (e) => {
         const item = e.target.closest('.export-file-item');
         if (!item) return;
@@ -4635,6 +5673,11 @@ function setupEventListeners() {
         getProgressDetail: 'Wanted'
     }));
     els.exportLoadMore?.addEventListener('click', loadMoreExportFiles);
+    els.exportFileList?.addEventListener('mousedown', (e) => {
+        if (!(e.shiftKey || e.ctrlKey || e.metaKey)) return;
+        if (e.target.closest('input, textarea, select, button')) return;
+        e.preventDefault();
+    });
     els.exportFileList?.addEventListener('click', (e) => {
         const item = e.target.closest('.export-file-item');
         if (!item) return;
@@ -4679,6 +5722,7 @@ function setupEventListeners() {
     // Presets
     els.presetSelect.addEventListener('change', loadPresetAction);
     els.savePreset.addEventListener('click', savePresetAction);
+    els.newPreset?.addEventListener('click', newPresetAction);
     els.deletePreset?.addEventListener('click', deletePresetAction);
 
     // Custom Parameters
@@ -4720,7 +5764,7 @@ function setupEventListeners() {
 
     // Chat
     els.sendBtn.addEventListener('click', sendChatMessage);
-    els.clearChat.addEventListener('click', clearChat);
+    els.clearChat.addEventListener('click', () => clearChat());
     els.saveChatBtn.addEventListener('click', saveChat);
 
     // Chat header tools
@@ -4767,6 +5811,11 @@ function setupEventListeners() {
     els.reviewBrowserLoadMore?.addEventListener('click', loadMoreReviewBrowser);
     els.reviewBrowserBulkKeep?.addEventListener('click', () => handleReviewBrowserBulk('keep'));
     els.reviewBrowserBulkReject?.addEventListener('click', () => handleReviewBrowserBulk('reject'));
+    els.reviewBrowserList?.addEventListener('mousedown', (e) => {
+        if (!(e.shiftKey || e.ctrlKey || e.metaKey)) return;
+        if (e.target.closest('input, textarea, select, button')) return;
+        e.preventDefault();
+    });
     els.reviewBrowserList?.addEventListener('click', (e) => {
         const item = e.target.closest('.export-file-item');
         if (!item) return;
@@ -4972,7 +6021,16 @@ function renderExportedDatasets() {
         renameBtn.title = 'Rename';
         renameBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path></svg>';
         renameBtn.onclick = async () => {
-            const newName = prompt('Enter new filename (must end in .jsonl):', file.name);
+            const newName = await popupPrompt({
+                title: 'Rename Export',
+                message: 'Enter a new filename (must end in .jsonl).',
+                label: 'Filename',
+                value: file.name,
+                placeholder: 'e.g. my_dataset.jsonl',
+                confirmText: 'Rename',
+                required: true,
+                hint: 'Tip: keep the .jsonl extension.'
+            });
             if (!newName || newName === file.name) return;
             if (!newName.endsWith('.jsonl')) {
                 toast('Filename must end with .jsonl', 'error');
@@ -4999,7 +6057,14 @@ function renderExportedDatasets() {
         deleteBtn.title = 'Delete';
         deleteBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path><line x1="10" y1="11" x2="10" y2="17"></line><line x1="14" y1="11" x2="14" y2="17"></line></svg>';
         deleteBtn.onclick = async () => {
-            if (!confirm(`Delete ${file.name}?`)) return;
+            const ok = await popupConfirm({
+                title: 'Delete Export',
+                message: `Delete ${file.name}?`,
+                confirmText: 'Delete',
+                cancelText: 'Cancel',
+                danger: true
+            });
+            if (!ok) return;
             try {
                 const res = await fetch(`/api/exports/${file.format}/${encodeURIComponent(file.name)}`, { method: 'DELETE' });
                 if (res.ok) {
