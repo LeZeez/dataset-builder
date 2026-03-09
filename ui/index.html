@@ -110,24 +110,102 @@
                         </div>
                         <div class="sidebar-subsection-label">Provider Options</div>
                         <div class="sidebar-field-stack">
-                            <div class="form-group">
-                                <label for="base-url">Base URL</label>
-                                <input type="text" id="base-url" class="input" placeholder="https://api.openai.com/v1">
-                                <button id="save-url" class="btn btn-sm btn-accent btn-full-width">Save URL</button>
-                            </div>
-                            <div class="form-group">
-                                <label for="api-key">API Key</label>
-                                <div class="input-row">
-                                    <input type="password" id="api-key" class="input" placeholder="sk-...">
-                                    <button id="toggle-key" class="icon-btn" title="Show API key">
-                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                                            stroke-width="2">
-                                            <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
-                                            <circle cx="12" cy="12" r="3" />
-                                        </svg>
-                                    </button>
+                            <div class="sidebar-credentials">
+                                <div class="sidebar-cred-block">
+                                    <div class="sidebar-cred-header">
+                                        <div class="sidebar-cred-title"><span>API</span><span>KEY</span></div>
+                                        <div class="sidebar-cred-actions">
+                                            <button id="sidebar-cred-key-save" class="icon-btn" title="Save (overwrite active)" aria-label="Save preset">
+                                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                                    <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
+                                                    <polyline points="17 21 17 13 7 13 7 21"/>
+                                                    <polyline points="7 3 7 8 15 8"/>
+                                                </svg>
+                                            </button>
+                                            <button id="sidebar-cred-key-add" class="icon-btn" title="Add new preset" aria-label="Add preset">
+                                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                                    <line x1="12" y1="5" x2="12" y2="19" />
+                                                    <line x1="5" y1="12" x2="19" y2="12" />
+                                                </svg>
+                                            </button>
+                                            <button id="sidebar-cred-key-del" class="icon-btn text-danger" title="Delete active preset" aria-label="Delete preset">
+                                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                                    <polyline points="3 6 5 6 21 6"/>
+                                                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                                                    <line x1="10" y1="11" x2="10" y2="17"/>
+                                                    <line x1="14" y1="11" x2="14" y2="17"/>
+                                                </svg>
+                                            </button>
+                                            <button id="sidebar-cred-key-load" class="icon-btn" title="Load preset" aria-label="Load preset">
+                                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                                    <path d="M8 6h13"></path>
+                                                    <path d="M8 12h13"></path>
+                                                    <path d="M8 18h13"></path>
+                                                    <path d="M3 6h.01"></path>
+                                                    <path d="M3 12h.01"></path>
+                                                    <path d="M3 18h.01"></path>
+                                                </svg>
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <div id="sidebar-cred-key-active" class="sidebar-cred-active-value">—</div>
+                                    <div class="sidebar-cred-input">
+                                        <input id="sidebar-cred-key-draft" type="password" class="input" placeholder="Draft override (local-only)">
+                                        <button id="sidebar-cred-key-toggle" class="icon-btn" title="Show key">
+                                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+                                                <circle cx="12" cy="12" r="3" />
+                                            </svg>
+                                        </button>
+                                    </div>
                                 </div>
-                                <button id="save-key" class="btn btn-sm btn-accent btn-full-width">Save Key</button>
+
+                                <div class="sidebar-cred-block">
+                                    <div class="sidebar-cred-header">
+                                        <div class="sidebar-cred-title"><span>BASE</span><span>URL</span></div>
+                                        <div class="sidebar-cred-actions">
+                                            <button id="sidebar-cred-url-save" class="icon-btn" title="Save (overwrite active)" aria-label="Save preset">
+                                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                                    <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/>
+                                                    <polyline points="17 21 17 13 7 13 7 21"/>
+                                                    <polyline points="7 3 7 8 15 8"/>
+                                                </svg>
+                                            </button>
+                                            <button id="sidebar-cred-url-add" class="icon-btn" title="Add new preset" aria-label="Add preset">
+                                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                                    <line x1="12" y1="5" x2="12" y2="19" />
+                                                    <line x1="5" y1="12" x2="19" y2="12" />
+                                                </svg>
+                                            </button>
+                                            <button id="sidebar-cred-url-del" class="icon-btn text-danger" title="Delete active preset" aria-label="Delete preset">
+                                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                                    <polyline points="3 6 5 6 21 6"/>
+                                                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/>
+                                                    <line x1="10" y1="11" x2="10" y2="17"/>
+                                                    <line x1="14" y1="11" x2="14" y2="17"/>
+                                                </svg>
+                                            </button>
+                                            <button id="sidebar-cred-url-load" class="icon-btn" title="Load preset" aria-label="Load preset">
+                                                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                                    <path d="M8 6h13"></path>
+                                                    <path d="M8 12h13"></path>
+                                                    <path d="M8 18h13"></path>
+                                                    <path d="M3 6h.01"></path>
+                                                    <path d="M3 12h.01"></path>
+                                                    <path d="M3 18h.01"></path>
+                                                </svg>
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <div id="sidebar-cred-url-active" class="sidebar-cred-active-value">—</div>
+                                    <div class="sidebar-cred-input">
+                                        <input id="sidebar-cred-url-draft" type="text" class="input" placeholder="Draft override (local-only)">
+                                    </div>
+                                </div>
+
+                                <div id="cred-draft-warning" class="status-msg status-warning hidden">
+                                    Draft credentials are active (local-only override).
+                                </div>
                             </div>
                         </div>
                         <div id="api-status" class="status-msg"></div>
@@ -633,10 +711,6 @@ gpt: response"></textarea>
                         <div class="selection-toolbar">
                             <button id="export-select-toggle" class="btn btn-sm btn-secondary">Select All</button>
                             <button id="export-load-all" class="btn btn-sm btn-secondary" title="Fetch all pages (cancelable from the loading tracker)">Load All</button>
-                            <div id="export-selection-chip" class="selection-chip hidden">
-                                <span id="export-file-count">0 selected</span>
-                                <button id="export-clear-selection" class="selection-chip-clear" title="Clear selection">×</button>
-                            </div>
                         </div>
                         <div class="form-group export-filename-group">
                             <label for="export-filename">Custom Filename (optional)</label>
@@ -651,8 +725,16 @@ gpt: response"></textarea>
                             <button id="view-exported-datasets-btn" class="btn btn-sm btn-secondary ml-auto">View Exported</button>
                         </div>
                         <div class="modal-preview-layout">
-                            <div id="export-file-list" class="export-file-list">
-                                <!-- Files loaded dynamically -->
+                            <div class="list-stack">
+                                <div class="list-overlay">
+                                    <div id="export-selection-chip" class="selection-chip hidden">
+                                        <span id="export-file-count">0 selected</span>
+                                        <button id="export-clear-selection" class="selection-chip-clear" title="Clear selection">×</button>
+                                    </div>
+                                </div>
+                                <div id="export-file-list" class="export-file-list">
+                                    <!-- Files loaded dynamically -->
+                                </div>
                             </div>
                             <div class="modal-preview-card">
                                 <div class="modal-preview-header">Preview</div>
@@ -699,26 +781,34 @@ gpt: response"></textarea>
                     </div>
 
                     <div class="export-selection flex-1">
-                        <div class="export-selection-header">
-                            <label>Saved Conversations</label>
-                            <div class="export-selection-actions" id="files-bulk-actions">
+                        <div class="files-selection-header">
+                            <div class="files-header-left">
+                                <label>Saved Conversations</label>
+                            </div>
+                            <div class="files-header-right export-selection-actions hidden" id="files-bulk-actions-wanted">
                                 <button id="files-select-toggle" class="btn btn-sm btn-secondary">Select All</button>
                                 <button id="files-load-all" class="btn btn-sm btn-secondary" title="Fetch all pages (cancelable from the loading tracker)">Load All</button>
-                                <button id="files-bulk-reject" class="btn btn-sm btn-secondary" data-folder="wanted"
-                                    hidden>Move to Rejected</button>
-                                <button id="files-bulk-restore" class="btn btn-sm btn-secondary" data-folder="rejected"
-                                    hidden>Move to Wanted</button>
-                                <button id="files-bulk-delete" class="btn btn-sm btn-danger"
-                                    data-folder="wanted rejected" hidden>Delete</button>
-                                <div id="files-selection-chip" class="selection-chip hidden">
-                                    <span id="files-modal-count">0 selected</span>
-                                    <button id="files-clear-selection" class="selection-chip-clear" title="Clear selection">×</button>
-                                </div>
+                                <button id="files-bulk-reject" class="btn btn-sm btn-secondary">Move to Rejected</button>
+                                <button id="files-bulk-delete" class="btn btn-sm btn-danger">Delete</button>
+                            </div>
+                            <div class="files-header-right export-selection-actions hidden" id="files-bulk-actions-rejected">
+                                <button id="files-select-toggle-rejected" class="btn btn-sm btn-secondary">Select All</button>
+                                <button id="files-load-all-rejected" class="btn btn-sm btn-secondary" title="Fetch all pages (cancelable from the loading tracker)">Load All</button>
+                                <button id="files-bulk-restore" class="btn btn-sm btn-secondary">Move to Wanted</button>
+                                <button id="files-bulk-delete-rejected" class="btn btn-sm btn-danger">Delete</button>
                             </div>
                         </div>
                         <div class="modal-preview-layout">
-                            <div id="files-modal-list" class="export-file-list max-h-50vh">
-                                <!-- Files loaded dynamically -->
+                            <div class="list-stack">
+                                <div class="list-overlay">
+                                    <div id="files-selection-chip" class="selection-chip hidden">
+                                        <span id="files-modal-count">0 selected</span>
+                                        <button id="files-clear-selection" class="selection-chip-clear" title="Clear selection">×</button>
+                                    </div>
+                                </div>
+                                <div id="files-modal-list" class="export-file-list max-h-50vh">
+                                    <!-- Files loaded dynamically -->
+                                </div>
                             </div>
                             <div class="modal-preview-card">
                                 <div class="modal-preview-header">Preview</div>
@@ -799,7 +889,7 @@ gpt: response"></textarea>
                                         <span class="hint" title="After rejecting a conversation, show a small prompt to label why it was rejected.">i</span>
                                     </label>
                                     <div class="settings-row-control">
-                                        <input type="checkbox" id="ask-reject-reason" checked>
+                                        <input type="checkbox" id="ask-reject-reason">
                                     </div>
                                 </div>
                             </div>
@@ -843,7 +933,7 @@ gpt: response"></textarea>
                                         <span class="hint" title="How often drafts are saved locally while you type.">i</span>
                                     </label>
                                     <div class="settings-row-control">
-                                        <input type="number" id="save-interval" class="input input-sm" value="2000" min="500" max="10000" step="500">
+                                        <input type="number" id="save-interval" class="input input-sm" value="20" min="20" max="10000" step="10">
                                     </div>
                                 </div>
                                 <div class="settings-row">
@@ -994,15 +1084,19 @@ gpt: response"></textarea>
                                 <button id="review-browser-load-all" class="btn btn-sm btn-secondary" title="Fetch all pages (cancelable from the loading tracker)">Load All</button>
                                 <button id="review-browser-bulk-keep" class="btn btn-sm btn-success">Keep Selected</button>
                                 <button id="review-browser-bulk-reject" class="btn btn-sm btn-danger">Reject Selected</button>
-                                <div id="review-browser-selection-chip" class="selection-chip hidden">
-                                    <span id="review-browser-count">0 selected</span>
-                                    <button id="review-browser-clear-selection" class="selection-chip-clear" title="Clear selection">×</button>
-                                </div>
                             </div>
                         </div>
                         <div class="modal-preview-layout">
-                            <div id="review-browser-list" class="export-file-list max-h-50vh">
-                                <!-- Review items loaded dynamically -->
+                            <div class="list-stack">
+                                <div class="list-overlay">
+                                    <div id="review-browser-selection-chip" class="selection-chip hidden">
+                                        <span id="review-browser-count">0 selected</span>
+                                        <button id="review-browser-clear-selection" class="selection-chip-clear" title="Clear selection">×</button>
+                                    </div>
+                                </div>
+                                <div id="review-browser-list" class="export-file-list max-h-50vh">
+                                    <!-- Review items loaded dynamically -->
+                                </div>
                             </div>
                             <div class="modal-preview-card">
                                 <div class="modal-preview-header">Preview</div>
@@ -1052,6 +1146,13 @@ gpt: response"></textarea>
                                 <path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z" />
                                 <polyline points="17 21 17 13 7 13 7 21" />
                                 <polyline points="7 3 7 8 15 8" />
+                            </svg>
+                        </button>
+                        <button id="new-preset" class="icon-btn" title="New preset">
+                            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                                stroke-width="2">
+                                <line x1="12" y1="5" x2="12" y2="19" />
+                                <line x1="5" y1="12" x2="19" y2="12" />
                             </svg>
                         </button>
                         <button id="delete-preset" class="icon-btn" title="Delete preset">
@@ -1159,7 +1260,96 @@ gpt: response"></textarea>
         </div>
 
         <!-- Toast Container -->
+        <div id="model-activity-indicator" class="model-activity hidden" role="button" tabindex="0" title="Model activity (click to inspect)">
+            <div class="model-activity-main">
+                <span id="model-activity-spinner" class="model-activity-spinner" aria-hidden="true"></span>
+                <div class="model-activity-text">
+                    <div id="model-activity-label" class="model-activity-label">Thinking...</div>
+                    <div id="model-activity-meta" class="model-activity-meta">—</div>
+                </div>
+            </div>
+            <button id="model-activity-dismiss" class="model-activity-dismiss" type="button" title="Dismiss">×</button>
+        </div>
+
         <div id="toast-container" class="toast-container"></div>
+
+        <div id="model-inspector-modal" class="modal hidden">
+            <div class="modal-backdrop"></div>
+            <div class="modal-content model-inspector-content">
+                <div class="export-header">
+                    <h3>Model Activity</h3>
+                    <button id="close-model-inspector-modal" class="icon-btn" title="Close">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <line x1="18" y1="6" x2="6" y2="18" />
+                            <line x1="6" y1="6" x2="18" y2="18" />
+                        </svg>
+                    </button>
+                </div>
+                <div class="export-body flex-col">
+                    <div class="model-inspector-summary">
+                        <div id="model-inspector-status" class="status-msg">—</div>
+                        <div id="model-inspector-meta" class="muted small">—</div>
+                    </div>
+                    <pre id="model-inspector-raw" class="model-inspector-raw"></pre>
+                    <div class="modal-actions">
+                        <button id="model-inspector-copy" class="btn btn-sm btn-secondary">Copy</button>
+                        <button id="model-inspector-clear" class="btn btn-sm btn-danger">Clear</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div id="cred-picker-modal" class="modal hidden">
+            <div class="modal-backdrop"></div>
+            <div class="modal-content cred-picker-content">
+                <div class="export-header">
+                    <h3>Load Credential Preset</h3>
+                    <button id="cred-picker-close" class="icon-btn" title="Close">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <line x1="18" y1="6" x2="6" y2="18" />
+                            <line x1="6" y1="6" x2="18" y2="18" />
+                        </svg>
+                    </button>
+                </div>
+                <div class="export-body flex-col">
+                    <div class="cred-picker-tabs">
+                        <button id="cred-picker-tab-key" class="cred-picker-tab active" type="button">API Key</button>
+                        <button id="cred-picker-tab-url" class="cred-picker-tab" type="button">Base URL</button>
+                    </div>
+                    <div class="files-search-actions">
+                        <input type="text" id="cred-picker-search" class="input" placeholder="Search presets...">
+                    </div>
+                    <div id="cred-picker-list" class="cred-picker-list"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Unified Popup Modal (replaces prompt()/confirm()) -->
+        <div id="popup-modal" class="modal hidden" aria-live="polite">
+            <div class="modal-backdrop"></div>
+            <div class="modal-content popup-modal-content">
+                <div class="export-header">
+                    <h3 id="popup-title">Confirm</h3>
+                    <button id="popup-close" class="icon-btn" title="Close">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="2">
+                            <line x1="18" y1="6" x2="6" y2="18" />
+                            <line x1="6" y1="6" x2="18" y2="18" />
+                        </svg>
+                    </button>
+                </div>
+                <div id="popup-message" class="popup-message muted"></div>
+                <div id="popup-input-group" class="form-group hidden">
+                    <label id="popup-input-label" for="popup-input">Name</label>
+                    <input id="popup-input" class="input" type="text" autocomplete="off">
+                    <div id="popup-hint" class="small muted hidden"></div>
+                </div>
+                <div class="modal-actions">
+                    <button id="popup-cancel" class="btn btn-secondary">Cancel</button>
+                    <button id="popup-confirm" class="btn btn-primary">OK</button>
+                </div>
+            </div>
+        </div>
     </div>
 
     <script src="app.js?v=4.0.0"></script>

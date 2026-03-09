@@ -1011,6 +1011,17 @@ def get_presets(preset_type: str) -> list:
         ).fetchall()
     return [{'name': row['name'], **json.loads(row['data'])} for row in rows]
 
+def get_preset(preset_type: str, name: str) -> dict | None:
+    """Get a single preset by type and name."""
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT data FROM presets WHERE type = ? AND name = ?",
+            (preset_type, name)
+        ).fetchone()
+    if not row:
+        return None
+    return json.loads(row['data']) if row['data'] else {}
+
 
 def save_preset(preset_type: str, name: str, data: dict,
                 overwrite: bool = True) -> bool:
@@ -1252,15 +1263,21 @@ def get_provider_settings() -> dict:
         'providers': {
             'openai': {
                 'base_url': raw.get('openai.base_url', ''),
-                'api_key': raw.get('openai.api_key', '')
+                'api_key': raw.get('openai.api_key', ''),
+                'active_key_preset': raw.get('openai.active_key_preset', ''),
+                'active_url_preset': raw.get('openai.active_url_preset', '')
             },
             'anthropic': {
                 'base_url': raw.get('anthropic.base_url', 'https://api.anthropic.com/v1'),
-                'api_key': raw.get('anthropic.api_key', '')
+                'api_key': raw.get('anthropic.api_key', ''),
+                'active_key_preset': raw.get('anthropic.active_key_preset', ''),
+                'active_url_preset': raw.get('anthropic.active_url_preset', '')
             },
             'google': {
                 'base_url': raw.get('google.base_url', 'https://generativelanguage.googleapis.com/v1beta'),
-                'api_key': raw.get('google.api_key', '')
+                'api_key': raw.get('google.api_key', ''),
+                'active_key_preset': raw.get('google.active_key_preset', ''),
+                'active_url_preset': raw.get('google.active_url_preset', '')
             }
         }
     }
