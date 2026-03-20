@@ -16,6 +16,7 @@ const CHAT_ZOOM_MAX = 2;
 const CHAT_ZOOM_STEP = 0.1;
 const MODAL_PAGE_SIZE = 500;
 const UI_PREFS_KEY = 'uiPrefs';
+const RAW_CONVERSATION_SEPARATOR_RE = /^\s*\+\+\+\s*$/m;
 const hydratedFields = { model: false, temperature: false };
 
 function applyChatZoom() {
@@ -1453,7 +1454,12 @@ async function init() {
     switchTab(state.uiPrefs.currentTab || state.currentTab);
 
     // Initial renders
-    renderConversation([]);
+    if (getGenerateRawText().trim()) parseAndRender();
+    else {
+        renderConversation([]);
+        updateTurnCount(0);
+        disableActionButtons();
+    }
     renderChatMessages();
     renderReviewItem();
 }
@@ -2156,20 +2162,30 @@ async function deletePresetAction() {
 }
 
 // ============ CUSTOM PARAMETERS ============
-function renderCustomParams() {
+function setElementHtmlIfChanged(el, html) {
+    if (!el) return false;
+    if (el.innerHTML === html) return false;
+    el.innerHTML = html;
+    return true;
+}
+
+function renderCustomParamsSummary() {
     const params = state.customParams || {};
     const keys = Object.keys(params);
-    if (els.customParamsList) {
-        els.customParamsList.innerHTML = keys.length === 0
-            ? '<div class="empty-params">No custom parameters added</div>'
-            : keys.map(key => `
-                <div class="custom-param-item" data-key="${escapeHtml(key)}">
-                    <span class="param-key">${escapeHtml(key)}</span>
-                    <span class="param-value">${escapeHtml(String(params[key]))}</span>
-                </div>
-            `).join('');
-    }
+    const summaryHtml = keys.length === 0
+        ? '<div class="empty-params">No custom parameters added</div>'
+        : keys.map(key => `
+            <div class="custom-param-item" data-key="${escapeHtml(key)}">
+                <span class="param-key">${escapeHtml(key)}</span>
+                <span class="param-value">${escapeHtml(String(params[key]))}</span>
+            </div>
+        `).join('');
+    setElementHtmlIfChanged(els.customParamsList, summaryHtml);
+}
 
+function renderCustomParamsModalList() {
+    const params = state.customParams || {};
+    const keys = Object.keys(params);
     if (!els.customParamsModalList) return;
     const search = els.customParamsSearchInput?.value?.trim().toLowerCase() || '';
     const filteredKeys = keys.filter(key =>
@@ -2178,12 +2194,17 @@ function renderCustomParams() {
         String(params[key]).toLowerCase().includes(search)
     );
 
-    if (filteredKeys.length === 0) {
-        els.customParamsModalList.innerHTML = '<div class="empty-params">No matching parameters</div>';
+    if (keys.length === 0) {
+        setElementHtmlIfChanged(els.customParamsModalList, '<div class="empty-params">No custom parameters added</div>');
         return;
     }
 
-    els.customParamsModalList.innerHTML = filteredKeys.map(key => `
+    if (filteredKeys.length === 0) {
+        setElementHtmlIfChanged(els.customParamsModalList, '<div class="empty-params">No matching parameters</div>');
+        return;
+    }
+
+    const modalHtml = filteredKeys.map(key => `
         <div class="custom-param-item" data-key="${escapeHtml(key)}">
             <span class="param-key">${escapeHtml(key)}</span>
             <span class="param-value" data-key="${escapeHtml(key)}" title="Click to edit">${escapeHtml(String(params[key]))}</span>
@@ -2192,12 +2213,12 @@ function renderCustomParams() {
             </button>
         </div>
     `).join('');
-    els.customParamsModalList.querySelectorAll('.param-remove').forEach(btn => {
-        btn.addEventListener('click', () => removeCustomParam(btn.dataset.key));
-    });
-    els.customParamsModalList.querySelectorAll('.param-value').forEach(span => {
-        span.addEventListener('click', () => startEditParam(span.dataset.key, span));
-    });
+    setElementHtmlIfChanged(els.customParamsModalList, modalHtml);
+}
+
+function renderCustomParams() {
+    renderCustomParamsSummary();
+    renderCustomParamsModalList();
 }
 
 function startEditParam(key, span) {
@@ -3201,7 +3222,7 @@ async function loadConversation(id, folder) {
         if (res.ok) {
             const conv = await res.json();
             state.generate.conversation = conv;
-            state.generate.rawText = conversationToRaw(conv.conversations);
+            setGenerateRawText(conversationToRaw(conv.conversations));
             renderConversation(conv.conversations);
             updateTurnCount(countConversationTurns(conv.conversations));
             enableActionButtons();
@@ -3376,6 +3397,93 @@ function dismissModelActivity() {
 }
 
 // ============ GENERATION (Single & Bulk) ============
+function setGenerateRawText(rawText) {
+    const next = String(rawText ?? '');
+    state.generate.rawText = next;
+    if (els.conversationEdit) els.conversationEdit.value = next;
+    return next;
+}
+
+function getGenerateRawText() {
+    return state.generate.isEditing
+        ? String(els.conversationEdit?.value ?? '')
+        : String(state.generate.rawText ?? '');
+}
+
+function splitRawConversationBlocks(text) {
+    const rawText = String(text ?? '');
+    if (!rawText.trim()) return [];
+    return rawText
+        .split(RAW_CONVERSATION_SEPARATOR_RE)
+        .map(part => part.trim())
+        .filter(Boolean);
+}
+
+function buildGenerateMetadata({
+    promptResolved = state.generate.lastResolvedPrompt || '',
+    macroTrace = state.generate.lastMacroTrace,
+    generatedAt = null,
+    rejectReason = null
+} = {}) {
+    const metadata = {
+        provider: els.provider.value,
+        model: getModelValue(),
+        temperature: parseFloat(els.temperature.value),
+        prompt_template: state.currentPromptName,
+        prompt_resolved: promptResolved,
+        macro_trace: safeJsonClone(macroTrace, null),
+        variables: safeJsonClone(state.generate.variables, {}),
+        custom_params: safeJsonClone(state.customParams, {})
+    };
+    if (generatedAt) metadata.generated_at = generatedAt;
+    if (rejectReason) metadata.reject_reason = rejectReason;
+    return metadata;
+}
+
+function buildReviewQueueItemsFromRawText(rawText, metadata = {}) {
+    const blocks = splitRawConversationBlocks(rawText);
+    const items = [];
+    for (const convRaw of blocks) {
+        const parsed = parseMinimalFormat(convRaw);
+        if (parsed.length > 0) {
+            items.push({
+                conversations: parsed,
+                rawText: convRaw,
+                metadata: safeJsonClone(metadata, {})
+            });
+        }
+    }
+    return { blocks, items };
+}
+
+async function queueRawConversations(rawText, { metadata = {}, refreshView = true } = {}) {
+    const { blocks, items } = buildReviewQueueItemsFromRawText(rawText, metadata);
+    if (items.length === 0) return { blocks, items, added: [] };
+    const added = await addReviewQueueItems(items, { refreshView });
+    return { blocks, items, added };
+}
+
+function hasSavableGenerateContent(rawText = getGenerateRawText()) {
+    const blocks = splitRawConversationBlocks(rawText);
+    if (!blocks.length) return false;
+    return blocks.some(block => parseMinimalFormat(block).length > 0);
+}
+
+function renderGenerateMultiConversationNotice(count) {
+    els.conversationView.innerHTML = `
+        <div class="empty-state">
+            <div class="empty-icon">${ICON_EMPTY_QUEUE}</div>
+            <p>${count} conversations detected</p>
+            <p class="small">Use Save or Reject to add them to the review queue.</p>
+        </div>
+    `;
+}
+
+function syncGenerateActionButtons() {
+    if (hasSavableGenerateContent()) enableActionButtons();
+    else disableActionButtons();
+}
+
 async function generate() {
     const count = parseInt(els.bulkCount?.value) || 1;
     if (count > 1) { await bulkGenerate(count); return; }
@@ -3409,6 +3517,7 @@ async function generate() {
     state.generate.lastMacroTrace = safeJsonClone(state.macroTraceLast, null);
     addToPromptHistory(promptText);
     const modelRunId = beginModelActivity({ provider: els.provider.value, model: getModelValue(), source: 'Generate' });
+    let fullText = '';
     try {
         const response = await fetch('/api/generate/stream', {
             method: 'POST',
@@ -3427,7 +3536,6 @@ async function generate() {
         setModelActivityPhase(modelRunId, 'thinking');
 
         const reader = response.body.getReader();
-        let fullText = '';
         els.conversationView.innerHTML = '<div class="streaming-text"></div>';
         const streamingEl = els.conversationView.querySelector('.streaming-text');
 
@@ -3440,6 +3548,7 @@ async function generate() {
                 fullText += data.content;
                 appendModelActivityText(modelRunId, data.content);
                 streamingEl.textContent = fullText;
+                setGenerateRawText(extractOutput(fullText, { allowPartial: true }));
             }
             if (data.done) setModelActivityPhase(modelRunId, 'done');
             if (data.error) throw new Error(data.error);
@@ -3447,46 +3556,36 @@ async function generate() {
         setModelActivityPhase(modelRunId, 'done');
 
         const extractedText = extractOutput(fullText);
+        const blocks = splitRawConversationBlocks(extractedText);
 
-        if (extractedText.includes('+++')) {
-            const conversationsRaw = extractedText.split('+++').map(s => s.trim()).filter(s => s);
-            const now = new Date().toISOString();
-            const items = [];
-            for (const convRaw of conversationsRaw) {
-                const parsed = parseMinimalFormat(convRaw);
-                if (parsed.length > 0) {
-                    items.push({
-                        conversations: parsed,
-                        rawText: convRaw,
-                        metadata: {
-                            provider: els.provider.value,
-                            model: getModelValue(),
-                            temperature: parseFloat(els.temperature.value),
-                            prompt_template: state.currentPromptName,
-                            prompt_resolved: promptText,
-                            macro_trace: state.generate.lastMacroTrace,
-                            variables: { ...state.generate.variables },
-                            custom_params: state.customParams,
-                            generated_at: now
-                        }
-                    });
-                }
+        if (blocks.length > 1) {
+            const { added } = await queueRawConversations(extractedText, {
+                metadata: buildGenerateMetadata({
+                    promptResolved: promptText,
+                    macroTrace: state.generate.lastMacroTrace,
+                    generatedAt: new Date().toISOString()
+                })
+            });
+            if (added.length > 0) {
+                toast(`Added ${added.length} conversations to review queue`, 'success');
+                resetGenerateTab();
+                await saveRecoveryDraft('generateQueued');
+            } else {
+                setGenerateRawText(extractedText);
+                parseAndRender();
             }
-            const added = await addReviewQueueItems(items);
-            if (added.length > 0) toast(`Added ${added.length} conversations to review queue`, 'success');
-
-            // Clear current view so we don't accidentally save duplicates manually
-            state.generate.rawText = '';
-            els.conversationEdit.value = '';
-            parseAndRender();
-            disableActionButtons();
         } else {
-            state.generate.rawText = extractedText;
-            els.conversationEdit.value = extractedText;
+            setGenerateRawText(extractedText);
             parseAndRender();
-            enableActionButtons();
         }
     } catch (e) {
+        const partialText = extractOutput(fullText, { allowPartial: true });
+        if (partialText) {
+            setGenerateRawText(partialText);
+            if (hasSavableGenerateContent(partialText)) parseAndRender();
+            else syncGenerateActionButtons();
+            await saveRecoveryDraft(e.name === 'AbortError' ? 'generateAbort' : 'generateError');
+        }
         if (e.name === 'AbortError') {
             setModelActivityPhase(modelRunId, 'canceled');
         } else {
@@ -3532,7 +3631,7 @@ async function bulkGenerate(count) {
     renderBulkDetailsList();
     renderBulkDetailsPreview();
 
-    const generatedItems = [];
+    let queuedCount = 0;
     for (let i = 0; i < count; i++) {
         if (state.bulk.abortController.signal.aborted) break;
         state.bulk.activeIndex = i;
@@ -3609,30 +3708,18 @@ async function bulkGenerate(count) {
             if (state.bulk.selectedRunIndex === i) renderBulkDetailsPreview();
             updateBulkProgress();
 
-            const conversationsRaw = extractedText.includes('+++')
-                ? extractedText.split('+++').map(s => s.trim()).filter(s => s)
-                : [extractedText];
-
-            for (const convRaw of conversationsRaw) {
-                const parsed = parseMinimalFormat(convRaw);
-                if (parsed.length > 0) {
-                    generatedItems.push({
-                        conversations: parsed,
-                        rawText: convRaw,
-                        metadata: {
-                            provider: els.provider.value,
-                            model: getModelValue(),
-                            temperature: parseFloat(els.temperature.value),
-                            prompt_template: state.currentPromptName,
-                            prompt_resolved: promptText,
-                            macro_trace: run.macroTrace,
-                            variables: { ...state.generate.variables },
-                            custom_params: state.customParams,
-                            generated_at: run.startedAt
-                        }
-                    });
-                }
-            }
+            const { blocks, added } = await queueRawConversations(extractedText, {
+                metadata: buildGenerateMetadata({
+                    promptResolved: promptText,
+                    macroTrace: run.macroTrace,
+                    generatedAt: run.startedAt
+                }),
+                refreshView: false
+            });
+            run.generatedCount = blocks.length;
+            run.queuedCount = added.length;
+            queuedCount += added.length;
+            throttledRenderBulkDetails();
         } catch (e) {
             if (e.name === 'AbortError') {
                 run.status = 'canceled';
@@ -3656,16 +3743,18 @@ async function bulkGenerate(count) {
         updateBulkProgress();
     }
 
+    const wasCanceled = !!state.bulk.abortController?.signal?.aborted;
     state.bulk.isRunning = false;
     state.bulk.abortController = null;
     state.bulk.activeIndex = null;
     els.bulkProgress.classList.add('hidden');
-    if (generatedItems.length > 0) {
-        await addReviewQueueItems(generatedItems);
-    }
-    toast(`Generated ${state.bulk.completed}/${count} conversations`, 'success');
+    renderBulkDetailsSummary();
+    const summary = queuedCount > 0
+        ? `${state.bulk.completed}/${count} completed · ${queuedCount} queued`
+        : `${state.bulk.completed}/${count} completed`;
+    toast(wasCanceled ? `Bulk generation canceled (${summary})` : `Bulk generation finished (${summary})`, wasCanceled ? 'info' : 'success');
     updateReviewBadge();
-    if (state.bulk.completed > 0) switchTab('review');
+    if (queuedCount > 0) switchTab('review');
 }
 
 function updateBulkProgress() {
@@ -3713,9 +3802,11 @@ function renderBulkDetailsSummary() {
     const errs = state.bulk.runs.filter(r => r.status === 'error').length;
     const canceled = state.bulk.runs.filter(r => r.status === 'canceled').length;
     const done = state.bulk.runs.filter(r => r.status === 'done').length;
+    const queued = state.bulk.runs.reduce((sum, run) => sum + (Number(run?.queuedCount || 0) || 0), 0);
     const parts = [
         total ? `Total: ${total}` : '',
         `Done: ${done}`,
+        queued ? `Queued: ${queued}` : '',
         errs ? `Errors: ${errs}` : '',
         canceled ? `Canceled: ${canceled}` : '',
         state.bulk.isRunning ? `Running: ${completed + 1}` : ''
@@ -3740,7 +3831,8 @@ function renderBulkDetailsList() {
         const chars = Number(r.charCount || 0) || 0;
         const snippet = String(r.outputText || '').trim().split('\n')[0] || '';
         const snippetTrimmed = snippet.length > 140 ? snippet.slice(0, 140) + '…' : snippet;
-        const meta2 = [meta, chars ? `${chars.toLocaleString()} chars` : '', snippetTrimmed ? `“${snippetTrimmed}”` : ''].filter(Boolean).join(' • ');
+        const queued = Number(r.queuedCount || 0) || 0;
+        const meta2 = [meta, queued ? `${queued} queued` : '', chars ? `${chars.toLocaleString()} chars` : '', snippetTrimmed ? `“${snippetTrimmed}”` : ''].filter(Boolean).join(' • ');
         return `<div class="export-file-item ${active ? 'active-preview' : ''}" data-index="${idx}">
             <div class="export-file-info">
                 <div class="export-file-preview bulk-run-preview">
@@ -3775,20 +3867,35 @@ function renderBulkDetailsPreview() {
 function parseAndRender() {
     // Force parse from edit buffer if editing
     if (state.generate.isEditing) {
-        state.generate.rawText = els.conversationEdit.value;
+        setGenerateRawText(els.conversationEdit.value);
     }
-    const parsed = parseMinimalFormat(state.generate.rawText);
+    const rawText = getGenerateRawText();
+    const blocks = splitRawConversationBlocks(rawText);
+    if (blocks.length > 1) {
+        state.generate.conversation = null;
+        renderGenerateMultiConversationNotice(blocks.length);
+        updateTurnCount(blocks.length, 'conversation', 'conversations');
+        syncGenerateActionButtons();
+        return;
+    }
+    const parsed = parseMinimalFormat(rawText);
     state.generate.conversation = { conversations: parsed };
     renderConversation(parsed);
     updateTurnCount(countConversationTurns(parsed));
+    syncGenerateActionButtons();
 }
 
-function extractOutput(text) {
-    const match = text.match(/<output>([\s\S]*?)<\/output>/);
+function extractOutput(text, { allowPartial = false } = {}) {
+    const source = String(text ?? '');
+    const match = source.match(/<output>([\s\S]*?)<\/output>/);
     if (match) {
         return match[1].trim();
     }
-    return text.trim();
+    if (allowPartial) {
+        const start = source.indexOf('<output>');
+        if (start !== -1) return source.slice(start + '<output>'.length).trimStart();
+    }
+    return source.trim();
 }
 
 function parseMinimalFormat(text) {
@@ -3822,30 +3929,35 @@ function renderConversation(messages) {
     els.conversationView.scrollTop = els.conversationView.scrollHeight;
 }
 
-function updateTurnCount(count) { els.turnCount.textContent = `${count} turns`; }
+function updateTurnCount(count, singular = 'turn', plural = 'turns') {
+    els.turnCount.textContent = `${count} ${count === 1 ? singular : plural}`;
+}
 
 
 // ============ SAVE/REJECT ============
 async function saveConversation(folder, reason = null) {
-    // Force parse from current state
-    if (state.generate.isEditing) {
-        state.generate.rawText = els.conversationEdit.value;
-        parseAndRender();
+    const rawText = setGenerateRawText(getGenerateRawText());
+    const blocks = splitRawConversationBlocks(rawText);
+    if (blocks.length > 1) {
+        const { added } = await queueRawConversations(rawText, {
+            metadata: buildGenerateMetadata({ rejectReason: reason })
+        });
+        if (added.length > 0) {
+            toast(`Added ${added.length} conversations to review queue`, 'success');
+            hideSaveIndicator('Queued ✓');
+            resetGenerateTab();
+            await saveRecoveryDraft('saveConversationQueue');
+            switchTab('review');
+        } else {
+            toast('No valid conversations found to add to the review queue', 'info');
+        }
+        return;
     }
+    parseAndRender();
     if (!state.generate.conversation?.conversations?.length) return;
 
     showSaveIndicator('Saving...');
-    const metadata = {
-        provider: els.provider.value,
-        model: getModelValue(),
-        temperature: parseFloat(els.temperature.value),
-        prompt_template: state.currentPromptName,
-        prompt_resolved: state.generate.lastResolvedPrompt || '',
-        macro_trace: state.generate.lastMacroTrace,
-        variables: state.generate.variables,
-        custom_params: state.customParams
-    };
-    if (reason) metadata.reject_reason = reason;
+    const metadata = buildGenerateMetadata({ rejectReason: reason });
 
     try {
         const res = await fetch('/api/save', {
@@ -3882,8 +3994,7 @@ function hideRejectModal() { els.rejectModal.classList.add('hidden'); }
 
 function resetGenerateTab() {
     state.generate.conversation = null;
-    state.generate.rawText = '';
-    els.conversationEdit.value = '';
+    setGenerateRawText('');
     renderConversation([]);
     updateTurnCount(0);
     disableActionButtons();
@@ -3898,7 +4009,7 @@ function toggleEditMode() {
     if (state.generate.isEditing) {
         els.conversationView.classList.add('hidden');
         els.conversationEdit.classList.remove('hidden');
-        els.conversationEdit.value = state.generate.rawText;
+        els.conversationEdit.value = getGenerateRawText();
         els.editToggle.innerHTML = `${ICON_VIEW} View`;
 
         // Also enable buttons immediately if there is text when entering edit mode
@@ -3910,7 +4021,7 @@ function toggleEditMode() {
     } else {
         els.conversationView.classList.remove('hidden');
         els.conversationEdit.classList.add('hidden');
-        state.generate.rawText = els.conversationEdit.value;
+        setGenerateRawText(els.conversationEdit.value);
         parseAndRender();
         els.editToggle.innerHTML = `${ICON_EDIT} Edit`;
     }
@@ -4332,7 +4443,7 @@ function createLocalReviewEntry(item) {
     };
 }
 
-async function addReviewQueueItems(items) {
+async function addReviewQueueItems(items, { refreshView = true } = {}) {
     if (!items.length) return [];
     const seen = new Set();
     const filtered = [];
@@ -4363,8 +4474,14 @@ async function addReviewQueueItems(items) {
         const data = await res.json();
         const added = data.added || [];
         const total = (typeof data.count === 'number') ? data.count : (prevTotal + added.length);
-        const startIndex = Math.max(0, total - added.length);
-        await loadReviewQueue({ reset: true, targetAbsoluteIndex: startIndex });
+        const shouldRefreshView = refreshView || state.currentTab === 'review' || state.review.queue.length === 0;
+        if (shouldRefreshView) {
+            const startIndex = Math.max(0, total - added.length);
+            await loadReviewQueue({ reset: true, targetAbsoluteIndex: startIndex });
+        } else {
+            state.review.total = total;
+            updateReviewBadge();
+        }
         return added;
     } catch (e) {
         const prevTotal = state.review.total || 0;
@@ -4375,7 +4492,13 @@ async function addReviewQueueItems(items) {
         }
         console.error('Failed to add to server review queue, saved locally:', e);
         toast('Server unreachable: saved review items locally', 'warning');
-        await loadReviewQueue({ reset: true, targetAbsoluteIndex: startIndex });
+        const shouldRefreshView = refreshView || state.currentTab === 'review' || state.review.queue.length === 0;
+        if (shouldRefreshView) {
+            await loadReviewQueue({ reset: true, targetAbsoluteIndex: startIndex });
+        } else {
+            state.review.total = prevTotal + localEntries.length;
+            updateReviewBadge();
+        }
         return localEntries;
     }
 }
@@ -6121,7 +6244,7 @@ async function buildDraftObject() {
             prompt: els.systemPrompt?.value || '',
             variables: state.generate.variables,
             presetName: state.generate.variablePresetName || els.presetSelect?.value || '',
-            rawText: state.generate.rawText
+            rawText: getGenerateRawText()
         },
         chat: {
             messages: state.chat.messages.filter(m => !m.streaming),
@@ -6211,6 +6334,9 @@ function applyDraft(draft) {
     if (draft.generate?.presetName) {
         state.generate.variablePresetName = draft.generate.presetName;
         if (els.presetSelect) els.presetSelect.value = draft.generate.presetName;
+    }
+    if (typeof draft.generate?.rawText === 'string') {
+        setGenerateRawText(draft.generate.rawText);
     }
     if (draft.chat?.messages?.length) {
         state.chat.messages = draft.chat.messages;
@@ -7248,10 +7374,21 @@ function setupEventListeners() {
     els.openCustomParamsBtn?.addEventListener('click', openCustomParamsModal);
     els.closeCustomParamsModal?.addEventListener('click', closeCustomParamsModal);
     $('#custom-params-modal .modal-backdrop')?.addEventListener('click', closeCustomParamsModal);
-    els.customParamsSearchInput?.addEventListener('input', renderCustomParams);
+    els.customParamsSearchInput?.addEventListener('input', renderCustomParamsModalList);
     els.customParamAddBtn?.addEventListener('click', addCustomParam);
     els.customParamKey?.addEventListener('keydown', (e) => { if (e.key === 'Enter') addCustomParam(); });
     els.customParamValue?.addEventListener('keydown', (e) => { if (e.key === 'Enter') addCustomParam(); });
+    els.customParamsModalList?.addEventListener('click', (e) => {
+        const removeBtn = e.target.closest('.param-remove');
+        if (removeBtn?.dataset.key) {
+            removeCustomParam(removeBtn.dataset.key);
+            return;
+        }
+        const valueEl = e.target.closest('.param-value');
+        if (valueEl?.dataset.key) {
+            startEditParam(valueEl.dataset.key, valueEl);
+        }
+    });
 
     // Generate
     els.generateBtn.addEventListener('click', generate);
@@ -7290,11 +7427,10 @@ function setupEventListeners() {
 
     // Manual edit listener
     els.conversationEdit.addEventListener('input', () => {
-        if (state.generate.isEditing && els.conversationEdit.value.trim().length > 0) {
-            enableActionButtons();
-        } else if (state.generate.isEditing) {
-            disableActionButtons();
-        }
+        if (!state.generate.isEditing) return;
+        setGenerateRawText(els.conversationEdit.value);
+        syncGenerateActionButtons();
+        debouncedSaveDraft();
     });
 
     // Save/Reject
