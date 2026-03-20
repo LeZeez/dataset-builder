@@ -49,6 +49,30 @@ VALID_FOLDERS = ('wanted', 'rejected')
 VALID_PROVIDERS = ('openai', 'anthropic', 'google')
 
 _config_lock = threading.Lock()
+LOGGER = logging.getLogger(__name__)
+
+
+def _get_json_object():
+    """Return a JSON object body or an empty dict for an empty/invalidly absent body."""
+    data = request.get_json(silent=True)
+    if data is None:
+        return {}
+    if not isinstance(data, dict):
+        return None
+    return data
+
+
+def _parse_bool_flag(raw_value) -> bool:
+    """Parse booleans explicitly so string payloads like 'false' stay false."""
+    if isinstance(raw_value, bool):
+        return raw_value
+    if isinstance(raw_value, str):
+        normalized = raw_value.strip().lower()
+        if normalized in ('true', '1', 'yes', 'on'):
+            return True
+        if normalized in ('false', '0', 'no', 'off'):
+            return False
+    return False
 
 
 def is_safe_id(id_str: str) -> bool:
@@ -149,7 +173,7 @@ def ensure_config_defaults() -> dict:
             save_config(config)
         except Exception:
             # Best-effort; avoid crashing server start because config is read-only.
-            pass
+            LOGGER.exception("Failed to save config; continuing startup")
 
     return config
 
@@ -370,7 +394,9 @@ def update_server_config():
     For database.path, this endpoint only validates and persists the new path.
     A process restart is required to fully switch the live app to the new DB file.
     """
-    data = request.get_json() or {}
+    data = _get_json_object()
+    if data is None:
+        return jsonify({'error': 'Invalid JSON payload'}), 400
     config = ensure_config_defaults()
     if not isinstance(config, dict):
         config = {}
@@ -1131,15 +1157,19 @@ def export_dataset_endpoint(format: str):
         return jsonify({'error': 'Invalid format'}), 400
     
     try:
-        data = request.get_json() or {}
+        data = _get_json_object()
+        if data is None:
+            return jsonify({'error': 'Invalid JSON payload'}), 400
         selected_ids = data.get('ids', None)  # List of IDs or None for all
+        if selected_ids is not None and not isinstance(selected_ids, list):
+            return jsonify({'error': 'ids must be an array of conversation IDs'}), 400
         folder = data.get('folder', 'wanted')
         if not is_valid_folder(folder):
             return jsonify({'error': 'Invalid folder'}), 400
         system_prompt = data.get('system_prompt', None)
         system_prompt_mode = data.get('system_prompt_mode', None)
         filename = data.get('filename', None) # Optional custom filename
-        write_manifest = bool(data.get('write_manifest', False))
+        write_manifest = _parse_bool_flag(data.get('write_manifest', False))
         prompt_source = data.get('prompt_source', '')
         if system_prompt_mode == 'override':
             system_prompt_mode = 'replace_all'
@@ -1193,10 +1223,12 @@ def export_preview_endpoint(format: str):
     if format not in VALID_EXPORT_FORMATS:
         return jsonify({'error': 'Invalid format'}), 400
 
-    data = request.get_json() or {}
+    data = _get_json_object()
+    if data is None:
+        return jsonify({'error': 'Invalid JSON payload'}), 400
     selected_ids = data.get('ids', None)
     if selected_ids is not None and not isinstance(selected_ids, list):
-        selected_ids = None
+        return jsonify({'error': 'ids must be an array of conversation IDs'}), 400
     folder = data.get('folder', 'wanted')
     if not is_valid_folder(folder):
         return jsonify({'error': 'Invalid folder'}), 400
