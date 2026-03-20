@@ -4630,14 +4630,17 @@ async function ensureReviewQueueIdsSynced(ids) {
 async function fetchReviewQueueWindowFromServer({ offset = 0, limit = 0, search = '', signal = null } = {}) {
     const safeOffset = Math.max(0, Math.floor(Number(offset) || 0));
     const safeLimit = Math.max(1, Math.floor(Number(limit) || getModalPageSize()));
+    const MAX_FETCH_ITERATIONS = 10;
     const collected = [];
     let total = 0;
     let nextOffset = safeOffset;
     let guard = 0;
+    let iterationCapped = false;
 
     // The server may cap oversized pages by bytes, so keep fetching until we
     // reconstruct the logical page the UI asked for.
-    while (collected.length < safeLimit && guard < safeLimit) {
+    const maxIterations = Math.max(1, Math.min(safeLimit, MAX_FETCH_ITERATIONS));
+    while (collected.length < safeLimit && guard < maxIterations) {
         const requested = safeLimit - collected.length;
         const params = new URLSearchParams({
             limit: String(requested),
@@ -4663,7 +4666,17 @@ async function fetchReviewQueueWindowFromServer({ offset = 0, limit = 0, search 
         guard++;
     }
 
-    return { items: collected, total: total || collected.length };
+    if (guard >= maxIterations && collected.length < safeLimit) {
+        iterationCapped = true;
+        console.warn('Review queue window fetch capped; returning partial results', {
+            safeLimit,
+            guard,
+            nextOffset,
+            collected: collected.length
+        });
+    }
+
+    return { items: collected, total: total || collected.length, iterationCapped };
 }
 
 function syncReviewBrowserPreviewState() {
@@ -5350,7 +5363,15 @@ async function loadReviewBrowser({ reset = false, signal = null } = {}) {
         }
     } catch (e) {
         if (e?.name === 'AbortError') {
-            if (state.reviewBrowser.requestSeq === requestSeq) state.reviewBrowser.isLoading = false;
+            if (state.reviewBrowser.requestSeq === requestSeq) {
+                state.reviewBrowser.isLoading = false;
+                syncReviewBrowserPreviewState();
+                if (!els.reviewBrowserModal?.classList.contains('hidden')) {
+                    renderReviewBrowserPreview();
+                    updateReviewBrowserPaginationUI();
+                    renderReviewBrowserList();
+                }
+            }
             return;
         }
         const search = els.reviewBrowserSearchInput?.value?.trim().toLowerCase() || '';
