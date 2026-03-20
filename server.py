@@ -1155,7 +1155,7 @@ def export_dataset_endpoint(format: str):
         
         output_path = export_dataset(
             output_dir='exports',
-            format=format,
+            export_format=format,
             selected_ids=selected_ids,
             system_prompt=system_prompt,
             system_prompt_mode=system_prompt_mode,
@@ -1216,7 +1216,7 @@ def export_preview_endpoint(format: str):
     try:
         total_conversations = db.count_conversations_for_export(folder=folder, ids=selected_ids)
         conversations_iter = db.iter_conversations_for_export(folder=folder, ids=selected_ids)
-        preview = preview_export_lines(conversations_iter, format=format, system_prompt=system_prompt, system_prompt_mode=system_prompt_mode, limit=limit)
+        preview = preview_export_lines(conversations_iter, export_format=format, system_prompt=system_prompt, system_prompt_mode=system_prompt_mode, limit=limit)
 
         return jsonify({
             'success': True,

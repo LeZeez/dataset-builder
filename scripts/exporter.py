@@ -17,6 +17,10 @@ from scripts import database as db
 SystemPromptMode = Literal[
     "keep",
     "add_if_missing",
+    # Legacy default behavior when `system_prompt_mode` is omitted: only replace the
+    # leading system message (or insert at index 0), preserving any mid-conversation
+    # system messages.
+    "replace_first",
     "replace_all",
     "remove_all",
     "prepend",
@@ -34,7 +38,7 @@ def _normalize_system_prompt_mode(system_prompt_mode: str | None) -> str | None:
         return "replace_all"
     if mode == "strip":
         return "remove_all"
-    if mode in ("keep", "add_if_missing", "replace_all", "remove_all", "prepend", "append"):
+    if mode in ("keep", "add_if_missing", "replace_first", "replace_all", "remove_all", "prepend", "append"):
         return mode
     return None
 
@@ -43,9 +47,9 @@ def _apply_system_prompt_mode(conv_data: dict, system_prompt: str | None, system
     mode = _normalize_system_prompt_mode(system_prompt_mode)
     if not mode:
         # Backwards-compatible behavior:
-        # - if a non-empty system prompt is provided: replace_all
+        # - if a non-empty system prompt is provided: replace_first
         # - otherwise: keep original system messages
-        mode = "replace_all" if (system_prompt is not None and str(system_prompt).strip() != "") else "keep"
+        mode = "replace_first" if (system_prompt is not None and str(system_prompt).strip() != "") else "keep"
 
     messages = conv_data.get("conversations", [])
     if not isinstance(messages, list):
@@ -61,6 +65,15 @@ def _apply_system_prompt_mode(conv_data: dict, system_prompt: str | None, system
     prompt = "" if system_prompt is None else str(system_prompt)
     prompt_is_blank = (prompt.strip() == "")
     system_indexes = [idx for idx, m in enumerate(messages) if isinstance(m, dict) and m.get("from") == "system"]
+
+    if mode == "replace_first":
+        if prompt_is_blank:
+            return
+        if messages and isinstance(messages[0], dict) and messages[0].get("from") == "system":
+            messages[0]["value"] = prompt
+        else:
+            messages.insert(0, {"from": "system", "value": prompt})
+        return
 
     if mode == "remove_all":
         conv_data["conversations"] = [m for m in messages if isinstance(m, dict) and m.get("from") != "system"]
@@ -82,12 +95,14 @@ def _apply_system_prompt_mode(conv_data: dict, system_prompt: str | None, system
         return
 
     if mode in ("prepend", "append"):
+        if prompt_is_blank:
+            return
         if system_indexes:
             idx = system_indexes[0]
             existing = "" if messages[idx].get("value") is None else str(messages[idx].get("value"))
             if not existing:
                 messages[idx]["value"] = prompt
-            elif not prompt:
+            elif prompt_is_blank:
                 # No-op if prompt is empty (preserve existing).
                 messages[idx]["value"] = existing
             elif mode == "prepend":
@@ -156,7 +171,7 @@ def to_alpaca(conv: dict) -> list[dict]:
 
 def preview_export_lines(
     conversations: Iterable[dict],
-    format: Literal["sharegpt", "openai", "alpaca"] = "sharegpt",
+    export_format: Literal["sharegpt", "openai", "alpaca"] = "sharegpt",
     system_prompt: str | None = None,
     system_prompt_mode: SystemPromptMode | None = None,
     limit: int = 20,
@@ -170,7 +185,7 @@ def preview_export_lines(
         "sharegpt": to_sharegpt,
         "openai": to_openai,
         "alpaca": to_alpaca
-    }[format]
+    }[export_format]
 
     lines: list[str] = []
     total_entries = 0
@@ -201,7 +216,7 @@ def preview_export_lines(
 
         _apply_system_prompt_mode(conv_data, system_prompt, system_prompt_mode)
 
-        if format == "alpaca" and truncated:
+        if export_format == "alpaca" and truncated:
             # Fast-path counting without building full pair dicts once preview lines are already full.
             total_entries += _count_alpaca_pairs(conv_data.get("conversations", []))
             continue
@@ -232,7 +247,7 @@ def preview_export_lines(
 
 def export_dataset(
     output_dir: str = "exports",
-    format: Literal["sharegpt", "openai", "alpaca"] = "sharegpt",
+    export_format: Literal["sharegpt", "openai", "alpaca"] = "sharegpt",
     selected_ids: list[str] | None = None,
     system_prompt: str | None = None,
     system_prompt_mode: SystemPromptMode | None = None,
@@ -240,17 +255,17 @@ def export_dataset(
     folder: Literal["wanted", "rejected"] = "wanted"
 ) -> Path:
     """Export conversations from SQLite to the selected format."""
-    output_path = Path(output_dir) / format
+    output_path = Path(output_dir) / export_format
     output_path.mkdir(parents=True, exist_ok=True)
 
     converter = {
         "sharegpt": to_sharegpt,
         "openai": to_openai,
         "alpaca": to_alpaca
-    }[format]
+    }[export_format]
 
     if not filename:
-        filename = f"dataset_{format}_{int(time.time())}.jsonl"
+        filename = f"dataset_{export_format}_{int(time.time())}.jsonl"
 
     output_file = output_path / filename
 
@@ -285,7 +300,7 @@ def export_dataset(
 def export_all_formats(output_dir: str = "exports", folder: Literal["wanted", "rejected"] = "wanted"):
     """Export the selected folder to all supported formats."""
     for fmt in ["sharegpt", "openai", "alpaca"]:
-        export_dataset(output_dir=output_dir, format=fmt, folder=folder)
+        export_dataset(output_dir=output_dir, export_format=fmt, folder=folder)
 
 
 if __name__ == "__main__":
@@ -303,4 +318,4 @@ if __name__ == "__main__":
     if args.format == "all":
         export_all_formats(output_dir=args.output, folder=args.folder)
     else:
-        export_dataset(output_dir=args.output, format=args.format, folder=args.folder)
+        export_dataset(output_dir=args.output, export_format=args.format, folder=args.folder)
