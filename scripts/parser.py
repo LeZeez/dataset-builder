@@ -23,11 +23,11 @@ def parse_minimal_format(text: str, conv_id: str | None = None, metadata: dict |
         if not block:
             continue
 
-        match = re.match(r'^(user|gpt):\s*(.*)', block, re.DOTALL)
+        match = re.match(r'^(user|gpt|system):\s*(.*)', block, re.DOTALL)
         if match:
             role, content = match.groups()
             conversations.append({
-                "from": "human" if role == "user" else "gpt",
+                "from": "human" if role == "user" else ("system" if role == "system" else "gpt"),
                 "value": content.strip()
             })
 

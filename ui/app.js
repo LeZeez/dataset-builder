@@ -14,7 +14,7 @@ const ICON_EMPTY_QUEUE = '<svg width="32" height="32" viewBox="0 0 24 24" fill="
 const CHAT_ZOOM_MIN = 0.5;
 const CHAT_ZOOM_MAX = 2;
 const CHAT_ZOOM_STEP = 0.1;
-const MODAL_PAGE_SIZE = 100;
+const MODAL_PAGE_SIZE = 500;
 const UI_PREFS_KEY = 'uiPrefs';
 const hydratedFields = { model: false, temperature: false };
 
@@ -358,9 +358,14 @@ function applyHotkeysToUI() {
 
 async function loadUiPrefs() {
     try {
+        state._hadUiPrefs = false;
         const saved = await dbGet('settings', UI_PREFS_KEY);
         if (!saved) return;
+        state._hadUiPrefs = true;
         state.uiPrefs = { ...state.uiPrefs, ...saved };
+        state.uiPrefs.exportSystemMode = normalizeExportSystemMode(state.uiPrefs.exportSystemMode);
+        state.uiPrefs.modalPageSize = clampNumber(state.uiPrefs.modalPageSize, { min: 50, max: 2000, fallback: MODAL_PAGE_SIZE });
+        state.uiPrefs.skipLoadAllWarning = !!state.uiPrefs.skipLoadAllWarning;
         state.currentTab = state.uiPrefs.currentTab || 'generate';
         state.chat.zoomLevel = state.uiPrefs.chatZoom ?? 1;
         state.chat.showAllTools = !!state.uiPrefs.showAllTools;
@@ -376,6 +381,7 @@ async function loadUiPrefs() {
         if (els.virtualBatchSize) els.virtualBatchSize.value = String(state.uiPrefs.virtualBatchSize ?? 200);
         if (els.virtualMaxBatches) els.virtualMaxBatches.value = String(state.uiPrefs.virtualMaxBatches ?? 3);
         if (els.autoLoadOnScroll) els.autoLoadOnScroll.checked = state.uiPrefs.autoLoadOnScroll !== false;
+        if (els.modalPageSize) els.modalPageSize.value = String(getModalPageSize());
         applyVirtualPrefs();
         updateSidebarExportButton();
     } catch (e) { }
@@ -388,6 +394,11 @@ function saveUiPrefs() {
     state.uiPrefs.chatPromptCollapsed = document.querySelector('.chat-system-prompt')?.classList.contains('collapsed') ?? true;
     state.uiPrefs.settingsSearch = els.settingsSearchInput?.value || '';
     state.uiPrefs.lastExportFormat = normalizeExportFormat(state.uiPrefs.lastExportFormat);
+    state.uiPrefs.exportFolder = (state.uiPrefs.exportFolder === 'rejected') ? 'rejected' : 'wanted';
+    state.uiPrefs.exportSystemMode = normalizeExportSystemMode(state.uiPrefs.exportSystemMode);
+    state.uiPrefs.exportPromptSource = ['custom', 'chat', 'generate'].includes(state.uiPrefs.exportPromptSource) ? state.uiPrefs.exportPromptSource : 'custom';
+    state.uiPrefs.modalPageSize = clampNumber(state.uiPrefs.modalPageSize, { min: 50, max: 2000, fallback: MODAL_PAGE_SIZE });
+    state.uiPrefs.skipLoadAllWarning = !!state.uiPrefs.skipLoadAllWarning;
     dbSet('settings', UI_PREFS_KEY, state.uiPrefs).catch(() => { });
 }
 
@@ -466,6 +477,10 @@ function clampNumber(val, { min = -Infinity, max = Infinity, fallback = 0 } = {}
     return Math.max(min, Math.min(max, num));
 }
 
+function getModalPageSize() {
+    return clampNumber(state.uiPrefs?.modalPageSize, { min: 50, max: 2000, fallback: MODAL_PAGE_SIZE });
+}
+
 function applyVirtualPrefs() {
     const enabled = state.uiPrefs.virtualListEnabled !== false;
     const batchSize = clampNumber(state.uiPrefs.virtualBatchSize, { min: 50, max: 2000, fallback: 200 });
@@ -503,6 +518,7 @@ function matchesHotkey(e, hotkeyStr) {
 // ============ STATE ============
 const state = {
     config: null,
+    serverConfig: null,
     credentialDraft: {
         openai: { api_key: '', base_url: '' },
         anthropic: { api_key: '', base_url: '' },
@@ -517,6 +533,7 @@ const state = {
     prompts: [],
     currentPromptName: '',
     listIterators: {},
+    macroTraceLast: null, // last resolved macro values (non-preview)
     generate: {
         prompt: '',
         variables: {},
@@ -524,6 +541,8 @@ const state = {
         variablePresetName: '',
         conversation: null,
         rawText: '',
+        lastResolvedPrompt: '',
+        lastMacroTrace: null,
         isEditing: false,
         isLoading: false,
         abortController: null
@@ -533,6 +552,7 @@ const state = {
         isStreaming: false,
         systemPrompt: '',
         presetName: '',
+        lastResolvedSystemPrompt: '',
         abortController: null,
         editingIndex: null,
         zoomLevel: 1,
@@ -565,15 +585,17 @@ const state = {
         loadAllTaskId: null,
         loadAllController: null
     },
-	    export: {
-        selectedIds: new Set(),
-        anchorId: null,
-        previewId: null,
-        previewConversation: null,
-        files: [],
-        systemPrompt: '',
-        presetName: '',
-        offset: 0,
+    export: {
+	        selectedIds: new Set(),
+	        anchorId: null,
+	        previewId: null,
+	        previewConversation: null,
+	        files: [],
+	        folder: 'wanted',
+            systemPromptMode: 'add_if_missing',
+	        systemPrompt: '',
+	        presetName: '',
+	        offset: 0,
         total: 0,
         hasMore: false,
         isLoading: false,
@@ -594,7 +616,7 @@ const state = {
         queue: [],
         currentIndex: 0,
         isEditing: false,
-        offset: 0,
+        pageOffset: 0,
         total: 0,
         hasMore: false,
         isLoading: false
@@ -625,11 +647,15 @@ const state = {
         isRunning: false,
         total: 0,
         completed: 0,
-        abortController: null
+        abortController: null,
+        runs: [],
+        selectedRunIndex: null,
+        activeIndex: null
     },
     tags: [],
     customParams: {},
     promptHistory: [], // array of {text, timestamp}
+    promptPreview: { text: '', trace: null },
     tasks: {
         nextId: 1,
         items: new Map()
@@ -651,6 +677,11 @@ const state = {
         chatPromptCollapsed: true,
         settingsSearch: '',
         lastExportFormat: 'sharegpt',
+        exportFolder: 'wanted',
+        exportSystemMode: 'add_if_missing',
+        exportPromptSource: 'custom',
+        modalPageSize: 500,
+        skipLoadAllWarning: false,
         virtualListEnabled: true,
         virtualBatchSize: 200,
         virtualMaxBatches: 3,
@@ -989,6 +1020,22 @@ async function startLoadAllForSlice({ slice, title, loadNextPage, hasMore, getPr
         toast('Already loading...', 'info');
         return;
     }
+    if (!state.uiPrefs.skipLoadAllWarning) {
+        const { confirmed, checked } = await popupConfirmWithCheckbox({
+            title: 'Load All',
+            message: `Load All can be slow on large datasets.\n\nTip: Auto-load while scrolling is usually enough. If you see lag, lower "Modal fetch size" in Settings → Advanced.`,
+            confirmText: 'Load All',
+            cancelText: 'Cancel',
+            danger: false,
+            checkboxLabel: 'Do not ask again',
+            checkboxChecked: false,
+        });
+        if (!confirmed) return;
+        if (checked) {
+            state.uiPrefs.skipLoadAllWarning = true;
+            saveUiPrefs();
+        }
+    }
     const controller = new AbortController();
     slice.loadAllController = controller;
     slice.isLoadAllRunning = true;
@@ -1143,6 +1190,13 @@ async function init() {
         bulkProgress: $('#bulk-progress'),
         bulkProgressFill: $('#bulk-progress-fill'),
         bulkProgressText: $('#bulk-progress-text'),
+        bulkDetails: $('#bulk-details'),
+        bulkDetailsModal: $('#bulk-details-modal'),
+        closeBulkDetailsModal: $('#close-bulk-details-modal'),
+        bulkDetailsList: $('#bulk-details-list'),
+        bulkDetailsPreview: $('#bulk-details-preview'),
+        bulkDetailsSummary: $('#bulk-details-summary'),
+        bulkDetailsClear: $('#bulk-details-clear'),
         bulkCancel: $('#bulk-cancel'),
         conversationView: $('#conversation-view'),
         conversationEdit: $('#conversation-edit'),
@@ -1195,11 +1249,19 @@ async function init() {
         settingsSearchInput: $('#settings-search-input'),
         exportModal: $('#export-modal'),
         exportSearchInput: $('#export-search-input'),
+        exportFolder: $('#export-folder'),
         exportFormat: $('#export-format'),
         exportPromptSourceCustom: $('#export-prompt-source-custom'),
         exportPromptSourceChat: $('#export-prompt-source-chat'),
         exportPromptSourceGenerate: $('#export-prompt-source-generate'),
         exportCustomPromptGroup: $('#export-custom-prompt-group'),
+        exportSystemModeBtn: $('#export-system-mode-btn'),
+        exportSystemModeSummary: $('#export-system-mode-summary'),
+        exportSystemModeModal: $('#export-system-mode-modal'),
+        closeExportSystemModeModal: $('#close-export-system-mode-modal'),
+        exportSystemModeCards: $('#export-system-mode-cards'),
+        exportSystemModeCancel: $('#export-system-mode-cancel'),
+        exportSystemModeApply: $('#export-system-mode-apply'),
         exportSystemPrompt: $('#export-system-prompt'),
         exportPresetSelect: $('#export-preset-select'),
         saveExportPreset: $('#save-export-preset'),
@@ -1212,12 +1274,10 @@ async function init() {
         exportSelectionChip: $('#export-selection-chip'),
         exportLoadAll: $('#export-load-all'),
         exportPreview: $('#export-preview'),
-        exportLoadMore: $('#export-load-more'),
         exportPaginationStatus: $('#export-pagination-status'),
         closeExport: $('#close-export'),
         confirmExport: $('#confirm-export'),
         cancelExport: $('#cancel-export'),
-        filesLoadMore: $('#files-load-more'),
         filesPaginationStatus: $('#files-pagination-status'),
 
         // Toast
@@ -1236,6 +1296,18 @@ async function init() {
         modelInspectorRaw: $('#model-inspector-raw'),
         modelInspectorCopy: $('#model-inspector-copy'),
         modelInspectorClear: $('#model-inspector-clear'),
+        exportPreviewModal: $('#export-preview-modal'),
+        closeExportPreviewModal: $('#close-export-preview-modal'),
+        exportPreviewSummary: $('#export-preview-summary'),
+        exportPreviewJsonl: $('#export-preview-jsonl'),
+        copyExportPreview: $('#copy-export-preview'),
+        promptPreviewModal: $('#prompt-preview-modal'),
+        closePromptPreviewModal: $('#close-prompt-preview-modal'),
+        promptPreviewText: $('#prompt-preview-text'),
+        promptPreviewTrace: $('#prompt-preview-trace'),
+        promptPreviewCopy: $('#prompt-preview-copy'),
+        promptPreviewCopyTrace: $('#prompt-preview-copy-trace'),
+        promptPreviewClose: $('#prompt-preview-close'),
         credPickerModal: $('#cred-picker-modal'),
         credPickerClose: $('#cred-picker-close'),
         credPickerTabKey: $('#cred-picker-tab-key'),
@@ -1249,6 +1321,9 @@ async function init() {
         popupInputLabel: $('#popup-input-label'),
         popupInput: $('#popup-input'),
         popupHint: $('#popup-hint'),
+        popupCheckboxGroup: $('#popup-checkbox-group'),
+        popupCheckbox: $('#popup-checkbox'),
+        popupCheckboxLabel: $('#popup-checkbox-label'),
         popupClose: $('#popup-close'),
         popupCancel: $('#popup-cancel'),
         popupConfirm: $('#popup-confirm'),
@@ -1277,6 +1352,8 @@ async function init() {
         exportedDatasetsList: $('#exported-datasets-list'),
         exportedDatasetsSearchInput: $('#exported-datasets-search-input'),
         exportFilename: $('#export-filename'),
+        exportWriteManifest: $('#export-write-manifest'),
+        previewExport: $('#preview-export'),
         reviewBrowserModal: $('#review-browser-modal'),
         closeReviewBrowserModal: $('#close-review-browser-modal'),
         reviewBrowserSearchInput: $('#review-browser-search-input'),
@@ -1290,9 +1367,9 @@ async function init() {
         reviewBrowserBulkKeep: $('#review-browser-bulk-keep'),
         reviewBrowserBulkReject: $('#review-browser-bulk-reject'),
         reviewBrowserPaginationStatus: $('#review-browser-pagination-status'),
-        reviewBrowserLoadMore: $('#review-browser-load-more'),
         macrosBadge: $('#macros-badge'),
         openHistoryBtn: $('#open-history-btn'),
+        previewResolvedBtn: $('#preview-resolved-btn'),
         promptHistoryList: $('#prompt-history-list'),
         clearHistoryBtn: $('#clear-history-btn'),
         builderType: $('#builder-type'),
@@ -1302,13 +1379,24 @@ async function init() {
         builderRollInput: $('#builder-roll-input'),
         builderPreviewText: $('#builder-preview-text'),
         builderCopy: $('#builder-copy'),
-        historyMaxSetting: $('#history-max-setting')
+        historyMaxSetting: $('#history-max-setting'),
+        resetMacrosBtn: $('#reset-macros-btn'),
+        macrosStateBody: $('#macros-state-body')
         ,
+        // Database settings
+        databasePath: $('#database-path'),
+        databasePathOptions: $('#database-path-options'),
+        applyDatabasePath: $('#apply-database-path'),
+        scanDatabasePaths: $('#scan-database-paths'),
+        backupDatabaseBtn: $('#backup-database-btn'),
+        databasePathNote: $('#database-path-note'),
+
         // Advanced settings
         virtualListEnabled: $('#virtual-list-enabled'),
         virtualBatchSize: $('#virtual-batch-size'),
         virtualMaxBatches: $('#virtual-max-batches'),
-        autoLoadOnScroll: $('#auto-load-on-scroll')
+        autoLoadOnScroll: $('#auto-load-on-scroll'),
+        modalPageSize: $('#modal-page-size')
     };
 
     // Initialize sync engine
@@ -1319,9 +1407,10 @@ async function init() {
     await loadCredentialDraft();
     applyVirtualPrefs();
     updateSidebarExportButton();
-    await restoreDraft();
+    state._restoredDraft = await restoreDraft();
 
     // Load data
+    await loadServerConfig();
     await loadConfig();
     await loadCredentialPresets(els.provider.value);
     await loadPrompts();
@@ -1330,6 +1419,7 @@ async function init() {
     await loadPresets();
     await loadChatPresets();
     await loadExportPresets();
+    applyFirstRunDefaults();
     await loadReviewQueue();
     await loadPromptHistory();
 
@@ -1366,6 +1456,58 @@ function hideSaveIndicator(text) {
 }
 
 // ============ CONFIG ============
+async function loadServerConfig() {
+    try {
+        const res = await fetch('/api/server-config', { method: 'GET', cache: 'no-store' });
+        if (!res.ok) return;
+        const data = await res.json();
+        state.serverConfig = data;
+        const path = String(data?.database?.path || 'data/dataset.db');
+        if (els.databasePath && document.activeElement !== els.databasePath) {
+            els.databasePath.value = path;
+        }
+        if (els.databasePathNote) {
+            els.databasePathNote.textContent = 'Restart the server after switching databases for best results.';
+        }
+        // Populate autocomplete options for the DB path input.
+        loadDatabaseCandidates({ quiet: true });
+    } catch (e) { }
+}
+
+function renderDatabaseCandidates(candidates) {
+    if (!els.databasePathOptions) return;
+    const paths = Array.isArray(candidates) ? candidates : [];
+    els.databasePathOptions.innerHTML = paths.map(p => `<option value="${escapeHtml(String(p || ''))}"></option>`).join('');
+}
+
+async function loadDatabaseCandidates({ quiet = false } = {}) {
+    try {
+        const res = await fetch('/api/databases/list', { method: 'GET', cache: 'no-store' });
+        if (!res.ok) return;
+        const data = await res.json().catch(() => ({}));
+        renderDatabaseCandidates(data.candidates || []);
+        if (!quiet) toast(`Found ${(data.candidates || []).length || 0} database file(s)`, 'success');
+    } catch (e) {
+        if (!quiet) toast('Failed to scan databases', 'error');
+    }
+}
+
+async function backupDatabaseNow() {
+    showSaveIndicator('Backing up DB...');
+    try {
+        const res = await fetch('/api/databases/backup', { method: 'POST' });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || 'Backup failed');
+        toast(`Backup created: ${data.path}`, 'success');
+        hideSaveIndicator('Backed up ✓');
+        // The backup is a .db file, so refresh the candidates list.
+        loadDatabaseCandidates({ quiet: true });
+    } catch (e) {
+        toast(e.message || 'Backup failed', 'error');
+        hideSaveIndicator('Backup failed');
+    }
+}
+
 async function loadConfig() {
     try {
         const res = await fetch('/api/config');
@@ -1523,7 +1665,7 @@ async function loadPrompts() {
 
 function renderPromptSelect() {
     if (!els.promptSelect) return;
-    els.promptSelect.innerHTML = '<option value="">Select prompt...</option>';
+    els.promptSelect.innerHTML = '<option value="">Load preset...</option>';
     state.prompts.forEach(p => {
         const opt = document.createElement('option');
         opt.value = p.name;
@@ -1710,46 +1852,138 @@ function rollDice(notation) {
     return total;
 }
 
-function _resolveInlineMacros(text, isPreview) {
+function _emptyMacroTrace() {
+    return { random: {}, list: {}, roll: {}, variables: {} };
+}
+
+function _cleanMacroParts(rest) {
+    return String(rest || '')
+        .split('::')
+        .map(p => p.trim())
+        .filter(p => p.length > 0);
+}
+
+function _resolveInlineMacros(text, { isPreview, memo, trace, recordTrace = null, iteratorState = null, advanceList = null } = {}) {
+    const preview = !!isPreview;
+    const record = (recordTrace == null) ? !preview : !!recordTrace;
+    const iter = iteratorState || state.listIterators || {};
+    const shouldAdvance = (advanceList == null) ? !preview : !!advanceList;
+    const m = memo || new Map();
+    const t = trace || _emptyMacroTrace();
+
     // Strip {{// comments}}
     text = text.replace(/\{\{\/\/[^}]*\}\}/g, '');
     // Resolve {{roll:...}}
     text = text.replace(/\{\{roll:([^}]+)\}\}/gi, (_, notation) => {
         const result = rollDice(notation.trim());
+        if (record && !isNaN(result)) {
+            t.roll[String(notation || '').trim()] = String(result);
+        }
         return isNaN(result) ? `{{roll:${notation}}}` : String(result);
     });
     // Resolve {{random::...}} and {{list::...}}
     text = text.replace(/\{\{(random|list)::([^}]+)\}\}/g, (_, type, rest) => {
-        const parts = rest.split('::');
-        if (type === 'random') return parts[Math.floor(Math.random() * parts.length)];
-        const k = `${type}::${rest}`;
-        if (!state.listIterators[k]) state.listIterators[k] = 0;
-        const val = parts[state.listIterators[k] % parts.length];
-        if (!isPreview) state.listIterators[k]++;
+        const parts = _cleanMacroParts(rest);
+        if (parts.length === 0) return '';
+        const rawKey = `${type}::${rest}`;
+        const k = `${type}::${parts.join('::')}`;
+        if (m.has(k)) return m.get(k);
+
+        if (type === 'random') {
+            const val = parts[Math.floor(Math.random() * parts.length)];
+            if (record) t.random[k] = { value: val, options: parts.length };
+            m.set(k, val);
+            return val;
+        }
+
+        // list: stable within a single applyVariables call; advance once per macro key
+        // Back-compat: if previous drafts stored the untrimmed key, migrate to the normalized key.
+        if (shouldAdvance && state.listIterators?.[k] == null && state.listIterators?.[rawKey] != null) {
+            state.listIterators[k] = state.listIterators[rawKey];
+            delete state.listIterators[rawKey];
+        }
+        const current = Number(iter?.[k] || 0);
+        const idx = ((current % parts.length) + parts.length) % parts.length;
+        const val = parts[idx];
+        if (record) {
+            const nextIdx = (idx + 1) % parts.length;
+            t.list[k] = { value: val, index: idx, next: parts[nextIdx], options: parts.length };
+        }
+        if (shouldAdvance) {
+            iter[k] = current + 1;
+        }
+        m.set(k, val);
         return val;
     });
     return text;
 }
 
-function applyVariables(text, isPreview = false) {
+function resolvePromptWithTrace(text, { isPreview = false, recordTrace = null, iteratorState = null } = {}) {
+    const record = (recordTrace == null) ? !isPreview : !!recordTrace;
+    const iter = iteratorState || state.listIterators || {};
     const sessionCache = {};
+    const memo = new Map();
+    const trace = _emptyMacroTrace();
+
     // First strip comments and run inline macros
-    text = _resolveInlineMacros(text, isPreview);
+    text = _resolveInlineMacros(text, { isPreview, memo, trace, recordTrace: record, iteratorState: iter, advanceList: !isPreview });
 
     // Then resolve named variables (up to 3 levels deep to handle nesting)
     for (let depth = 0; depth < 3; depth++) {
         text = text.replace(/\{\{(\w+)\}\}/g, (match, key) => {
             if (sessionCache[key] !== undefined) return sessionCache[key];
             let val = state.generate.variables[key];
-            if (!val) return match;
+            if (val === undefined || val === null) return match;
             // Resolve macros in the variable's value
-            val = _resolveInlineMacros(val, isPreview);
+            val = _resolveInlineMacros(val, { isPreview, memo, trace, recordTrace: record, iteratorState: iter, advanceList: !isPreview });
             sessionCache[key] = val;
+            if (record) trace.variables[key] = val;
             return val;
         });
         if (!/\{\{\w+\}\}/.test(text)) break; // No more variables to resolve
     }
-    return text;
+    return { text, trace };
+}
+
+function applyVariables(text, isPreview = false) {
+    const { text: resolved, trace } = resolvePromptWithTrace(text, { isPreview });
+    if (!isPreview) {
+        state.macroTraceLast = {
+            ...trace,
+            resolvedAt: new Date().toISOString()
+        };
+        renderMacroState();
+    }
+    return resolved;
+}
+
+function findUnresolvedPlaceholders(text) {
+    const matches = String(text || '').match(/\{\{[^}]+\}\}/g) || [];
+    const uniq = [];
+    const seen = new Set();
+    for (const m of matches) {
+        const s = String(m || '').trim();
+        if (!s) continue;
+        if (seen.has(s)) continue;
+        seen.add(s);
+        uniq.push(s);
+    }
+    return uniq;
+}
+
+async function confirmIfUnresolved({ title = 'Unresolved placeholders', context = '', resolvedText = '' } = {}) {
+    const unresolved = findUnresolvedPlaceholders(resolvedText);
+    if (unresolved.length === 0) return true;
+    const shown = unresolved.slice(0, 10).join(', ');
+    const extra = unresolved.length > 10 ? `\n\n(+${unresolved.length - 10} more)` : '';
+    const ok = await popupConfirm({
+        title,
+        message: `${context ? context + '\n\n' : ''}Found unresolved placeholders:\n${shown}${extra}\n\nContinue anyway?`,
+        confirmText: 'Continue',
+        cancelText: 'Cancel',
+        danger: false
+    });
+    return !!ok;
 }
 
 async function loadPresets() {
@@ -1990,7 +2224,7 @@ function renderSystemPresetSelect(type, presets) {
     }
 }
 
-function loadSystemPreset(type) {
+function loadSystemPreset(type, { silent = false } = {}) {
     const selectEl = els[`${type}PresetSelect`];
     const targetEl = els[`${type}SystemPrompt`];
     const selected = selectEl.selectedOptions[0];
@@ -2000,7 +2234,43 @@ function loadSystemPreset(type) {
         targetEl.value = selected.dataset.prompt;
         if (state[type]) state[type].systemPrompt = selected.dataset.prompt;
         debouncedSaveDraft();
-        toast('Preset loaded!', 'success');
+        if (!silent) toast('Preset loaded!', 'success');
+    }
+}
+
+function selectHasOption(selectEl, value) {
+    if (!selectEl) return false;
+    const v = String(value || '');
+    return [...selectEl.options].some(o => String(o.value) === v);
+}
+
+function applyFirstRunDefaults() {
+    const defaultName = 'Default';
+
+    const generatePromptEmpty = !String(els.systemPrompt?.value || state.generate?.prompt || '').trim();
+    if (!state.currentPromptName && generatePromptEmpty && selectHasOption(els.promptSelect, defaultName)) {
+        els.promptSelect.value = defaultName;
+        selectPrompt();
+    }
+
+    const hasVars = state.generate?.variables && typeof state.generate.variables === 'object'
+        ? Object.values(state.generate.variables).some(v => String(v ?? '').trim() !== '')
+        : false;
+    if (!state.generate.variablePresetName && !hasVars && selectHasOption(els.presetSelect, defaultName)) {
+        els.presetSelect.value = defaultName;
+        loadPresetAction();
+    }
+
+    const chatPromptEmpty = !String(els.chatSystemPrompt?.value || state.chat?.systemPrompt || '').trim();
+    if (!state.chat.presetName && chatPromptEmpty && selectHasOption(els.chatPresetSelect, defaultName)) {
+        els.chatPresetSelect.value = defaultName;
+        loadSystemPreset('chat', { silent: true });
+    }
+
+    const exportPromptEmpty = !String(els.exportSystemPrompt?.value || state.export?.systemPrompt || '').trim();
+    if (!state.export.presetName && exportPromptEmpty && selectHasOption(els.exportPresetSelect, defaultName)) {
+        els.exportPresetSelect.value = defaultName;
+        loadSystemPreset('export', { silent: true });
     }
 }
 
@@ -2302,10 +2572,12 @@ function getSliceIndex(slice, items, id) {
         const idx = slice.idToIndex.get(id);
         if (typeof idx === 'number') return idx;
     }
-    return items.findIndex(item => item.id === id);
+    const needle = String(id ?? '');
+    return items.findIndex(item => String(item?.id ?? '') === needle);
 }
 
 function handleSelectableInteraction(slice, items, id, event, onPreview) {
+    id = String(id ?? '');
     const wantsSelection = !!event.shiftKey || !!event.ctrlKey || !!event.metaKey || event.target.closest('input[type="checkbox"]');
     const prevPreviewId = slice.previewId;
 
@@ -2332,7 +2604,7 @@ function handleSelectableInteraction(slice, items, id, event, onPreview) {
         if (clearsExisting) slice.selectedIds.clear();
         for (let i = start; i <= end; i++) {
             const rangeId = items[i]?.id;
-            if (rangeId) slice.selectedIds.add(rangeId);
+            if (rangeId !== undefined && rangeId !== null && String(rangeId) !== '') slice.selectedIds.add(String(rangeId));
         }
         slice.anchorId = id;
         // If we cleared existing selection or the range is big, it's cheaper to refresh DOM classes in-place.
@@ -2374,16 +2646,13 @@ function updateFilesPaginationUI() {
         const total = state.filesModal.total || 0;
         els.filesPaginationStatus.textContent = total > 0 ? `Showing ${loaded} of ${total}` : '';
     }
-    if (els.filesLoadMore) {
-        els.filesLoadMore.classList.toggle('hidden', !state.filesModal.hasMore);
-        els.filesLoadMore.disabled = state.filesModal.isLoading;
-    }
 }
 
 async function loadFilesModal(folder = 'wanted', { reset = false, signal = null } = {}) {
     state.filesModal.currentFolder = folder;
     updateFilesBulkActionsVisibility(folder);
     const search = els.filesSearchInput?.value?.trim() || '';
+    const pageSize = getModalPageSize();
     if (reset) {
         state.filesModal.files = [];
         clearSelectableSelection(state.filesModal);
@@ -2411,7 +2680,7 @@ async function loadFilesModal(folder = 'wanted', { reset = false, signal = null 
     try {
         const params = new URLSearchParams({
             folder,
-            limit: String(MODAL_PAGE_SIZE),
+            limit: String(pageSize),
             offset: String(state.filesModal.offset)
         });
         if (search) params.set('search', search);
@@ -2764,6 +3033,15 @@ async function generate() {
         }
         return;
     }
+
+    const previewResolved = applyVariables(els.systemPrompt.value, true);
+    const okToSend = await confirmIfUnresolved({
+        title: 'Unresolved placeholders',
+        context: 'The generated prompt still contains {{...}} placeholders. Missing variables will be sent as-is.',
+        resolvedText: previewResolved
+    });
+    if (!okToSend) return;
+
     state.generate.isLoading = true;
     state.generate.abortController = new AbortController();
     els.generateBtn.classList.add('btn-danger');
@@ -2771,6 +3049,8 @@ async function generate() {
     els.generateBtn.textContent = 'Stop';
 
     const promptText = applyVariables(els.systemPrompt.value);
+    state.generate.lastResolvedPrompt = promptText;
+    state.generate.lastMacroTrace = safeJsonClone(state.macroTraceLast, null);
     addToPromptHistory(promptText);
     const modelRunId = beginModelActivity({ provider: els.provider.value, model: getModelValue(), source: 'Generate' });
     try {
@@ -2817,21 +3097,30 @@ async function generate() {
 
         if (extractedText.includes('+++')) {
             const conversationsRaw = extractedText.split('+++').map(s => s.trim()).filter(s => s);
-            let addedCount = 0;
+            const now = new Date().toISOString();
+            const items = [];
             for (const convRaw of conversationsRaw) {
                 const parsed = parseMinimalFormat(convRaw);
                 if (parsed.length > 0) {
-                    await addToReviewQueue({
+                    items.push({
                         conversations: parsed,
                         rawText: convRaw,
-                        metadata: { model: getModelValue(), prompt: state.currentPromptName, variables: { ...state.generate.variables } }
+                        metadata: {
+                            provider: els.provider.value,
+                            model: getModelValue(),
+                            temperature: parseFloat(els.temperature.value),
+                            prompt_template: state.currentPromptName,
+                            prompt_resolved: promptText,
+                            macro_trace: state.generate.lastMacroTrace,
+                            variables: { ...state.generate.variables },
+                            custom_params: state.customParams,
+                            generated_at: now
+                        }
                     });
-                    addedCount++;
                 }
             }
-            if (addedCount > 0) {
-                toast(`Added ${addedCount} conversations to review queue`, 'success');
-            }
+            const added = await addReviewQueueItems(items);
+            if (added.length > 0) toast(`Added ${added.length} conversations to review queue`, 'success');
 
             // Clear current view so we don't accidentally save duplicates manually
             state.generate.rawText = '';
@@ -2866,21 +3155,57 @@ async function bulkGenerate(count) {
         if (state.bulk.abortController) { state.bulk.abortController.abort(); }
         return;
     }
+
+    const { text: bulkPreviewResolved } = resolvePromptWithTrace(String(els.systemPrompt?.value || ''), { isPreview: true, recordTrace: false, iteratorState: {} });
+    const okToSend = await confirmIfUnresolved({
+        title: 'Unresolved placeholders',
+        context: 'Bulk generation will send prompts as-is if they still contain {{...}} placeholders.',
+        resolvedText: bulkPreviewResolved
+    });
+    if (!okToSend) return;
+
     state.bulk.isRunning = true;
     state.bulk.total = count;
     state.bulk.completed = 0;
     state.bulk.abortController = new AbortController();
+    state.bulk.activeIndex = null;
 
     els.bulkProgress.classList.remove('hidden');
     updateBulkProgress();
     state.listIterators = {};
+    state.bulk.runs = [];
+    state.bulk.selectedRunIndex = null;
+    renderBulkDetailsSummary();
+    renderBulkDetailsList();
+    renderBulkDetailsPreview();
+
     const generatedItems = [];
     for (let i = 0; i < count; i++) {
         if (state.bulk.abortController.signal.aborted) break;
+        state.bulk.activeIndex = i;
         const promptText = applyVariables(els.systemPrompt.value);
         addToPromptHistory(promptText); // record each resolved prompt
+
+        const run = {
+            status: 'running',
+            provider: els.provider.value,
+            model: getModelValue(),
+            startedAt: new Date().toISOString(),
+            promptResolved: String(promptText || '').slice(0, 5000),
+            macroTrace: safeJsonClone(state.macroTraceLast, null),
+            outputText: '',
+            charCount: 0,
+            error: ''
+        };
+        state.bulk.runs.push(run);
+        if (state.bulk.selectedRunIndex == null) state.bulk.selectedRunIndex = 0;
+        throttledRenderBulkDetails();
+        renderBulkDetailsPreview();
+        updateBulkProgress();
+
+        const modelRunId = beginModelActivity({ provider: els.provider.value, model: getModelValue(), source: `Bulk ${i + 1}/${count}` });
         try {
-            const res = await fetch('/api/generate', {
+            const response = await fetch('/api/generate/stream', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -2893,28 +3218,86 @@ async function bulkGenerate(count) {
                 }),
                 signal: state.bulk.abortController.signal
             });
-            if (res.ok) {
-                const data = await res.json();
-                const extractedText = extractOutput(data.content);
+            if (!response.ok) throw new Error(`Bulk generation failed (${response.status})`);
+            setModelActivityPhase(modelRunId, 'thinking');
+            run.status = 'thinking';
+            throttledRenderBulkDetails();
+            updateBulkProgress();
 
-                const conversationsRaw = extractedText.includes('+++') ?
-                    extractedText.split('+++').map(s => s.trim()).filter(s => s) :
-                    [extractedText];
-
-                for (const convRaw of conversationsRaw) {
-                    const parsed = parseMinimalFormat(convRaw);
-                    if (parsed.length > 0) {
-                        generatedItems.push({
-                            conversations: parsed,
-                            rawText: convRaw,
-                            metadata: { model: getModelValue(), prompt: state.currentPromptName, variables: { ...state.generate.variables } }
-                        });
+            const reader = response.body.getReader();
+            let fullText = '';
+            let sawToken = false;
+            await readSSEStream(reader, async (data) => {
+                if (data.error) throw new Error(data.error);
+                if (data.done) return;
+                if (data.content) {
+                    if (!sawToken) {
+                        sawToken = true;
+                        run.status = 'writing';
+                        setModelActivityPhase(modelRunId, 'writing');
+                        updateBulkProgress();
                     }
+                    fullText += data.content;
+                    appendModelActivityText(modelRunId, data.content);
+                    run.charCount = Number(run.charCount || 0) + String(data.content || '').length;
+                    // Keep the preview bounded.
+                    run.outputText = (run.outputText || '') + data.content;
+                    if (run.outputText.length > 12_000) run.outputText = '…' + run.outputText.slice(-12_000);
+                    if (state.bulk.selectedRunIndex === i) renderBulkDetailsPreview();
+                }
+            });
+            setModelActivityPhase(modelRunId, 'done');
+            run.status = 'done';
+
+            const extractedText = extractOutput(fullText);
+            run.outputText = String(extractedText || '').slice(0, 20_000);
+            run.finishedAt = new Date().toISOString();
+            throttledRenderBulkDetails();
+            if (state.bulk.selectedRunIndex === i) renderBulkDetailsPreview();
+            updateBulkProgress();
+
+            const conversationsRaw = extractedText.includes('+++')
+                ? extractedText.split('+++').map(s => s.trim()).filter(s => s)
+                : [extractedText];
+
+            for (const convRaw of conversationsRaw) {
+                const parsed = parseMinimalFormat(convRaw);
+                if (parsed.length > 0) {
+                    generatedItems.push({
+                        conversations: parsed,
+                        rawText: convRaw,
+                        metadata: {
+                            provider: els.provider.value,
+                            model: getModelValue(),
+                            temperature: parseFloat(els.temperature.value),
+                            prompt_template: state.currentPromptName,
+                            prompt_resolved: promptText,
+                            macro_trace: run.macroTrace,
+                            variables: { ...state.generate.variables },
+                            custom_params: state.customParams,
+                            generated_at: run.startedAt
+                        }
+                    });
                 }
             }
         } catch (e) {
-            if (e.name === 'AbortError') break;
-            console.error('Bulk gen error:', e);
+            if (e.name === 'AbortError') {
+                run.status = 'canceled';
+                run.error = '';
+                run.finishedAt = new Date().toISOString();
+                setModelActivityPhase(modelRunId, 'canceled');
+                throttledRenderBulkDetails();
+                if (state.bulk.selectedRunIndex === i) renderBulkDetailsPreview();
+                updateBulkProgress();
+                break;
+            }
+            run.status = 'error';
+            run.error = e?.message || String(e);
+            run.finishedAt = new Date().toISOString();
+            setModelActivityPhase(modelRunId, 'error');
+            throttledRenderBulkDetails();
+            if (state.bulk.selectedRunIndex === i) renderBulkDetailsPreview();
+            updateBulkProgress();
         }
         state.bulk.completed++;
         updateBulkProgress();
@@ -2922,6 +3305,7 @@ async function bulkGenerate(count) {
 
     state.bulk.isRunning = false;
     state.bulk.abortController = null;
+    state.bulk.activeIndex = null;
     els.bulkProgress.classList.add('hidden');
     if (generatedItems.length > 0) {
         await addReviewQueueItems(generatedItems);
@@ -2934,7 +3318,105 @@ async function bulkGenerate(count) {
 function updateBulkProgress() {
     const pct = state.bulk.total > 0 ? (state.bulk.completed / state.bulk.total * 100) : 0;
     if (els.bulkProgressFill) els.bulkProgressFill.style.width = pct + '%';
-    if (els.bulkProgressText) els.bulkProgressText.textContent = `${state.bulk.completed}/${state.bulk.total}`;
+    if (els.bulkProgressText) {
+        const base = `${state.bulk.completed}/${state.bulk.total}`;
+        const idx = typeof state.bulk.activeIndex === 'number' ? state.bulk.activeIndex : null;
+        const active = (idx != null && idx >= 0 && idx < (state.bulk.runs || []).length) ? state.bulk.runs[idx] : null;
+        if (!state.bulk.isRunning || !active) {
+            els.bulkProgressText.textContent = base;
+        } else {
+            const status = String(active.status || 'running');
+            const meta = [formatProviderLabel(active.provider), active.model || '—'].filter(Boolean).join(' · ');
+            els.bulkProgressText.textContent = `${base} · #${idx + 1} ${status} · ${meta}`;
+        }
+    }
+    renderBulkDetailsSummary();
+}
+
+let _bulkDetailsRaf = null;
+function throttledRenderBulkDetails() {
+    if (_bulkDetailsRaf) return;
+    _bulkDetailsRaf = requestAnimationFrame(() => {
+        renderBulkDetailsList();
+        _bulkDetailsRaf = null;
+    });
+}
+
+function openBulkDetailsModal() {
+    if (!els.bulkDetailsModal) return;
+    els.bulkDetailsModal.classList.remove('hidden');
+    renderBulkDetailsList();
+    renderBulkDetailsPreview();
+}
+
+function closeBulkDetailsModal() {
+    els.bulkDetailsModal?.classList.add('hidden');
+}
+
+function renderBulkDetailsSummary() {
+    if (!els.bulkDetailsSummary) return;
+    const total = Number(state.bulk.total || 0);
+    const completed = Number(state.bulk.completed || 0);
+    const errs = state.bulk.runs.filter(r => r.status === 'error').length;
+    const canceled = state.bulk.runs.filter(r => r.status === 'canceled').length;
+    const done = state.bulk.runs.filter(r => r.status === 'done').length;
+    const parts = [
+        total ? `Total: ${total}` : '',
+        `Done: ${done}`,
+        errs ? `Errors: ${errs}` : '',
+        canceled ? `Canceled: ${canceled}` : '',
+        state.bulk.isRunning ? `Running: ${completed + 1}` : ''
+    ].filter(Boolean);
+    els.bulkDetailsSummary.textContent = parts.join(' · ');
+}
+
+function renderBulkDetailsList() {
+    if (!els.bulkDetailsList) return;
+    const runs = state.bulk.runs || [];
+    if (runs.length === 0) {
+        els.bulkDetailsList.innerHTML = '<div class="empty-files">No bulk runs yet</div>';
+        return;
+    }
+    els.bulkDetailsList.innerHTML = runs.map((r, idx) => {
+        const active = state.bulk.selectedRunIndex === idx;
+        const status = r.status || 'running';
+        const meta = [r.provider ? formatProviderLabel(r.provider) : '', r.model || ''].filter(Boolean).join(' · ');
+        const detail = status === 'error' ? (r.error || 'Error') : status;
+        const showSpinner = ['running', 'thinking', 'writing'].includes(status);
+        const pillLabel = status === 'writing' ? 'typing…' : status;
+        const chars = Number(r.charCount || 0) || 0;
+        const snippet = String(r.outputText || '').trim().split('\n')[0] || '';
+        const snippetTrimmed = snippet.length > 140 ? snippet.slice(0, 140) + '…' : snippet;
+        const meta2 = [meta, chars ? `${chars.toLocaleString()} chars` : '', snippetTrimmed ? `“${snippetTrimmed}”` : ''].filter(Boolean).join(' • ');
+        return `<div class="export-file-item ${active ? 'active-preview' : ''}" data-index="${idx}">
+            <div class="export-file-info">
+                <div class="export-file-preview bulk-run-preview">
+                    ${showSpinner ? '<span class="inline-spinner" aria-hidden="true"></span>' : ''}
+                    <span>#${idx + 1}</span>
+                    <span class="bulk-status-pill bulk-status-${escapeHtml(status)}">${escapeHtml(pillLabel)}</span>
+                    <span class="bulk-run-detail">${escapeHtml(detail)}</span>
+                </div>
+                <div class="export-file-meta">${escapeHtml(meta2 || '')}</div>
+            </div>
+        </div>`;
+    }).join('');
+}
+
+function renderBulkDetailsPreview() {
+    if (!els.bulkDetailsPreview) return;
+    const idx = state.bulk.selectedRunIndex;
+    const run = (typeof idx === 'number') ? state.bulk.runs[idx] : null;
+    if (!run) {
+        els.bulkDetailsPreview.textContent = 'Select a run to preview it here';
+        return;
+    }
+    const lines = [];
+    lines.push(`#${(idx + 1)} — ${run.status || 'running'}`);
+    if (run.provider || run.model) lines.push(`Model: ${formatProviderLabel(run.provider)} · ${run.model || '—'}`);
+    if (run.error) lines.push(`Error: ${run.error}`);
+    if (run.promptResolved) lines.push(`\nResolved prompt:\n${run.promptResolved}`);
+    if (run.outputText) lines.push(`\nOutput:\n${run.outputText}`);
+    els.bulkDetailsPreview.textContent = lines.join('\n');
 }
 
 function parseAndRender() {
@@ -3001,8 +3483,14 @@ async function saveConversation(folder, reason = null) {
 
     showSaveIndicator('Saving...');
     const metadata = {
+        provider: els.provider.value,
         model: getModelValue(),
-        variables: state.generate.variables
+        temperature: parseFloat(els.temperature.value),
+        prompt_template: state.currentPromptName,
+        prompt_resolved: state.generate.lastResolvedPrompt || '',
+        macro_trace: state.generate.lastMacroTrace,
+        variables: state.generate.variables,
+        custom_params: state.customParams
     };
     if (reason) metadata.reject_reason = reason;
 
@@ -3102,7 +3590,18 @@ async function sendChatMessage() {
         }
         return;
     }
-    state.chat.messages.push({ from: 'human', value: message, timestamp: new Date().toISOString() });
+
+    const previewMsg = applyVariables(message, true);
+    const previewSys = applyVariables(els.chatSystemPrompt?.value || 'You are a helpful and friendly conversational assistant. Keep responses natural and engaging.', true);
+    const okToSend = await confirmIfUnresolved({
+        title: 'Unresolved placeholders',
+        context: 'Your chat message or system prompt still contains {{...}} placeholders.',
+        resolvedText: `${previewSys}\n${previewMsg}`
+    });
+    if (!okToSend) return;
+
+    const resolvedMessage = applyVariables(message);
+    state.chat.messages.push({ from: 'human', value: resolvedMessage, timestamp: new Date().toISOString() });
     debouncedSaveDraft();
     els.chatInput.value = '';
     renderChatMessages();
@@ -3113,6 +3612,7 @@ async function sendChatMessage() {
 
     const context = state.chat.messages.map(m => `${m.from === 'human' ? 'User' : 'Assistant'}: ${m.value}`).join('\n');
     const baseSystemPrompt = applyVariables(els.chatSystemPrompt?.value || 'You are a helpful and friendly conversational assistant. Keep responses natural and engaging.');
+    state.chat.lastResolvedSystemPrompt = baseSystemPrompt;
     const systemPrompt = `${baseSystemPrompt}\n\nPrevious conversation:\n${context}\n\nContinue the conversation naturally.`;
 
     const streamingMsg = { from: 'gpt', value: '', timestamp: new Date().toISOString(), streaming: true };
@@ -3123,7 +3623,7 @@ async function sendChatMessage() {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                prompt: message, system_prompt: systemPrompt,
+                prompt: resolvedMessage, system_prompt: systemPrompt,
                 provider: els.provider.value, model: getModelValue(),
                 temperature: parseFloat(els.temperature.value),
                 custom_params: state.customParams,
@@ -3303,12 +3803,17 @@ async function clearChat({ confirm = true } = {}) {
 async function saveChat() {
     if (state.chat.messages.length < 2) return;
     showSaveIndicator('Saving chat...');
-    const conversation = { conversations: state.chat.messages.map(m => ({ from: m.from, value: m.value })) };
+    const fallbackSystem = applyVariables(els.chatSystemPrompt?.value || 'You are a helpful and friendly conversational assistant. Keep responses natural and engaging.', true);
+    const systemPrompt = String(state.chat.lastResolvedSystemPrompt || fallbackSystem || '').trim();
+    const messages = [];
+    if (systemPrompt) messages.push({ from: 'system', value: systemPrompt });
+    messages.push(...state.chat.messages.map(m => ({ from: m.from, value: m.value })));
+    const conversation = { conversations: messages };
     try {
         const res = await fetch('/api/save', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ conversation, folder: 'wanted', metadata: { source: 'chat', model: getModelValue() } })
+            body: JSON.stringify({ conversation, folder: 'wanted', metadata: { source: 'chat', model: getModelValue(), system_prompt: systemPrompt } })
         });
         if (res.ok) { toast('Chat saved!', 'success'); hideSaveIndicator('Saved ✓'); await clearChat({ confirm: false }); loadStats(); }
     } catch (e) { toast('Failed to save chat', 'error'); hideSaveIndicator('Save failed'); }
@@ -3340,12 +3845,21 @@ async function generateAIResponse() {
     }
     if (state.chat.messages.length === 0) { toast('No context to regenerate from', 'info'); return; }
 
+    const previewSys = applyVariables(els.chatSystemPrompt?.value || 'You are a helpful and friendly conversational assistant. Keep responses natural and engaging.', true);
+    const okToSend = await confirmIfUnresolved({
+        title: 'Unresolved placeholders',
+        context: 'Your chat system prompt still contains {{...}} placeholders.',
+        resolvedText: previewSys
+    });
+    if (!okToSend) return;
+
     state.chat.isStreaming = true;
     state.chat.abortController = new AbortController();
     setButtonToStop(els.sendBtn);
 
     const context = state.chat.messages.map(m => `${m.from === 'human' ? 'User' : 'Assistant'}: ${m.value}`).join('\n');
-    const baseSystemPrompt = els.chatSystemPrompt?.value || 'You are a helpful and friendly conversational assistant. Keep responses natural and engaging.';
+    const baseSystemPrompt = applyVariables(els.chatSystemPrompt?.value || 'You are a helpful and friendly conversational assistant. Keep responses natural and engaging.');
+    state.chat.lastResolvedSystemPrompt = baseSystemPrompt;
     const systemPrompt = `${baseSystemPrompt}\n\nPrevious conversation:\n${context}\n\nContinue the conversation naturally.`;
     const lastUserMsg = [...state.chat.messages].reverse().find(m => m.from === 'human');
     const promptText = lastUserMsg?.value || 'Continue the conversation.';
@@ -3420,6 +3934,21 @@ function enableChatButtons() { if (els.saveChatBtn) els.saveChatBtn.disabled = f
 function disableChatButtons() { if (els.saveChatBtn) els.saveChatBtn.disabled = true; }
 
 // ============ REVIEW QUEUE (Server-Synced) ============
+function isValidConversationMessages(messages) {
+    if (!Array.isArray(messages) || messages.length === 0) return false;
+    let hasHuman = false;
+    let hasGpt = false;
+    for (const m of messages) {
+        if (!m || typeof m !== 'object') continue;
+        const from = m.from;
+        const value = String(m.value ?? '');
+        if (!value.trim()) continue;
+        if (from === 'human') hasHuman = true;
+        if (from === 'gpt') hasGpt = true;
+    }
+    return hasHuman && hasGpt;
+}
+
 function createLocalReviewEntry(item) {
     return {
         id: 'local-' + Date.now() + '-' + Math.random().toString(36).slice(2),
@@ -3430,20 +3959,28 @@ function createLocalReviewEntry(item) {
     };
 }
 
-function appendReviewQueueEntries(entries) {
-    if (!entries.length) return;
-    const hadMore = state.review.hasMore;
-    state.review.queue.push(...entries);
-    state.review.total = (state.review.total || 0) + entries.length;
-    if (!hadMore) {
-        state.review.offset += entries.length;
-    }
-    state.review.hasMore = state.review.offset < state.review.total;
-}
-
 async function addReviewQueueItems(items) {
     if (!items.length) return [];
+    const seen = new Set();
+    const filtered = [];
+    let skippedDup = 0;
+    let skippedInvalid = 0;
+    for (const it of items) {
+        if (!it || typeof it !== 'object') { skippedInvalid++; continue; }
+        const convs = it.conversations;
+        if (!isValidConversationMessages(convs)) { skippedInvalid++; continue; }
+        const rawKey = String(it.rawText || JSON.stringify(convs));
+        const h = String(syncEngine._simpleHash(rawKey));
+        if (seen.has(h)) { skippedDup++; continue; }
+        seen.add(h);
+        filtered.push(it);
+    }
+    if (skippedInvalid) toast(`Skipped ${skippedInvalid} invalid items`, 'info');
+    if (skippedDup) toast(`Skipped ${skippedDup} duplicates`, 'info');
+    if (filtered.length === 0) return [];
+    items = filtered;
     try {
+        const prevTotal = state.review.total || 0;
         const res = await fetch('/api/review-queue', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -3452,23 +3989,19 @@ async function addReviewQueueItems(items) {
         if (!res.ok) throw new Error('Failed to add review items');
         const data = await res.json();
         const added = data.added || [];
-        appendReviewQueueEntries(added);
-        if (typeof data.count === 'number') {
-            state.review.total = data.count;
-            state.review.hasMore = state.review.offset < state.review.total;
-        }
-        updateReviewBadge();
-        renderReviewItem();
+        const total = (typeof data.count === 'number') ? data.count : (prevTotal + added.length);
+        const startIndex = Math.max(0, total - added.length);
+        await loadReviewQueue({ reset: true, targetAbsoluteIndex: startIndex });
         return added;
     } catch (e) {
+        const prevTotal = state.review.total || 0;
+        const startIndex = prevTotal;
         const localEntries = items.map(createLocalReviewEntry);
-        appendReviewQueueEntries(localEntries);
         for (const entry of localEntries) {
             try { await dbPut('reviewQueue', entry); } catch (_err) { }
         }
         console.error('Failed to add to server review queue, saved locally:', e);
-        updateReviewBadge();
-        renderReviewItem();
+        await loadReviewQueue({ reset: true, targetAbsoluteIndex: startIndex });
         return localEntries;
     }
 }
@@ -3568,20 +4101,27 @@ async function ensureReviewQueueIdsSynced(ids) {
     return ids.map(id => idMap.get(id) || id);
 }
 
-async function loadReviewQueue({ reset = true, targetIndex = null } = {}) {
-    const currentItemId = state.review.queue[state.review.currentIndex]?.id;
+async function loadReviewQueue({ reset = true, targetAbsoluteIndex = null } = {}) {
+    const pageSize = getModalPageSize();
+    const currentAbsolute = state.review.pageOffset + state.review.currentIndex;
+    const desiredAbsolute = (typeof targetAbsoluteIndex === 'number' && Number.isFinite(targetAbsoluteIndex))
+        ? Math.max(0, Math.floor(targetAbsoluteIndex))
+        : currentAbsolute;
+    const desiredPageOffset = Math.floor(desiredAbsolute / pageSize) * pageSize;
+
     if (reset) {
         state.review.queue = [];
-        state.review.offset = 0;
+        state.review.pageOffset = desiredPageOffset;
         state.review.total = 0;
         state.review.hasMore = false;
     }
+
     state.review.isLoading = true;
     try {
         await syncReviewQueueItemsToServer();
         const params = new URLSearchParams({
-            limit: String(MODAL_PAGE_SIZE),
-            offset: String(reset ? 0 : state.review.offset)
+            limit: String(pageSize),
+            offset: String(state.review.pageOffset)
         });
         const res = await fetch(`/api/review-queue?${params.toString()}`);
         if (!res.ok) throw new Error('Failed to load review queue');
@@ -3590,40 +4130,26 @@ async function loadReviewQueue({ reset = true, targetIndex = null } = {}) {
         if (data.error) throw new Error(data.error);
 
         const items = data.queue || [];
-        const start = reset ? 0 : state.review.offset;
-        state.review.queue = reset ? items : mergeReviewQueuePage(state.review.queue, items, start);
+        state.review.queue = items;
         state.review.total = data.count || state.review.queue.length;
-        state.review.offset = start + items.length;
-        state.review.hasMore = state.review.offset < state.review.total;
+        state.review.hasMore = (state.review.pageOffset + state.review.queue.length) < state.review.total;
 
-        if (typeof targetIndex === 'number') {
-            state.review.currentIndex = Math.max(0, Math.min(targetIndex, state.review.queue.length - 1));
-        } else if (currentItemId) {
-            const nextIndex = state.review.queue.findIndex(item => item.id === currentItemId);
-            state.review.currentIndex = nextIndex === -1 ? Math.min(state.review.currentIndex, Math.max(0, state.review.queue.length - 1)) : nextIndex;
-        } else {
-            state.review.currentIndex = Math.min(state.review.currentIndex, Math.max(0, state.review.queue.length - 1));
-        }
-
+        const nextAbsolute = Math.min(desiredAbsolute, Math.max(0, state.review.total - 1));
+        state.review.currentIndex = Math.max(0, Math.min(nextAbsolute - state.review.pageOffset, Math.max(0, state.review.queue.length - 1)));
         updateReviewBadge();
         renderReviewItem();
     } catch (e) {
         console.warn('Server unreachable, loading review queue from IndexedDB');
-        // Fallback to IndexedDB
         try {
             const items = await dbGetAll('reviewQueue');
             const allItems = items || [];
-            const start = reset ? 0 : state.review.offset;
-            const nextItems = allItems.slice(start, start + MODAL_PAGE_SIZE);
-            state.review.queue = reset ? nextItems : mergeReviewQueuePage(state.review.queue, nextItems, start);
             state.review.total = allItems.length;
-            state.review.offset = start + nextItems.length;
-            state.review.hasMore = state.review.offset < state.review.total;
-            if (typeof targetIndex === 'number') {
-                state.review.currentIndex = Math.max(0, Math.min(targetIndex, state.review.queue.length - 1));
-            } else {
-                state.review.currentIndex = Math.min(state.review.currentIndex, Math.max(0, state.review.queue.length - 1));
-            }
+            const safeOffset = Math.max(0, Math.min(state.review.pageOffset, Math.max(0, state.review.total - 1)));
+            state.review.pageOffset = Math.floor(safeOffset / pageSize) * pageSize;
+            state.review.queue = allItems.slice(state.review.pageOffset, state.review.pageOffset + pageSize);
+            state.review.hasMore = (state.review.pageOffset + state.review.queue.length) < state.review.total;
+            const nextAbsolute = Math.min(desiredAbsolute, Math.max(0, state.review.total - 1));
+            state.review.currentIndex = Math.max(0, Math.min(nextAbsolute - state.review.pageOffset, Math.max(0, state.review.queue.length - 1)));
             updateReviewBadge();
             renderReviewItem();
         } catch (err) {
@@ -3634,10 +4160,6 @@ async function loadReviewQueue({ reset = true, targetIndex = null } = {}) {
     }
 }
 
-function getLoadedReviewCount() {
-    return state.review.hasMore ? Math.min(state.review.offset, state.review.queue.length) : state.review.queue.length;
-}
-
 function updateReviewBadge() {
     const count = state.review.total || state.review.queue.length;
     if (els.reviewBadge) {
@@ -3645,8 +4167,13 @@ function updateReviewBadge() {
         els.reviewBadge.classList.toggle('hidden', count === 0);
     }
     if (els.reviewCount) {
-        const loaded = getLoadedReviewCount();
-        els.reviewCount.textContent = count > loaded ? `${count} items (${loaded} loaded)` : `${count} items`;
+        if (count === 0) {
+            els.reviewCount.textContent = '0 items';
+        } else {
+            const start = state.review.pageOffset + 1;
+            const end = Math.min(count, state.review.pageOffset + state.review.queue.length);
+            els.reviewCount.textContent = `${count} items (showing ${start}-${end})`;
+        }
     }
 }
 
@@ -3679,10 +4206,11 @@ function renderReviewItem() {
     els.reviewKeepBtn.disabled = false;
     els.reviewRejectBtn.disabled = false;
     els.reviewEditBtn.disabled = false;
-    els.reviewPrev.disabled = idx <= 0;
-    els.reviewNext.disabled = idx >= getLoadedReviewCount() - 1 && !state.review.hasMore;
     const total = state.review.total || queue.length;
-    els.reviewPosition.textContent = `${idx + 1}/${total}`;
+    const absolute = state.review.pageOffset + idx;
+    els.reviewPrev.disabled = absolute <= 0;
+    els.reviewNext.disabled = absolute >= (total - 1);
+    els.reviewPosition.textContent = `${state.review.pageOffset + idx + 1}/${total}`;
     els.reviewEditBtn.textContent = state.review.isEditing ? 'Apply Edit' : 'Edit';
 }
 
@@ -3731,23 +4259,19 @@ function cancelReviewEdit() {
 
 async function reviewNext() {
     if (!(await persistCurrentReviewEdits())) return;
-    const loadedCount = getLoadedReviewCount();
-    if (state.review.currentIndex < loadedCount - 1) {
-        state.review.currentIndex++;
-        renderReviewItem();
-        return;
-    }
-    if (state.review.hasMore && !state.review.isLoading) {
-        await loadReviewQueue({ reset: false, targetIndex: loadedCount });
-    }
+    const absolute = state.review.pageOffset + state.review.currentIndex;
+    const next = absolute + 1;
+    const total = state.review.total || state.review.queue.length;
+    if (next >= total) return;
+    await loadReviewQueue({ reset: true, targetAbsoluteIndex: next });
 }
 
 async function reviewPrev() {
     if (!(await persistCurrentReviewEdits())) return;
-    if (state.review.currentIndex > 0) {
-        state.review.currentIndex--;
-        renderReviewItem();
-    }
+    const absolute = state.review.pageOffset + state.review.currentIndex;
+    const prev = absolute - 1;
+    if (prev < 0) return;
+    await loadReviewQueue({ reset: true, targetAbsoluteIndex: prev });
 }
 
 async function reviewKeep() {
@@ -3756,6 +4280,7 @@ async function reviewKeep() {
     if (!(await persistCurrentReviewEdits())) return;
     showSaveIndicator('Saving...');
     try {
+        const absolute = state.review.pageOffset + state.review.currentIndex;
         const [syncedId] = await ensureReviewQueueIdsSynced([item.id]);
         const res = await fetch('/api/review-queue/bulk-keep', {
             method: 'POST',
@@ -3769,15 +4294,9 @@ async function reviewKeep() {
                 hideSaveIndicator('Save failed');
                 return;
             }
-            const removedIndex = state.review.currentIndex;
-            removeReviewQueueEntryAt(removedIndex, { removedFromServer: !String(item.id).startsWith('local-') });
-            state.review.total = typeof data.count === 'number' ? data.count : state.review.total;
-            state.review.hasMore = state.review.offset < state.review.total;
-            if (state.review.hasMore && state.review.currentIndex >= getLoadedReviewCount()) {
-                await loadReviewQueue({ reset: false, targetIndex: state.review.currentIndex });
-            } else {
-                renderReviewItem();
-            }
+            const nextTotal = (typeof data.count === 'number') ? data.count : Math.max(0, (state.review.total || 0) - 1);
+            const nextAbsolute = Math.min(absolute, Math.max(0, nextTotal - 1));
+            await loadReviewQueue({ reset: true, targetAbsoluteIndex: nextTotal > 0 ? nextAbsolute : 0 });
             toast('Kept!', 'success');
             hideSaveIndicator('Saved ✓');
             loadStats();
@@ -3791,6 +4310,7 @@ async function reviewReject() {
     if (!(await persistCurrentReviewEdits())) return;
     showSaveIndicator('Rejecting...');
     try {
+        const absolute = state.review.pageOffset + state.review.currentIndex;
         const [syncedId] = await ensureReviewQueueIdsSynced([item.id]);
         const res = await fetch('/api/review-queue/bulk-reject', {
             method: 'POST',
@@ -3804,15 +4324,9 @@ async function reviewReject() {
                 hideSaveIndicator('Reject failed');
                 return;
             }
-            const removedIndex = state.review.currentIndex;
-            removeReviewQueueEntryAt(removedIndex, { removedFromServer: !String(item.id).startsWith('local-') });
-            state.review.total = typeof data.count === 'number' ? data.count : state.review.total;
-            state.review.hasMore = state.review.offset < state.review.total;
-            if (state.review.hasMore && state.review.currentIndex >= getLoadedReviewCount()) {
-                await loadReviewQueue({ reset: false, targetIndex: state.review.currentIndex });
-            } else {
-                renderReviewItem();
-            }
+            const nextTotal = (typeof data.count === 'number') ? data.count : Math.max(0, (state.review.total || 0) - 1);
+            const nextAbsolute = Math.min(absolute, Math.max(0, nextTotal - 1));
+            await loadReviewQueue({ reset: true, targetAbsoluteIndex: nextTotal > 0 ? nextAbsolute : 0 });
             toast('Rejected', 'info');
             hideSaveIndicator('Rejected ✓');
             loadStats();
@@ -3822,36 +4336,21 @@ async function reviewReject() {
     } catch (e) { toast('Failed to reject', 'error'); hideSaveIndicator('Reject failed'); }
 }
 
-function removeReviewQueueEntryAt(idx, { removedFromServer = true } = {}) {
-    const removed = state.review.queue[idx];
-    if (!removed) return null;
-
-    state.review.queue.splice(idx, 1);
-    state.review.total = Math.max(0, (state.review.total || state.review.queue.length + 1) - 1);
-    if (removedFromServer && idx < state.review.offset) {
-        state.review.offset = Math.max(0, state.review.offset - 1);
-    }
-    state.review.hasMore = state.review.offset < state.review.total;
-    if (state.review.currentIndex >= state.review.queue.length && state.review.currentIndex > 0) {
-        state.review.currentIndex--;
-    }
-    state.review.isEditing = false;
-    updateReviewBadge();
-    return removed;
-}
-
 async function removeFromReviewQueue(idx) {
     const item = state.review.queue[idx];
-    if (item) {
-        try {
-            await fetch(`/api/review-queue/${encodeURIComponent(item.id)}`, { method: 'DELETE' });
-        } catch (e) {
-            console.warn('Failed to remove from server, removing locally');
-        }
-        try { await dbDelete('reviewQueue', item.id); } catch (e) { }
+    if (!item) return;
+    const absolute = state.review.pageOffset + idx;
+    try {
+        const [syncedId] = await ensureReviewQueueIdsSynced([item.id]);
+        await fetch(`/api/review-queue/${encodeURIComponent(syncedId)}`, { method: 'DELETE' });
+    } catch (e) {
+        console.warn('Failed to remove from server, removing locally');
     }
-    removeReviewQueueEntryAt(idx, { removedFromServer: !!item && !String(item.id).startsWith('local-') });
-    renderReviewItem();
+    try { await dbDelete('reviewQueue', item.id); } catch (e) { }
+
+    const nextTotal = Math.max(0, (state.review.total || 0) - 1);
+    const nextAbsolute = Math.min(absolute, Math.max(0, nextTotal - 1));
+    await loadReviewQueue({ reset: true, targetAbsoluteIndex: nextTotal > 0 ? nextAbsolute : 0 });
 }
 
 async function reviewEdit() {
@@ -3895,7 +4394,7 @@ async function persistAllReviewQueueInBatches(action) {
     try {
         await syncReviewQueueItemsToServer();
 
-        const batchLimit = 200; // server caps the review queue page size at 200
+        const batchLimit = 200; // client-side batch size for queue ids paging
         let processed = 0;
         let total = null;
         let lastRemaining = null;
@@ -3963,7 +4462,7 @@ async function persistAllReviewQueueInBatches(action) {
             return;
         }
 
-        await loadReviewQueue({ reset: true, targetIndex: 0 });
+        await loadReviewQueue({ reset: true, targetAbsoluteIndex: 0 });
         loadStats();
         hideSaveIndicator(isKeep ? 'Saved ✓' : 'Rejected ✓');
         toast(isKeep ? `Saved ${processed} conversations` : `Rejected ${processed} conversations`, isKeep ? 'success' : 'info');
@@ -4007,7 +4506,7 @@ async function clearReviewQueue() {
         await dbClear('reviewQueue');
         state.review.queue = [];
         state.review.currentIndex = 0;
-        state.review.offset = 0;
+        state.review.pageOffset = 0;
         state.review.total = 0;
         state.review.hasMore = false;
         updateReviewBadge();
@@ -4035,15 +4534,39 @@ function closeReviewBrowserModal() {
     els.reviewBrowserModal.classList.add('hidden');
 }
 
+async function jumpReviewToItemId(itemId) {
+    const requestedId = String(itemId || '');
+    if (!requestedId) return;
+    try {
+        const [syncedId] = await ensureReviewQueueIdsSynced([requestedId]);
+        const res = await fetch(`/api/review-queue-position/${encodeURIComponent(syncedId)}`);
+        if (!res.ok) throw new Error('Failed to locate item');
+        const data = await res.json().catch(() => ({}));
+        const pos = Number(data.position);
+        if (!Number.isFinite(pos)) throw new Error('Invalid position');
+        // Ignore outdated clicks
+        const livePreview = String(state.reviewBrowser.previewId || '');
+        if (livePreview !== requestedId && livePreview !== String(syncedId || '')) return;
+        state.review.isEditing = false;
+        await loadReviewQueue({ reset: true, targetAbsoluteIndex: pos });
+    } catch (e) {
+        // Offline fallback: compute index from IndexedDB list order.
+        try {
+            const localItems = await dbGetAll('reviewQueue').catch(() => []);
+            const idx = (localItems || []).findIndex(it => String(it?.id) === requestedId);
+            if (idx === -1) return;
+            if (state.reviewBrowser.previewId !== requestedId) return;
+            state.review.isEditing = false;
+            await loadReviewQueue({ reset: true, targetAbsoluteIndex: idx });
+        } catch (_err) { }
+    }
+}
+
 function updateReviewBrowserPaginationUI() {
     if (els.reviewBrowserPaginationStatus) {
         const loaded = Math.min(state.reviewBrowser.offset, state.reviewBrowser.items.length);
         const total = state.reviewBrowser.total || 0;
         els.reviewBrowserPaginationStatus.textContent = total > 0 ? `Showing ${loaded} of ${total}` : '';
-    }
-    if (els.reviewBrowserLoadMore) {
-        els.reviewBrowserLoadMore.classList.toggle('hidden', !state.reviewBrowser.hasMore);
-        els.reviewBrowserLoadMore.disabled = state.reviewBrowser.isLoading;
     }
 }
 
@@ -4097,6 +4620,7 @@ function renderReviewBrowserRowHtml(item) {
 }
 
 async function loadReviewBrowser({ reset = false, signal = null } = {}) {
+    const pageSize = getModalPageSize();
     if (reset) {
         state.reviewBrowser.items = [];
         clearSelectableSelection(state.reviewBrowser);
@@ -4117,7 +4641,7 @@ async function loadReviewBrowser({ reset = false, signal = null } = {}) {
     }
     try {
         const params = new URLSearchParams({
-            limit: String(MODAL_PAGE_SIZE),
+            limit: String(pageSize),
             offset: String(state.reviewBrowser.offset)
         });
         const search = els.reviewBrowserSearchInput?.value?.trim() || '';
@@ -4127,7 +4651,9 @@ async function loadReviewBrowser({ reset = false, signal = null } = {}) {
         const data = await res.json();
         const items = data.queue || [];
         for (const item of items) {
-            const itemId = item?.id;
+            const rawId = item?.id;
+            const itemId = (rawId === undefined || rawId === null) ? '' : String(rawId);
+            if (rawId !== itemId && item) item.id = itemId;
             if (!itemId || state.reviewBrowser.seenIds.has(itemId)) continue;
             state.reviewBrowser.seenIds.add(itemId);
             state.reviewBrowser.idToIndex.set(itemId, state.reviewBrowser.items.length);
@@ -4151,9 +4677,11 @@ async function loadReviewBrowser({ reset = false, signal = null } = {}) {
             if (!search) return true;
             return (item.rawText || '').toLowerCase().includes(search);
         });
-        const page = reset ? filtered.slice(0, MODAL_PAGE_SIZE) : filtered.slice(state.reviewBrowser.offset, state.reviewBrowser.offset + MODAL_PAGE_SIZE);
+        const page = reset ? filtered.slice(0, pageSize) : filtered.slice(state.reviewBrowser.offset, state.reviewBrowser.offset + pageSize);
         for (const item of page) {
-            const itemId = item?.id;
+            const rawId = item?.id;
+            const itemId = (rawId === undefined || rawId === null) ? '' : String(rawId);
+            if (rawId !== itemId && item) item.id = itemId;
             if (!itemId || state.reviewBrowser.seenIds.has(itemId)) continue;
             state.reviewBrowser.seenIds.add(itemId);
             state.reviewBrowser.idToIndex.set(itemId, state.reviewBrowser.items.length);
@@ -4264,6 +4792,28 @@ function openSettingsModal() {
 
 function closeSettingsModal() {
     els.settingsModal?.classList.add('hidden');
+}
+
+async function applyDatabasePath() {
+    const nextPath = String(els.databasePath?.value || '').trim();
+    if (!nextPath) { toast('Enter a database file path', 'error'); return; }
+    showSaveIndicator('Applying database...');
+    try {
+        const res = await fetch('/api/server-config', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ database: { path: nextPath } })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || 'Failed to apply database');
+        toast('Database path saved. Restart server if needed.', 'success');
+        hideSaveIndicator('Saved ✓');
+        // Reload UI state against the newly selected DB.
+        setTimeout(() => window.location.reload(), 450);
+    } catch (e) {
+        toast(e.message || 'Failed to apply database', 'error');
+        hideSaveIndicator('Apply failed');
+    }
 }
 
 function filterSettingsSections() {
@@ -4626,6 +5176,14 @@ function normalizeExportFormat(format) {
     return ['sharegpt', 'openai', 'alpaca'].includes(format) ? format : 'sharegpt';
 }
 
+function normalizeExportSystemMode(mode) {
+    const raw = String(mode || '').trim().toLowerCase();
+    if (raw === 'override') return 'replace_all';
+    if (raw === 'strip') return 'remove_all';
+    if (['keep', 'add_if_missing', 'replace_all', 'remove_all', 'prepend', 'append'].includes(raw)) return raw;
+    return 'add_if_missing';
+}
+
 function updateSidebarExportButton() {
     const format = normalizeExportFormat(state.uiPrefs.lastExportFormat);
     if (els.sidebarExportFormat) {
@@ -4644,6 +5202,22 @@ function setLastExportFormat(format) {
     saveUiPrefs();
 }
 
+function setLastExportFolder(folder) {
+    state.uiPrefs.exportFolder = (String(folder) === 'rejected') ? 'rejected' : 'wanted';
+    saveUiPrefs();
+}
+
+function setLastExportSystemMode(mode) {
+    state.uiPrefs.exportSystemMode = normalizeExportSystemMode(mode);
+    saveUiPrefs();
+}
+
+function setLastExportPromptSource(source) {
+    const s = String(source || '');
+    state.uiPrefs.exportPromptSource = ['custom', 'chat', 'generate'].includes(s) ? s : 'custom';
+    saveUiPrefs();
+}
+
 // ============ EXPORT PRESETS ============
 async function loadExportPresets() { await loadSystemPresets('export'); }
 function loadExportPreset() { loadSystemPreset('export'); }
@@ -4656,24 +5230,38 @@ async function openExportModal(format) {
     els.exportFormat.value = selectedFormat;
     setLastExportFormat(selectedFormat);
 
+    const prevFolder = state.export.folder || 'wanted';
+    const desiredFolder = String(state.uiPrefs.exportFolder || prevFolder || 'wanted');
+    state.export.folder = (desiredFolder === 'rejected') ? 'rejected' : 'wanted';
+    if (els.exportFolder) els.exportFolder.value = state.export.folder;
+
+    state.export.systemPromptMode = normalizeExportSystemMode(state.uiPrefs.exportSystemMode || state.export.systemPromptMode);
+    renderExportSystemModeSummary();
+
+    const systemMode = getSelectedExportSystemMode();
+    const needsPrompt = exportModeUsesPrompt(systemMode);
+
     // Set prompt source based on current tab if no custom export draft exists
-    if (!state.export.systemPrompt) {
-        if (state.currentTab === 'chat') {
-            els.exportPromptSourceChat.checked = true;
-        } else if (state.currentTab === 'generate') {
-            els.exportPromptSourceGenerate.checked = true;
-        } else {
-            els.exportPromptSourceCustom.checked = true;
-        }
-        updateExportPromptState();
+    if (!needsPrompt) {
+        els.exportPromptSourceCustom.checked = true;
+    } else if (!state.export.systemPrompt) {
+        const prefSource = String(state.uiPrefs.exportPromptSource || '');
+        if (prefSource === 'chat') els.exportPromptSourceChat.checked = true;
+        else if (prefSource === 'generate') els.exportPromptSourceGenerate.checked = true;
+        else if (prefSource === 'custom') els.exportPromptSourceCustom.checked = true;
+        else if (state.currentTab === 'chat') els.exportPromptSourceChat.checked = true;
+        else if (state.currentTab === 'generate') els.exportPromptSourceGenerate.checked = true;
+        else els.exportPromptSourceCustom.checked = true;
     } else {
         els.exportPromptSourceCustom.checked = true;
         if (els.exportSystemPrompt) els.exportSystemPrompt.value = state.export.systemPrompt;
     }
+    updateExportPromptState();
 
     els.exportModal.classList.remove('hidden');
     const hasActiveLoadAll = !!state.export.loadAllTaskId && state.tasks.items.has(state.export.loadAllTaskId);
-    const shouldReset = !hasActiveLoadAll && state.export.files.length === 0;
+    const folderChanged = prevFolder !== state.export.folder;
+    const shouldReset = folderChanged || (!hasActiveLoadAll && state.export.files.length === 0);
     if (shouldReset) await loadExportFiles({ reset: true });
     else { renderExportFileList(); updateExportCount(); }
     renderExportPreview();
@@ -4683,8 +5271,52 @@ function getSelectedExportPromptSource() {
     return document.querySelector('input[name="export-prompt-source"]:checked')?.value || 'custom';
 }
 
+function getSelectedExportSystemMode() {
+    return normalizeExportSystemMode(state.export.systemPromptMode || state.uiPrefs.exportSystemMode);
+}
+
+function exportModeUsesPrompt(mode) {
+    const m = normalizeExportSystemMode(mode);
+    return ['add_if_missing', 'replace_all', 'prepend', 'append'].includes(m);
+}
+
+function getExportSystemModeMeta(mode) {
+    const m = normalizeExportSystemMode(mode);
+    const meta = {
+        add_if_missing: { label: 'Add if missing', desc: 'Keep existing system; insert only when missing.' },
+        keep: { label: 'Keep as-is', desc: 'Export exactly as stored.' },
+        replace_all: { label: 'Replace all system', desc: 'Remove existing system and insert your prompt first.' },
+        remove_all: { label: 'Remove all system', desc: 'Remove all system messages; ignore your prompt.' },
+        prepend: { label: 'Prepend', desc: 'Prepend prompt to first system (or insert if missing).' },
+        append: { label: 'Append', desc: 'Append prompt to first system (or insert if missing).' },
+    };
+    return meta[m] || meta.add_if_missing;
+}
+
+function renderExportSystemModeSummary() {
+    if (!els.exportSystemModeSummary) return;
+    const mode = getSelectedExportSystemMode();
+    const meta = getExportSystemModeMeta(mode);
+    const needsPrompt = exportModeUsesPrompt(mode);
+    els.exportSystemModeSummary.textContent = `${meta.label} — ${meta.desc}${needsPrompt ? '' : ' (prompt disabled)'}`;
+}
+
 function updateExportPromptState() {
-    if (getSelectedExportPromptSource() !== 'custom') {
+    const mode = getSelectedExportSystemMode();
+    const needsPrompt = exportModeUsesPrompt(mode);
+    const source = getSelectedExportPromptSource();
+    const canEditCustom = needsPrompt && source === 'custom';
+
+    setLastExportSystemMode(mode);
+    if (needsPrompt) setLastExportPromptSource(source);
+    renderExportSystemModeSummary();
+
+    // Disable prompt source radios unless this mode uses a prompt.
+    document.querySelectorAll('input[name="export-prompt-source"]').forEach(input => {
+        input.disabled = !needsPrompt;
+    });
+
+    if (!canEditCustom) {
         els.exportCustomPromptGroup.classList.add('disabled-group');
         els.exportSystemPrompt.disabled = true;
         els.exportPresetSelect.disabled = true;
@@ -4695,19 +5327,39 @@ function updateExportPromptState() {
     }
 }
 
+function openExportSystemModeModal() {
+    if (!els.exportSystemModeModal) return;
+    const current = getSelectedExportSystemMode();
+    const radios = els.exportSystemModeModal.querySelectorAll('input[name="export-system-mode-choice"]');
+    radios.forEach(r => { r.checked = (r.value === current); });
+    els.exportSystemModeModal.classList.remove('hidden');
+}
+
+function closeExportSystemModeModal() {
+    els.exportSystemModeModal?.classList.add('hidden');
+}
+
+function applyExportSystemModeFromModal() {
+    if (!els.exportSystemModeModal) return;
+    const checked = els.exportSystemModeModal.querySelector('input[name="export-system-mode-choice"]:checked');
+    const mode = normalizeExportSystemMode(checked?.value || '');
+    state.export.systemPromptMode = mode;
+    setLastExportSystemMode(mode);
+    renderExportSystemModeSummary();
+    updateExportPromptState();
+    closeExportSystemModeModal();
+}
+
 function updateExportPaginationUI() {
     if (els.exportPaginationStatus) {
         const loaded = Math.min(state.export.offset, state.export.files.length);
         const total = state.export.total || 0;
         els.exportPaginationStatus.textContent = total > 0 ? `Showing ${loaded} of ${total}` : '';
     }
-    if (els.exportLoadMore) {
-        els.exportLoadMore.classList.toggle('hidden', !state.export.hasMore);
-        els.exportLoadMore.disabled = state.export.isLoading;
-    }
 }
 
 async function loadExportFiles({ reset = false, signal = null } = {}) {
+    const pageSize = getModalPageSize();
     if (reset) {
         state.export.files = [];
         clearSelectableSelection(state.export);
@@ -4730,8 +5382,8 @@ async function loadExportFiles({ reset = false, signal = null } = {}) {
     let aborted = false;
     try {
         const params = new URLSearchParams({
-            folder: 'wanted',
-            limit: String(MODAL_PAGE_SIZE),
+            folder: state.export.folder === 'rejected' ? 'rejected' : 'wanted',
+            limit: String(pageSize),
             offset: String(state.export.offset)
         });
         const search = els.exportSearchInput?.value?.trim() || '';
@@ -4828,32 +5480,66 @@ function toggleAllExportFiles() {
     updateExportCount();
 }
 
-function getExportSystemPrompt() {
+function getExportSystemPromptPayload() {
+    const mode = getSelectedExportSystemMode();
+    if (mode === 'keep' || mode === 'remove_all') {
+        return { systemPrompt: null, systemPromptMode: mode };
+    }
     const source = getSelectedExportPromptSource();
     if (source === 'chat') {
-        return els.chatSystemPrompt?.value || state.chat.systemPrompt || '';
+        return { systemPrompt: (els.chatSystemPrompt?.value || state.chat.systemPrompt || ''), systemPromptMode: mode };
     } else if (source === 'generate') {
-        return els.systemPrompt?.value || '';
+        return { systemPrompt: (els.systemPrompt?.value || ''), systemPromptMode: mode };
     } else {
-        return els.exportSystemPrompt?.value || '';
+        return { systemPrompt: (els.exportSystemPrompt?.value ?? ''), systemPromptMode: mode };
     }
 }
 
-async function exportDataset(format, selectedIds = null, systemPrompt = null) {
+async function exportDataset(format, selectedIds = null, systemPrompt = null, systemPromptMode = null) {
     showSaveIndicator('Exporting...');
     try {
         const filename = els.exportFilename?.value?.trim() || null;
+        const write_manifest = els.exportWriteManifest?.checked ?? false;
+        const prompt_source = getSelectedExportPromptSource();
+        const folder = state.export.folder === 'rejected' ? 'rejected' : 'wanted';
         const res = await fetch(`/api/export/${format}`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ ids: selectedIds, system_prompt: systemPrompt, filename })
+            body: JSON.stringify({ ids: selectedIds, folder, system_prompt: systemPrompt, system_prompt_mode: systemPromptMode, filename, write_manifest, prompt_source })
         });
         if (res.ok) {
             const data = await res.json();
-            toast(`Exported ${selectedIds?.length || 'all'} conversations to ${data.path}`, 'success');
+            const extra = data.manifest_path ? ` (manifest: ${data.manifest_path})` : '';
+            toast(`Exported ${selectedIds?.length || 'all'} conversations to ${data.path}${extra}`, 'success');
             hideSaveIndicator('Exported ✓');
         } else { const err = await res.json(); toast(err.error || 'Export failed', 'error'); hideSaveIndicator('Export failed'); }
     } catch (e) { toast('Export failed', 'error'); hideSaveIndicator('Export failed'); }
+}
+
+async function previewExportDataset(format, selectedIds = null, systemPrompt = null, systemPromptMode = null) {
+    showSaveIndicator('Previewing...');
+    try {
+        const folder = state.export.folder === 'rejected' ? 'rejected' : 'wanted';
+        const res = await fetch(`/api/export-preview/${format}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ ids: selectedIds, folder, system_prompt: systemPrompt, system_prompt_mode: systemPromptMode, limit: 30 })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || 'Preview failed');
+        if (!els.exportPreviewModal || !els.exportPreviewJsonl) return;
+        els.exportPreviewModal.classList.remove('hidden');
+        const lines = Array.isArray(data.lines) ? data.lines : [];
+        els.exportPreviewJsonl.textContent = lines.join('\n');
+        if (els.exportPreviewSummary) {
+            const trunc = data.truncated ? ' · truncated' : '';
+            els.exportPreviewSummary.textContent = `Conversations: ${data.total_conversations || 0} · Entries (est.): ${data.total_entries || 0} · Showing: ${lines.length}${trunc}`;
+        }
+        hideSaveIndicator('Preview ✓');
+    } catch (e) {
+        toast(e.message || 'Preview failed', 'error');
+        hideSaveIndicator('Preview failed');
+    }
 }
 
 function closeExportModal() { els.exportModal.classList.add('hidden'); }
@@ -4921,6 +5607,8 @@ async function buildDraftObject() {
         model: getModelValue(),
         temperature: parseFloat(els.temperature?.value || 0.9),
         customParams: state.customParams,
+        listIterators: state.listIterators || {},
+        macroTraceLast: state.macroTraceLast || null,
         generate: {
             prompt: els.systemPrompt?.value || '',
             variables: state.generate.variables,
@@ -4943,14 +5631,16 @@ async function buildDraftObject() {
 async function restoreDraft() {
     try {
         const sessionDraft = await dbGet('drafts', SESSION_ID);
-        if (sessionDraft) { applyDraft(sessionDraft); return; }
+        if (sessionDraft) { applyDraft(sessionDraft); return true; }
     } catch (e) { }
     try {
         const serverDraft = await syncEngine.pull();
         if (serverDraft) {
             applyDraft(serverDraft);
+            return true;
         }
     } catch (e) { }
+    return false;
 }
 
 function applyDraft(draft) {
@@ -4972,6 +5662,12 @@ function applyDraft(draft) {
     if (draft.customParams) {
         state.customParams = draft.customParams;
         renderCustomParams();
+    }
+    if (draft.listIterators && typeof draft.listIterators === 'object') {
+        state.listIterators = draft.listIterators;
+    }
+    if (draft.macroTraceLast && typeof draft.macroTraceLast === 'object') {
+        state.macroTraceLast = draft.macroTraceLast;
     }
     if (draft.generate?.prompt && els.systemPrompt) {
         els.systemPrompt.value = draft.generate.prompt;
@@ -5063,6 +5759,14 @@ function escapeHtml(text) {
     return div.innerHTML;
 }
 
+function safeJsonClone(value, fallback = null) {
+    try {
+        return JSON.parse(JSON.stringify(value));
+    } catch (e) {
+        return fallback;
+    }
+}
+
 function formatDate(isoString) {
     if (!isoString) return '';
     const date = new Date(isoString);
@@ -5079,13 +5783,13 @@ function isPopupOpen() {
     return !!els.popupModal && !els.popupModal.classList.contains('hidden');
 }
 
-function closePopup({ confirmed = false, value = '' } = {}) {
+function closePopup({ confirmed = false, value = '', checked = false } = {}) {
     if (!els.popupModal) return;
     els.popupModal.classList.add('hidden');
     const resolve = popupState.resolve;
     popupState.resolve = null;
     popupState.requiresInput = false;
-    resolve?.({ confirmed, value });
+    resolve?.({ confirmed, value, checked: !!checked });
 }
 
 function setPopupHint(text = '') {
@@ -5102,6 +5806,7 @@ function openPopup({
     cancelText = 'Cancel',
     danger = false,
     input = null, // { label, value, placeholder, required, hint }
+    checkbox = null, // { label, checked }
 } = {}) {
     if (!els.popupModal) return Promise.resolve({ confirmed: false, value: '' });
     if (popupState.resolve) closePopup({ confirmed: false, value: '' });
@@ -5118,6 +5823,8 @@ function openPopup({
     const wantsInput = !!input;
     popupState.requiresInput = !!(input && input.required);
     els.popupInputGroup.classList.toggle('hidden', !wantsInput);
+    const wantsCheckbox = !!checkbox;
+    if (els.popupCheckboxGroup) els.popupCheckboxGroup.classList.toggle('hidden', !wantsCheckbox);
 
     if (wantsInput) {
         els.popupInputLabel.textContent = String(input.label || 'Name');
@@ -5130,6 +5837,14 @@ function openPopup({
         els.popupInput.value = '';
         els.popupInput.placeholder = '';
         setPopupHint('');
+    }
+
+    if (wantsCheckbox) {
+        if (els.popupCheckboxLabel) els.popupCheckboxLabel.textContent = String(checkbox.label || 'Do not ask again');
+        if (els.popupCheckbox) els.popupCheckbox.checked = !!checkbox.checked;
+    } else {
+        if (els.popupCheckbox) els.popupCheckbox.checked = false;
+        if (els.popupCheckboxLabel) els.popupCheckboxLabel.textContent = 'Do not ask again';
     }
 
     els.popupModal.classList.remove('hidden');
@@ -5147,6 +5862,26 @@ function openPopup({
     return new Promise(resolve => {
         popupState.resolve = resolve;
     });
+}
+
+async function popupConfirmWithCheckbox({
+    title = 'Confirm',
+    message = '',
+    confirmText = 'OK',
+    cancelText = 'Cancel',
+    danger = false,
+    checkboxLabel = 'Do not ask again',
+    checkboxChecked = false,
+} = {}) {
+    const res = await openPopup({
+        title,
+        message,
+        confirmText,
+        cancelText,
+        danger,
+        checkbox: { label: checkboxLabel, checked: checkboxChecked }
+    });
+    return { confirmed: !!res.confirmed, checked: !!res.checked };
 }
 
 async function popupConfirm({
@@ -5211,6 +5946,58 @@ function updateStatusStackLayout() {
     document.documentElement.style.setProperty('--model-indicator-height', `${mh + mpad}px`);
 }
 
+// ============ RESOLVED PROMPT PREVIEW ============
+function renderPromptPreviewModal() {
+    if (!els.promptPreviewModal || els.promptPreviewModal.classList.contains('hidden')) return;
+    const raw = String(els.systemPrompt?.value || '');
+    const iteratorSnapshot = { ...(state.listIterators || {}) };
+    const { text, trace } = resolvePromptWithTrace(raw, { isPreview: true, recordTrace: true, iteratorState: iteratorSnapshot });
+    state.promptPreview.text = text;
+    state.promptPreview.trace = trace;
+
+    if (els.promptPreviewText) {
+        els.promptPreviewText.textContent = text || '—';
+    }
+    if (els.promptPreviewTrace) {
+        const randomEntries = Object.entries(trace.random || {})
+            .sort((a, b) => a[0].localeCompare(b[0]))
+            .map(([k, v]) => ({ code: `{{${k}}}`, value: v?.value ?? '', meta: `options: ${v?.options ?? '—'}` }));
+
+        const listEntries = Object.entries(trace.list || {})
+            .sort((a, b) => a[0].localeCompare(b[0]))
+            .map(([k, v]) => {
+                const idx = typeof v?.index === 'number' ? v.index : '—';
+                const meta = `index: ${idx} · next: ${v?.next ?? '—'} · options: ${v?.options ?? '—'}`;
+                return ({ code: `{{${k}}}`, value: v?.value ?? '', meta });
+            });
+
+        const rollEntries = Object.entries(trace.roll || {})
+            .sort((a, b) => a[0].localeCompare(b[0]))
+            .map(([notation, value]) => ({ code: `{{roll:${notation}}}`, value: String(value ?? ''), meta: '' }));
+
+        const variableEntries = Object.entries(trace.variables || {})
+            .sort((a, b) => a[0].localeCompare(b[0]))
+            .map(([k, v]) => ({ code: `{{${k}}}`, value: String(v ?? ''), meta: '' }));
+
+        els.promptPreviewTrace.innerHTML = [
+            _renderMacroStateGroup('Variables', variableEntries),
+            _renderMacroStateGroup('List', listEntries),
+            _renderMacroStateGroup('Random', randomEntries),
+            _renderMacroStateGroup('Roll', rollEntries),
+        ].join('\n');
+    }
+}
+
+function openPromptPreviewModal() {
+    if (!els.promptPreviewModal) return;
+    els.promptPreviewModal.classList.remove('hidden');
+    renderPromptPreviewModal();
+}
+
+function closePromptPreviewModal() {
+    els.promptPreviewModal?.classList.add('hidden');
+}
+
 // ============ MACROS MODAL ============
 function openMacrosModal() {
     if (els.macrosModal) els.macrosModal.classList.remove('hidden');
@@ -5228,7 +6015,87 @@ function switchMacrosTab(tabName) {
     if (target) target.classList.add('active');
     // On switching to variables, re-render so values are fresh
     if (tabName === 'variables') renderVariableInputs(state.generate.variableNames || []);
+    if (tabName === 'state') renderMacroState();
     if (tabName === 'history') renderPromptHistory();
+}
+
+function _renderMacroStateGroup(title, entries) {
+    const items = entries.map(({ code, value, meta }) => `
+        <div class="macro-ref-item">
+            <code class="macro-code">${escapeHtml(code)}</code>
+            <div class="muted small">${escapeHtml(String(value ?? ''))}</div>
+            ${meta ? `<div class="muted small">${escapeHtml(meta)}</div>` : ''}
+        </div>
+    `).join('');
+    return `
+        <div class="macro-ref-item macro-ref-tip">
+            <strong>${escapeHtml(title)}</strong>
+        </div>
+        ${items || '<div class="muted small">None</div>'}
+    `;
+}
+
+function renderMacroState() {
+    if (!els.macrosStateBody) return;
+    const trace = state.macroTraceLast;
+    if (!trace || (!Object.keys(trace.random || {}).length && !Object.keys(trace.list || {}).length && !Object.keys(trace.roll || {}).length && !Object.keys(trace.variables || {}).length)) {
+        els.macrosStateBody.innerHTML = '<div class="muted small">No macro state yet. Generate or chat once to populate.</div>';
+        return;
+    }
+
+    const randomEntries = Object.entries(trace.random || {})
+        .sort((a, b) => a[0].localeCompare(b[0]))
+        .map(([k, v]) => ({ code: `{{${k}}}`, value: v?.value ?? '', meta: `options: ${v?.options ?? '—'}` }));
+
+    const listEntries = Object.entries(trace.list || {})
+        .sort((a, b) => a[0].localeCompare(b[0]))
+        .map(([k, v]) => {
+            const idx = typeof v?.index === 'number' ? v.index : '—';
+            const meta = `index: ${idx} · next: ${v?.next ?? '—'} · options: ${v?.options ?? '—'}`;
+            return ({ code: `{{${k}}}`, value: v?.value ?? '', meta });
+        });
+
+    const rollEntries = Object.entries(trace.roll || {})
+        .sort((a, b) => a[0].localeCompare(b[0]))
+        .map(([notation, value]) => ({ code: `{{roll:${notation}}}`, value: String(value ?? ''), meta: '' }));
+
+    const variableEntries = Object.entries(trace.variables || {})
+        .sort((a, b) => a[0].localeCompare(b[0]))
+        .map(([k, v]) => ({ code: `{{${k}}}`, value: String(v ?? ''), meta: '' }));
+
+    const resolvedAt = trace.resolvedAt ? new Date(trace.resolvedAt).toLocaleString() : '';
+    const iterCount = Object.keys(state.listIterators || {}).length;
+    const header = [
+        resolvedAt ? `<div class="muted small">Last resolved: ${escapeHtml(resolvedAt)}</div>` : '',
+        iterCount ? `<div class="muted small">Active list iterators: ${iterCount}</div>` : ''
+    ].filter(Boolean).join('');
+    els.macrosStateBody.innerHTML = [
+        header,
+        _renderMacroStateGroup('Variables', variableEntries),
+        _renderMacroStateGroup('List', listEntries),
+        _renderMacroStateGroup('Random', randomEntries),
+        _renderMacroStateGroup('Roll', rollEntries),
+    ].filter(Boolean).join('\n');
+}
+
+async function resetMacros() {
+    const hasAny = (Object.keys(state.listIterators || {}).length > 0) || !!state.macroTraceLast;
+    if (hasAny) {
+        const ok = await popupConfirm({
+            title: 'Reset Macros',
+            message: 'Reset {{list::...}} iterators and clear the last macro state?',
+            confirmText: 'Reset',
+            cancelText: 'Cancel',
+            danger: true
+        });
+        if (!ok) return;
+    }
+    state.listIterators = {};
+    state.macroTraceLast = null;
+    state.generate.lastMacroTrace = null;
+    renderMacroState();
+    debouncedSaveDraft();
+    toast('Macros reset', 'success');
 }
 
 function updateBuilderPreview() {
@@ -5372,8 +6239,9 @@ async function clearPromptHistory() {
 // ============ EVENT LISTENERS ============
 function setupEventListeners() {
     // Unified popup modal
-    els.popupClose?.addEventListener('click', () => closePopup({ confirmed: false, value: '' }));
-    els.popupCancel?.addEventListener('click', () => closePopup({ confirmed: false, value: '' }));
+    const getPopupCheckbox = () => (!els.popupCheckboxGroup?.classList.contains('hidden') && !!els.popupCheckbox?.checked);
+    els.popupClose?.addEventListener('click', () => closePopup({ confirmed: false, value: '', checked: getPopupCheckbox() }));
+    els.popupCancel?.addEventListener('click', () => closePopup({ confirmed: false, value: '', checked: getPopupCheckbox() }));
     els.popupConfirm?.addEventListener('click', () => {
         const value = els.popupInputGroup?.classList.contains('hidden') ? '' : (els.popupInput?.value || '');
         if (popupState.requiresInput && !String(value).trim()) {
@@ -5381,15 +6249,15 @@ function setupEventListeners() {
             els.popupInput?.focus();
             return;
         }
-        closePopup({ confirmed: true, value });
+        closePopup({ confirmed: true, value, checked: getPopupCheckbox() });
     });
-    $('#popup-modal .modal-backdrop')?.addEventListener('click', () => closePopup({ confirmed: false, value: '' }));
+    $('#popup-modal .modal-backdrop')?.addEventListener('click', () => closePopup({ confirmed: false, value: '', checked: getPopupCheckbox() }));
     document.addEventListener('keydown', (e) => {
         if (!isPopupOpen()) return;
         if (e.key === 'Escape') {
             e.preventDefault();
             e.stopPropagation();
-            closePopup({ confirmed: false, value: '' });
+            closePopup({ confirmed: false, value: '', checked: getPopupCheckbox() });
             return;
         }
         if (e.key === 'Enter') {
@@ -5561,6 +6429,9 @@ function setupEventListeners() {
     document.querySelectorAll('.settings-category-btn').forEach(btn => {
         btn.addEventListener('click', () => scrollSettingsSection(btn.dataset.settingsTarget, btn));
     });
+    els.applyDatabasePath?.addEventListener('click', applyDatabasePath);
+    els.scanDatabasePaths?.addEventListener('click', () => loadDatabaseCandidates({ quiet: false }));
+    els.backupDatabaseBtn?.addEventListener('click', backupDatabaseNow);
 
     // Files Modal Bulk Actions Static Listeners
     const selectAllFiles = () => {
@@ -5584,7 +6455,6 @@ function setupEventListeners() {
     });
     els.filesLoadAll?.addEventListener('click', loadAllFiles);
     els.filesLoadAllRejected?.addEventListener('click', loadAllFiles);
-    els.filesLoadMore?.addEventListener('click', loadMoreFilesModal);
     $('#files-bulk-reject')?.addEventListener('click', () => handleBulkMove('wanted', 'rejected'));
     $('#files-bulk-restore')?.addEventListener('click', () => handleBulkMove('rejected', 'wanted'));
     $('#files-bulk-delete')?.addEventListener('click', () => handleBulkDelete(state.filesModal.currentFolder));
@@ -5599,10 +6469,10 @@ function setupEventListeners() {
     els.filesModalList?.addEventListener('click', (e) => {
         const item = e.target.closest('.export-file-item');
         if (!item) return;
-        const id = item.dataset.id;
+        const id = String(item.dataset.id || '');
         const diff = handleSelectableInteraction(state.filesModal, state.filesModal.files, id, e, (previewId) => {
-            const requestedId = previewId;
-            fetchConversationPreview(previewId, state.filesModal.currentFolder)
+            const requestedId = String(previewId || '');
+            fetchConversationPreview(requestedId, state.filesModal.currentFolder)
                 .then(conv => {
                     if (state.filesModal.previewId !== requestedId) return;
                     state.filesModal.previewConversation = conv;
@@ -5632,25 +6502,74 @@ function setupEventListeners() {
     });
 
     // Export Modal
-    els.confirmExport?.addEventListener('click', () => {
+    els.confirmExport?.addEventListener('click', async () => {
         const format = els.exportFormat.value;
-        const systemPrompt = getExportSystemPrompt();
+        const { systemPrompt, systemPromptMode } = getExportSystemPromptPayload();
         const selectedIds = Array.from(state.export.selectedIds);
         // Fix: zero selected means nothing selected, NOT "export all"
         if (selectedIds.length === 0) {
             toast('Please select at least one conversation to export', 'error');
             return;
         }
-        exportDataset(format, selectedIds, systemPrompt);
+        if (exportModeUsesPrompt(systemPromptMode) && typeof systemPrompt === 'string') {
+            const ok = await confirmIfUnresolved({
+                title: 'Export system prompt contains placeholders',
+                context: 'Exports write the system prompt exactly as provided (no macro resolution).',
+                resolvedText: systemPrompt
+            });
+            if (!ok) return;
+        }
+        exportDataset(format, selectedIds, systemPrompt, systemPromptMode);
         closeExportModal();
     });
     els.cancelExport?.addEventListener('click', closeExportModal);
     els.closeExport?.addEventListener('click', closeExportModal);
+    els.previewExport?.addEventListener('click', async () => {
+        const format = els.exportFormat.value;
+        const { systemPrompt, systemPromptMode } = getExportSystemPromptPayload();
+        const selectedIds = Array.from(state.export.selectedIds);
+        if (selectedIds.length === 0) {
+            toast('Please select at least one conversation to preview', 'error');
+            return;
+        }
+        if (exportModeUsesPrompt(systemPromptMode) && typeof systemPrompt === 'string') {
+            const ok = await confirmIfUnresolved({
+                title: 'Export system prompt contains placeholders',
+                context: 'Exports write the system prompt exactly as provided (no macro resolution).',
+                resolvedText: systemPrompt
+            });
+            if (!ok) return;
+        }
+        previewExportDataset(format, selectedIds, systemPrompt, systemPromptMode);
+    });
+
+    // Export preview modal
+    els.closeExportPreviewModal?.addEventListener('click', () => els.exportPreviewModal?.classList.add('hidden'));
+    $('#export-preview-modal .modal-backdrop')?.addEventListener('click', () => els.exportPreviewModal?.classList.add('hidden'));
+    els.copyExportPreview?.addEventListener('click', () => {
+        const text = els.exportPreviewJsonl?.textContent || '';
+        if (!text.trim()) return;
+        navigator.clipboard.writeText(text).then(() => toast('Copied preview', 'success')).catch(() => toast('Copy failed', 'error'));
+    });
 
     document.querySelectorAll('input[name="export-prompt-source"]').forEach(input => {
         input.addEventListener('change', updateExportPromptState);
     });
+    els.exportSystemModeBtn?.addEventListener('click', openExportSystemModeModal);
+    els.exportSystemModeCancel?.addEventListener('click', closeExportSystemModeModal);
+    els.exportSystemModeApply?.addEventListener('click', applyExportSystemModeFromModal);
+    els.closeExportSystemModeModal?.addEventListener('click', closeExportSystemModeModal);
+    $('#export-system-mode-modal .modal-backdrop')?.addEventListener('click', closeExportSystemModeModal);
     els.exportFormat?.addEventListener('change', (e) => setLastExportFormat(e.target.value));
+    els.exportFolder?.addEventListener('change', async (e) => {
+        const next = String(e.target.value || 'wanted') === 'rejected' ? 'rejected' : 'wanted';
+        setLastExportFolder(next);
+        state.export.folder = next;
+        cancelSliceLoadAll(state.export, 'Canceled');
+        await loadExportFiles({ reset: true });
+        renderExportPreview();
+        updateExportCount();
+    });
 
     // Export Presets
     els.exportPresetSelect?.addEventListener('change', loadExportPreset);
@@ -5672,7 +6591,6 @@ function setupEventListeners() {
         hasMore: () => state.export.hasMore && !state.export.isLoading,
         getProgressDetail: 'Wanted'
     }));
-    els.exportLoadMore?.addEventListener('click', loadMoreExportFiles);
     els.exportFileList?.addEventListener('mousedown', (e) => {
         if (!(e.shiftKey || e.ctrlKey || e.metaKey)) return;
         if (e.target.closest('input, textarea, select, button')) return;
@@ -5681,10 +6599,10 @@ function setupEventListeners() {
     els.exportFileList?.addEventListener('click', (e) => {
         const item = e.target.closest('.export-file-item');
         if (!item) return;
-        const id = item.dataset.id;
+        const id = String(item.dataset.id || '');
         const diff = handleSelectableInteraction(state.export, state.export.files, id, e, (previewId) => {
-            const requestedId = previewId;
-            fetchConversationPreview(previewId, 'wanted')
+            const requestedId = String(previewId || '');
+            fetchConversationPreview(requestedId, state.export.folder)
                 .then(conv => {
                     if (state.export.previewId !== requestedId) return;
                     state.export.previewConversation = conv;
@@ -5738,6 +6656,33 @@ function setupEventListeners() {
     els.generateBtn.addEventListener('click', generate);
     els.regenerateBtn.addEventListener('click', generate);
     els.bulkCancel?.addEventListener('click', () => { if (state.bulk.abortController) state.bulk.abortController.abort(); });
+    els.bulkDetails?.addEventListener('click', openBulkDetailsModal);
+    els.closeBulkDetailsModal?.addEventListener('click', closeBulkDetailsModal);
+    $('#bulk-details-modal .modal-backdrop')?.addEventListener('click', closeBulkDetailsModal);
+    els.bulkDetailsClear?.addEventListener('click', async () => {
+        const ok = await popupConfirm({
+            title: 'Clear Bulk Runs',
+            message: 'Clear the bulk runs history?',
+            confirmText: 'Clear',
+            cancelText: 'Cancel',
+            danger: true
+        });
+        if (!ok) return;
+        state.bulk.runs = [];
+        state.bulk.selectedRunIndex = null;
+        renderBulkDetailsSummary();
+        renderBulkDetailsList();
+        renderBulkDetailsPreview();
+    });
+    els.bulkDetailsList?.addEventListener('click', (e) => {
+        const item = e.target.closest('.export-file-item');
+        if (!item) return;
+        const idx = parseInt(item.dataset.index, 10);
+        if (!Number.isFinite(idx)) return;
+        state.bulk.selectedRunIndex = idx;
+        renderBulkDetailsList();
+        renderBulkDetailsPreview();
+    });
 
     // Edit toggle
     els.editToggle.addEventListener('click', toggleEditMode);
@@ -5808,7 +6753,6 @@ function setupEventListeners() {
         hasMore: () => state.reviewBrowser.hasMore && !state.reviewBrowser.isLoading,
         getProgressDetail: 'Browse queue'
     }));
-    els.reviewBrowserLoadMore?.addEventListener('click', loadMoreReviewBrowser);
     els.reviewBrowserBulkKeep?.addEventListener('click', () => handleReviewBrowserBulk('keep'));
     els.reviewBrowserBulkReject?.addEventListener('click', () => handleReviewBrowserBulk('reject'));
     els.reviewBrowserList?.addEventListener('mousedown', (e) => {
@@ -5819,17 +6763,13 @@ function setupEventListeners() {
     els.reviewBrowserList?.addEventListener('click', (e) => {
         const item = e.target.closest('.export-file-item');
         if (!item) return;
-        const id = item.dataset.id;
+        const id = String(item.dataset.id || '');
         const diff = handleSelectableInteraction(state.reviewBrowser, state.reviewBrowser.items, id, e, (previewId) => {
-            const queueIndex = state.review.queue.findIndex(entry => entry.id === previewId);
-            if (queueIndex !== -1) {
-                state.review.currentIndex = queueIndex;
-                state.review.isEditing = false;
-                renderReviewItem();
-            }
-            state.reviewBrowser.previewId = previewId;
-            state.reviewBrowser.previewConversation = state.reviewBrowser.items.find(entry => entry.id === previewId) || null;
+            const pid = String(previewId || '');
+            state.reviewBrowser.previewId = pid;
+            state.reviewBrowser.previewConversation = state.reviewBrowser.items.find(entry => String(entry?.id || '') === pid) || null;
             renderReviewBrowserPreview();
+            jumpReviewToItemId(pid);
         });
         if (diff?.needsFullRefresh) {
             refreshSelectableListUI(els.reviewBrowserList, state.reviewBrowser);
@@ -5888,9 +6828,27 @@ function setupEventListeners() {
     els.builderItems?.addEventListener('input', updateBuilderPreview);
     els.builderRollInput?.addEventListener('input', updateBuilderPreview);
     els.builderCopy?.addEventListener('click', copyBuilderMacro);
+    els.resetMacrosBtn?.addEventListener('click', resetMacros);
 
     // History
     els.openHistoryBtn?.addEventListener('click', () => { openMacrosModal(); switchMacrosTab('history'); });
+    els.previewResolvedBtn?.addEventListener('click', () => {
+        openPromptPreviewModal();
+    });
+    els.closePromptPreviewModal?.addEventListener('click', closePromptPreviewModal);
+    $('#prompt-preview-modal .modal-backdrop')?.addEventListener('click', closePromptPreviewModal);
+    els.promptPreviewClose?.addEventListener('click', closePromptPreviewModal);
+    els.promptPreviewCopy?.addEventListener('click', () => {
+        const text = String(state.promptPreview?.text || els.promptPreviewText?.textContent || '');
+        if (!text.trim()) return;
+        navigator.clipboard.writeText(text).then(() => toast('Copied prompt preview', 'success')).catch(() => toast('Copy failed', 'error'));
+    });
+    els.promptPreviewCopyTrace?.addEventListener('click', () => {
+        const trace = state.promptPreview?.trace || null;
+        const text = trace ? JSON.stringify(trace, null, 2) : '';
+        if (!text.trim()) return;
+        navigator.clipboard.writeText(text).then(() => toast('Copied trace', 'success')).catch(() => toast('Copy failed', 'error'));
+    });
     els.clearHistoryBtn?.addEventListener('click', clearPromptHistory);
     els.historyMaxSetting?.addEventListener('change', () => {
         const max = getHistoryMax();
@@ -5928,6 +6886,10 @@ function setupEventListeners() {
         state.uiPrefs.autoLoadOnScroll = !!els.autoLoadOnScroll.checked;
         saveUiPrefs();
         applyVirtualPrefs();
+    });
+    els.modalPageSize?.addEventListener('change', () => {
+        state.uiPrefs.modalPageSize = clampNumber(els.modalPageSize.value, { min: 50, max: 2000, fallback: MODAL_PAGE_SIZE });
+        saveUiPrefs();
     });
 
     // Virtual list scroll handlers (renders window + auto-load)

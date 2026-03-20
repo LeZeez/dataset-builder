@@ -14,6 +14,85 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from scripts import database as db
 
+SystemPromptMode = Literal[
+    "keep",
+    "add_if_missing",
+    "replace_all",
+    "remove_all",
+    "prepend",
+    "append",
+    # Back-compat aliases (accepted, normalized below)
+    "override",
+    "strip",
+]
+
+def _normalize_system_prompt_mode(system_prompt_mode: str | None) -> str | None:
+    if not system_prompt_mode:
+        return None
+    mode = str(system_prompt_mode).strip().lower()
+    if mode == "override":
+        return "replace_all"
+    if mode == "strip":
+        return "remove_all"
+    if mode in ("keep", "add_if_missing", "replace_all", "remove_all", "prepend", "append"):
+        return mode
+    return None
+
+def _apply_system_prompt_mode(conv_data: dict, system_prompt: str | None, system_prompt_mode: SystemPromptMode | None):
+    """Apply system prompt handling to conv_data in-place (best-effort)."""
+    mode = _normalize_system_prompt_mode(system_prompt_mode)
+    if not mode:
+        # Backwards-compatible behavior:
+        # - if a non-empty system prompt is provided: replace_all
+        # - otherwise: keep original system messages
+        mode = "replace_all" if (system_prompt is not None and str(system_prompt) != "") else "keep"
+
+    messages = conv_data.get("conversations", [])
+    if not isinstance(messages, list):
+        return
+
+    if mode == "keep":
+        return
+
+    # Only mutate when there is a conversation to export.
+    if not messages:
+        return
+
+    prompt = "" if system_prompt is None else str(system_prompt)
+    system_indexes = [idx for idx, m in enumerate(messages) if isinstance(m, dict) and m.get("from") == "system"]
+
+    if mode == "remove_all":
+        conv_data["conversations"] = [m for m in messages if isinstance(m, dict) and m.get("from") != "system"]
+        return
+
+    if mode == "add_if_missing":
+        if system_indexes:
+            return
+        messages.insert(0, {"from": "system", "value": prompt})
+        return
+
+    if mode == "replace_all":
+        conv_data["conversations"] = [m for m in messages if isinstance(m, dict) and m.get("from") != "system"]
+        conv_data["conversations"].insert(0, {"from": "system", "value": prompt})
+        return
+
+    if mode in ("prepend", "append"):
+        if system_indexes:
+            idx = system_indexes[0]
+            existing = "" if messages[idx].get("value") is None else str(messages[idx].get("value"))
+            if not existing:
+                messages[idx]["value"] = prompt
+            elif not prompt:
+                # No-op if prompt is empty (preserve existing).
+                messages[idx]["value"] = existing
+            elif mode == "prepend":
+                messages[idx]["value"] = f"{prompt}\n\n{existing}"
+            else:
+                messages[idx]["value"] = f"{existing}\n\n{prompt}"
+        else:
+            messages.insert(0, {"from": "system", "value": prompt})
+        return
+
 
 def to_sharegpt(conv: dict) -> dict:
     """Convert to ShareGPT/LLaMA-Factory format."""
@@ -68,11 +147,72 @@ def to_alpaca(conv: dict) -> list[dict]:
     return pairs
 
 
+def preview_export_lines(
+    conversations: list[dict],
+    format: Literal["sharegpt", "openai", "alpaca"] = "sharegpt",
+    system_prompt: str | None = None,
+    system_prompt_mode: SystemPromptMode | None = None,
+    limit: int = 20,
+) -> dict:
+    """Convert conversations to JSONL lines without writing files.
+
+    Returns:
+      { lines: [str], total_entries: int, truncated: bool, limit: int }
+    """
+    converter = {
+        "sharegpt": to_sharegpt,
+        "openai": to_openai,
+        "alpaca": to_alpaca
+    }[format]
+
+    lines: list[str] = []
+    total_entries = 0
+    truncated = False
+
+    safe_limit = max(1, min(int(limit), 200))
+
+    for conv in conversations:
+        conv_data = {
+            "id": conv.get("id"),
+            "conversations": [dict(message) for message in conv.get("conversations", [])],
+            "metadata": dict(conv.get("metadata", {}))
+        }
+
+        _apply_system_prompt_mode(conv_data, system_prompt, system_prompt_mode)
+
+        converted = converter(conv_data)
+
+        if isinstance(converted, list):
+            total_entries += len(converted)
+            for item in converted:
+                if len(lines) >= safe_limit:
+                    truncated = True
+                    break
+                lines.append(json.dumps(item, ensure_ascii=False))
+        else:
+            total_entries += 1
+            if len(lines) < safe_limit:
+                lines.append(json.dumps(converted, ensure_ascii=False))
+            else:
+                truncated = True
+
+        if truncated:
+            break
+
+    return {
+        "lines": lines,
+        "total_entries": total_entries,
+        "truncated": truncated,
+        "limit": safe_limit,
+    }
+
+
 def export_dataset(
     output_dir: str = "exports",
     format: Literal["sharegpt", "openai", "alpaca"] = "sharegpt",
     selected_ids: list[str] | None = None,
     system_prompt: str | None = None,
+    system_prompt_mode: SystemPromptMode | None = None,
     filename: str | None = None,
     folder: Literal["wanted", "rejected"] = "wanted"
 ) -> Path:
@@ -103,12 +243,7 @@ def export_dataset(
                 "metadata": dict(conv.get("metadata", {}))
             }
 
-            if system_prompt and conv_data["conversations"]:
-                messages = conv_data["conversations"]
-                if messages[0].get("from") == "system":
-                    messages[0]["value"] = system_prompt
-                else:
-                    messages.insert(0, {"from": "system", "value": system_prompt})
+            _apply_system_prompt_mode(conv_data, system_prompt, system_prompt_mode)
 
             converted = converter(conv_data)
 

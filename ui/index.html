@@ -287,7 +287,7 @@
                             <h2>Prompt Template</h2>
                             <div class="prompt-controls">
                                 <select id="prompt-select" class="select select-sm">
-                                    <option value="">Select prompt...</option>
+                                    <option value="">Load preset...</option>
                                 </select>
                                 <button id="save-prompt-btn" class="icon-btn" title="Save prompt">
                                     <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -337,6 +337,12 @@
                                         <polyline points="12 6 12 12 16 14" />
                                     </svg>
                                 </button>
+                                <button id="preview-resolved-btn" class="icon-btn" title="Preview resolved prompt (no API call)">
+                                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                        <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8S1 12 1 12z"></path>
+                                        <circle cx="12" cy="12" r="3"></circle>
+                                    </svg>
+                                </button>
                             </div>
                         </div>
 
@@ -362,6 +368,7 @@
                                     <div id="bulk-progress-fill" class="progress-fill"></div>
                                 </div>
                                 <span id="bulk-progress-text">0/0</span>
+                                <button id="bulk-details" class="btn btn-sm btn-secondary">Details</button>
                                 <button id="bulk-cancel" class="btn btn-sm btn-danger">Cancel</button>
                             </div>
                         </div>
@@ -511,7 +518,7 @@ gpt: response"></textarea>
                                     </button>
                                 </div>
                                 <textarea id="chat-system-prompt" class="textarea" rows="4"
-                                    placeholder="System instructions for the chat...">You are a helpful and friendly conversational assistant. Keep responses natural and engaging.</textarea>
+                                    placeholder="System instructions for the chat (e.g., tone, rules, style)…"></textarea>
                             </div>
                         </div>
 
@@ -653,6 +660,13 @@ gpt: response"></textarea>
                             <input type="text" id="export-search-input" class="input" placeholder="Search conversations...">
                         </div>
                         <div class="form-group">
+                            <label for="export-folder">Folder</label>
+                            <select id="export-folder" class="select">
+                                <option value="wanted" selected>Wanted</option>
+                                <option value="rejected">Rejected</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
                             <label>Format</label>
                             <select id="export-format" class="select">
                                 <option value="sharegpt">ShareGPT</option>
@@ -677,6 +691,13 @@ gpt: response"></textarea>
                                     <span>Generate Tab</span>
                                 </label>
                             </div>
+                            <div class="muted small mt-quarter">Used only when the selected handling mode applies a system prompt.</div>
+                        </div>
+
+                        <div class="form-group">
+                            <label>System Prompt Handling</label>
+                            <button id="export-system-mode-btn" type="button" class="btn btn-sm btn-secondary">Choose…</button>
+                            <div id="export-system-mode-summary" class="muted small mt-quarter"></div>
                         </div>
 
                         <div class="form-group" id="export-custom-prompt-group">
@@ -716,6 +737,13 @@ gpt: response"></textarea>
                             <label for="export-filename">Custom Filename (optional)</label>
                             <input type="text" id="export-filename" class="input" placeholder="e.g. my_dataset.jsonl">
                         </div>
+                        <div class="form-group">
+                            <label class="toggle-label">
+                                <input type="checkbox" id="export-write-manifest">
+                                <span>Write export manifest</span>
+                            </label>
+                            <div class="muted small mt-quarter">Writes a small JSON sidecar describing the export settings.</div>
+                        </div>
                     </div>
 
                     <!-- Right: File Selection -->
@@ -743,14 +771,97 @@ gpt: response"></textarea>
                         </div>
                         <div class="modal-actions">
                             <span id="export-pagination-status" class="muted small"></span>
-                            <button id="export-load-more" class="btn btn-sm btn-secondary hidden">Load More</button>
                         </div>
                     </div>
                 </div>
 
                 <div class="modal-actions">
                     <button id="cancel-export" class="btn btn-secondary">Cancel</button>
+                    <button id="preview-export" class="btn btn-secondary">Preview</button>
                     <button id="confirm-export" class="btn btn-primary">Export Selected</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Export System Prompt Mode Modal -->
+        <div id="export-system-mode-modal" class="modal hidden">
+            <div class="modal-backdrop"></div>
+            <div class="modal-content export-mode-modal-content">
+                <div class="export-header">
+                    <h3>System Prompt Handling</h3>
+                    <button id="close-export-system-mode-modal" class="icon-btn" title="Close">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="2">
+                            <line x1="18" y1="6" x2="6" y2="18" />
+                            <line x1="6" y1="6" x2="18" y2="18" />
+                        </svg>
+                    </button>
+                </div>
+                <div class="export-body flex-col">
+                    <div class="muted small mb-half">Choose how system messages are handled during export. This does not edit your stored conversations.</div>
+                    <div id="export-system-mode-cards" class="mode-cards">
+                        <label class="mode-card">
+                            <input type="radio" name="export-system-mode-choice" value="add_if_missing" checked>
+                            <div class="mode-card-body">
+                                <div class="mode-card-title">Add if missing (default)</div>
+                                <div class="mode-card-desc">Keeps existing system messages; inserts your prompt only when a conversation has none.</div>
+                                <pre class="mode-card-example">Conversation already has a system message → unchanged
+Conversation has no system message → insert as first message:
+system: You are a precise, helpful assistant.</pre>
+                            </div>
+                        </label>
+                        <label class="mode-card">
+                            <input type="radio" name="export-system-mode-choice" value="keep">
+                            <div class="mode-card-body">
+                                <div class="mode-card-title">Keep as-is</div>
+                                <div class="mode-card-desc">Exports conversations exactly as stored (system message or not).</div>
+                                <pre class="mode-card-example">No changes (system messages stay exactly as saved)</pre>
+                            </div>
+                        </label>
+                        <label class="mode-card">
+                            <input type="radio" name="export-system-mode-choice" value="replace_all">
+                            <div class="mode-card-body">
+                                <div class="mode-card-title">Replace all system</div>
+                                <div class="mode-card-desc">Removes any existing system messages and inserts your prompt as the first message.</div>
+                                <pre class="mode-card-example">system: You are a precise, helpful assistant.
+user: …
+assistant: …</pre>
+                            </div>
+                        </label>
+                        <label class="mode-card">
+                            <input type="radio" name="export-system-mode-choice" value="remove_all">
+                            <div class="mode-card-body">
+                                <div class="mode-card-title">Remove all system</div>
+                                <div class="mode-card-desc">Deletes all system messages during export; ignores your prompt.</div>
+                                <pre class="mode-card-example">user: …
+assistant: …</pre>
+                            </div>
+                        </label>
+                        <label class="mode-card">
+                            <input type="radio" name="export-system-mode-choice" value="prepend">
+                            <div class="mode-card-body">
+                                <div class="mode-card-title">Prepend</div>
+                                <div class="mode-card-desc">If a system message exists, prepends your prompt to it. Otherwise inserts a new system message.</div>
+                                <pre class="mode-card-example">system: You are a precise, helpful assistant.
+
+&lt;existing system instructions&gt;</pre>
+                            </div>
+                        </label>
+                        <label class="mode-card">
+                            <input type="radio" name="export-system-mode-choice" value="append">
+                            <div class="mode-card-body">
+                                <div class="mode-card-title">Append</div>
+                                <div class="mode-card-desc">If a system message exists, appends your prompt to it. Otherwise inserts a new system message.</div>
+                                <pre class="mode-card-example">system: &lt;existing system instructions&gt;
+
+You are a precise, helpful assistant.</pre>
+                            </div>
+                        </label>
+                    </div>
+                    <div class="modal-actions mt-half">
+                        <button id="export-system-mode-cancel" class="btn btn-secondary">Cancel</button>
+                        <button id="export-system-mode-apply" class="btn btn-primary">Apply</button>
+                    </div>
                 </div>
             </div>
         </div>
@@ -817,7 +928,6 @@ gpt: response"></textarea>
                         </div>
                         <div class="modal-actions">
                             <span id="files-pagination-status" class="muted small"></span>
-                            <button id="files-load-more" class="btn btn-sm btn-secondary hidden">Load More</button>
                         </div>
                     </div>
                 </div>
@@ -874,11 +984,12 @@ gpt: response"></textarea>
                             <button class="settings-category-btn active" type="button" data-settings-target="settings-misc-section">Misc</button>
                             <button class="settings-category-btn" type="button" data-settings-target="settings-sync-section">Sync</button>
                             <button class="settings-category-btn" type="button" data-settings-target="settings-hotkeys-section">Hotkeys</button>
+                            <button class="settings-category-btn" type="button" data-settings-target="settings-databases-section">Databases</button>
                             <button class="settings-category-btn" type="button" data-settings-target="settings-advanced-section">Advanced</button>
                         </div>
                     </div>
                     <div class="settings-sections">
-                        <section id="settings-misc-section" class="settings-section" data-settings-search="misc reject reason reject prompt">
+                        <section id="settings-misc-section" class="settings-section" data-settings-search="misc reject reason reject prompt history prompt history limit">
                             <div class="settings-section-header">
                                 <h4>Misc</h4>
                             </div>
@@ -892,10 +1003,19 @@ gpt: response"></textarea>
                                         <input type="checkbox" id="ask-reject-reason">
                                     </div>
                                 </div>
+                                <div class="settings-row">
+                                    <label class="settings-row-label" for="history-max-setting">
+                                        Prompt history limit
+                                        <span class="hint" title="Caps how many prompts are kept in History.">i</span>
+                                    </label>
+                                    <div class="settings-row-control">
+                                        <input type="number" id="history-max-setting" class="input input-sm" value="30" min="5" max="500">
+                                    </div>
+                                </div>
                             </div>
                         </section>
 
-                        <section id="settings-sync-section" class="settings-section" data-settings-search="sync auto sync auto save history">
+                        <section id="settings-sync-section" class="settings-section" data-settings-search="sync auto sync auto save">
                             <div class="settings-section-header">
                                 <h4>Sync</h4>
                             </div>
@@ -936,15 +1056,6 @@ gpt: response"></textarea>
                                         <input type="number" id="save-interval" class="input input-sm" value="2000" min="500" max="60000" step="500">
                                     </div>
                                 </div>
-                                <div class="settings-row">
-                                    <label class="settings-row-label" for="history-max-setting">
-                                        Prompt history limit
-                                        <span class="hint" title="Caps how many prompts are kept in History.">i</span>
-                                    </label>
-                                    <div class="settings-row-control">
-                                        <input type="number" id="history-max-setting" class="input input-sm" value="30" min="5" max="500">
-                                    </div>
-                                </div>
                             </div>
                         </section>
 
@@ -973,6 +1084,32 @@ gpt: response"></textarea>
                                 <button id="reset-hotkeys-btn" class="btn btn-sm">Reset</button>
                             </div>
                             <p class="small muted">Click an input, then press your desired key combo.</p>
+                        </section>
+
+                        <section id="settings-databases-section" class="settings-section" data-settings-search="database databases sqlite db file path storage dataset">
+                            <div class="settings-section-header">
+                                <h4>Databases</h4>
+                            </div>
+                            <div class="settings-rows">
+                                <div class="settings-row">
+                                    <label class="settings-row-label" for="database-path">
+                                        SQLite database file
+                                        <span class="hint" title="This path is on the machine running the server. Relative paths are resolved from the server working directory.">i</span>
+                                    </label>
+                                    <div class="settings-row-control">
+                                        <div class="settings-row-control-col">
+                                            <input type="text" id="database-path" class="input input-sm" placeholder="data/dataset.db" list="database-path-options">
+                                            <datalist id="database-path-options"></datalist>
+                                            <div class="settings-inline-actions">
+                                                <button id="scan-database-paths" class="btn btn-sm">Scan</button>
+                                                <button id="backup-database-btn" class="btn btn-sm btn-secondary" title="Creates a copy of the current database in data/backups/">Backup</button>
+                                                <button id="apply-database-path" class="btn btn-sm btn-accent">Apply</button>
+                                            </div>
+                                            <div class="muted small" id="database-path-note">Restart the server after switching databases for best results.</div>
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
                         </section>
 
                         <section id="settings-advanced-section" class="settings-section" data-settings-search="advanced performance load all virtualization render distance batch size chunks scroll auto load">
@@ -1016,8 +1153,17 @@ gpt: response"></textarea>
                                         <input type="checkbox" id="auto-load-on-scroll" checked>
                                     </div>
                                 </div>
+                                <div class="settings-row">
+                                    <label class="settings-row-label" for="modal-page-size">
+                                        Modal fetch size
+                                        <span class="hint" title="How many items each modal fetches per page (Files, Export, Browse queue, Review). Larger values reduce paging but can cause UI lag on slower machines.">i</span>
+                                    </label>
+                                    <div class="settings-row-control">
+                                        <input type="number" id="modal-page-size" class="input input-sm" value="500" min="50" max="2000" step="50">
+                                    </div>
+                                </div>
                             </div>
-                            <p class="small muted">These options cap DOM work while keeping pagination fast.</p>
+                            <p class="small muted">If you experience lag, lower Modal fetch size.</p>
                         </section>
                     </div>
                 </div>
@@ -1105,7 +1251,6 @@ gpt: response"></textarea>
                         </div>
                         <div class="modal-actions">
                             <span id="review-browser-pagination-status" class="muted small"></span>
-                            <button id="review-browser-load-more" class="btn btn-sm btn-secondary hidden">Load More</button>
                         </div>
                     </div>
                 </div>
@@ -1129,6 +1274,7 @@ gpt: response"></textarea>
 
                 <div class="macros-tabs">
                     <button class="macros-tab active" data-macros-tab="variables">Variables</button>
+                    <button class="macros-tab" data-macros-tab="state">State</button>
                     <button class="macros-tab" data-macros-tab="reference">Reference</button>
                     <button class="macros-tab" data-macros-tab="builder">Builder</button>
                     <button class="macros-tab" data-macros-tab="history">History</button>
@@ -1167,6 +1313,17 @@ gpt: response"></textarea>
                     <div id="variables-grid" class="macro-ref-list">
                         <p class="muted small">No variables detected. Type <code>{{name}}</code> in your prompt to add
                             one.</p>
+                    </div>
+                </div>
+
+                <!-- State Tab -->
+                <div id="macros-state" class="macros-tab-content">
+                    <div class="macros-state-header">
+                        <div class="muted small">Shows the most recent resolved values for <code>{{name}}</code>, <code>{{list::...}}</code>, <code>{{random::...}}</code>, and <code>{{roll:...}}</code>.</div>
+                        <button id="reset-macros-btn" class="btn btn-sm btn-danger">Reset Macros</button>
+                    </div>
+                    <div id="macros-state-body" class="macro-ref-list">
+                        <div class="muted small">No macro state yet. Generate or chat once to populate.</div>
                     </div>
                 </div>
 
@@ -1259,6 +1416,34 @@ gpt: response"></textarea>
             </div>
         </div>
 
+        <div id="bulk-details-modal" class="modal hidden">
+            <div class="modal-backdrop"></div>
+            <div class="modal-content files-modal-content bulk-details-content">
+                <div class="export-header">
+                    <h3>Bulk Runs</h3>
+                    <button id="close-bulk-details-modal" class="icon-btn" title="Close">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <line x1="18" y1="6" x2="6" y2="18" />
+                            <line x1="6" y1="6" x2="18" y2="18" />
+                        </svg>
+                    </button>
+                </div>
+                <div class="export-body flex-col">
+                    <div class="files-search-actions">
+                        <span id="bulk-details-summary" class="muted small"></span>
+                        <button id="bulk-details-clear" class="btn btn-sm btn-danger ml-auto">Clear</button>
+                    </div>
+                    <div class="modal-preview-layout">
+                        <div id="bulk-details-list" class="export-file-list max-h-50vh"></div>
+                        <div class="modal-preview-card">
+                            <div class="modal-preview-header">Preview</div>
+                            <pre id="bulk-details-preview" class="model-inspector-raw"></pre>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
         <!-- Toast Container -->
         <div id="model-activity-indicator" class="model-activity hidden">
             <div class="model-activity-main">
@@ -1297,6 +1482,61 @@ gpt: response"></textarea>
                     <div class="modal-actions">
                         <button id="model-inspector-copy" class="btn btn-sm btn-secondary">Copy</button>
                         <button id="model-inspector-clear" class="btn btn-sm btn-danger">Clear</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div id="prompt-preview-modal" class="modal hidden">
+            <div class="modal-backdrop"></div>
+            <div class="modal-content files-modal-content">
+                <div class="export-header">
+                    <h3>Resolved Prompt Preview</h3>
+                    <button id="close-prompt-preview-modal" class="icon-btn" title="Close">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <line x1="18" y1="6" x2="6" y2="18" />
+                            <line x1="6" y1="6" x2="18" y2="18" />
+                        </svg>
+                    </button>
+                </div>
+                <div class="export-body flex-col">
+                    <div class="muted small" id="prompt-preview-summary">Preview does not advance <code>{{list::...}}</code> iterators. <code>{{random}}</code>/<code>{{roll}}</code> are sampled.</div>
+                    <div class="modal-preview-layout">
+                        <div class="modal-preview-card">
+                            <div class="modal-preview-header">Resolved Prompt</div>
+                            <pre id="prompt-preview-text" class="model-inspector-raw"></pre>
+                        </div>
+                        <div class="modal-preview-card">
+                            <div class="modal-preview-header">Macro Trace</div>
+                            <div id="prompt-preview-trace" class="modal-preview-body macro-ref-list"></div>
+                        </div>
+                    </div>
+                    <div class="modal-actions">
+                        <button id="prompt-preview-copy" class="btn btn-sm btn-secondary">Copy Prompt</button>
+                        <button id="prompt-preview-copy-trace" class="btn btn-sm btn-secondary">Copy Trace</button>
+                        <button id="prompt-preview-close" class="btn btn-sm btn-primary">Close</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div id="export-preview-modal" class="modal hidden">
+            <div class="modal-backdrop"></div>
+            <div class="modal-content model-inspector-content">
+                <div class="export-header">
+                    <h3>Export Preview</h3>
+                    <button id="close-export-preview-modal" class="icon-btn" title="Close">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <line x1="18" y1="6" x2="6" y2="18" />
+                            <line x1="6" y1="6" x2="18" y2="18" />
+                        </svg>
+                    </button>
+                </div>
+                <div class="export-body flex-col">
+                    <div class="muted small" id="export-preview-summary">—</div>
+                    <pre id="export-preview-jsonl" class="model-inspector-raw"></pre>
+                    <div class="modal-actions">
+                        <button id="copy-export-preview" class="btn btn-sm btn-secondary">Copy</button>
                     </div>
                 </div>
             </div>
@@ -1346,6 +1586,12 @@ gpt: response"></textarea>
                     <label id="popup-input-label" for="popup-input">Name</label>
                     <input id="popup-input" class="input" type="text" autocomplete="off">
                     <div id="popup-hint" class="small muted hidden"></div>
+                </div>
+                <div id="popup-checkbox-group" class="form-group hidden">
+                    <label class="toggle-label">
+                        <input type="checkbox" id="popup-checkbox">
+                        <span id="popup-checkbox-label">Do not ask again</span>
+                    </label>
                 </div>
                 <div class="modal-actions">
                     <button id="popup-cancel" class="btn btn-secondary">Cancel</button>

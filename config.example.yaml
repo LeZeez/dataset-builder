@@ -8,3 +8,7 @@ server:
   password: ""
   allow_local_network: true
   trusted_domains: []
+
+database:
+  # SQLite database file path. Relative paths are resolved from the server working directory.
+  path: "data/dataset.db"

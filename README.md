@@ -69,6 +69,8 @@ ui/                     # frontend
 scripts/                # storage, export, parser, stats helpers
 ```
 
+The SQLite file location can be changed via `config.yaml` (`database.path`) or from the Settings → Databases panel.
+
 ## Export Formats
 
 ### ShareGPT
@@ -98,6 +100,10 @@ Macros are resolved before prompt submission.
 - `{{list::a::b::c}}` iterates options across generations
 - `{{roll:2d6+3}}` rolls dice notation
 - `{{// note}}` is removed before sending
+
+## Export Manifest
+
+When enabled, exports also write a small sidecar JSON manifest next to the `.jsonl` file describing the export settings used.
 
 ## CLI
 

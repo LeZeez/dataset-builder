@@ -1,6 +1,7 @@
 """SQLite database layer for Synthetic Dataset Builder."""
 
 import json
+import os
 import re
 import sqlite3
 import threading
@@ -10,9 +11,23 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 
-DB_PATH = Path('data/dataset.db')
+_DEFAULT_DB_PATH = Path('data/dataset.db')
+DB_PATH = Path(os.environ.get('DATASET_BUILDER_DB_PATH') or _DEFAULT_DB_PATH)
 _local = threading.local()
 _SEARCH_TEXT_LIMIT = 4000
+
+
+def set_db_path(path: str | Path):
+    """Set the SQLite database file path for subsequent connections.
+
+    Notes:
+    - This only affects new connections. Existing connections in other threads
+      cannot be force-closed from here due to thread-local storage.
+    - Intended for local usage; avoid exposing config mutation to untrusted users.
+    """
+    global DB_PATH
+    DB_PATH = Path(path)
+    close_db()
 
 
 def _get_conn() -> sqlite3.Connection:
@@ -640,7 +655,7 @@ def get_review_queue(limit: int = 0, offset: int = 0, search: str = '') -> tuple
                 SELECT r.* FROM review_queue r
                 JOIN review_queue_fts f ON r.rowid = f.rowid
                 WHERE review_queue_fts MATCH ?
-                ORDER BY r.created_at ASC
+                ORDER BY r.created_at ASC, r.rowid ASC
             """
             # FTS5 matches tokens, escape simple quotes
             safe_search = search.replace('"', '""')
@@ -650,7 +665,7 @@ def get_review_queue(limit: int = 0, offset: int = 0, search: str = '') -> tuple
                 params.extend([limit, offset])
             rows = conn.execute(query_fts, params).fetchall()
         else:
-            query = f"SELECT * FROM review_queue ORDER BY created_at ASC"
+            query = f"SELECT rowid, * FROM review_queue ORDER BY created_at ASC, rowid ASC"
             if limit > 0:
                 query += " LIMIT ? OFFSET ?"
                 params.extend([limit, offset])
@@ -679,7 +694,7 @@ def get_review_queue_ids(limit: int = 0, offset: int = 0, search: str = '') -> t
                 SELECT r.id FROM review_queue r
                 JOIN review_queue_fts f ON r.rowid = f.rowid
                 WHERE review_queue_fts MATCH ?
-                ORDER BY r.created_at ASC
+                ORDER BY r.created_at ASC, r.rowid ASC
             """
             safe_search = search.replace('"', '""')
             params.append(f'"{safe_search}"*')
@@ -688,13 +703,38 @@ def get_review_queue_ids(limit: int = 0, offset: int = 0, search: str = '') -> t
                 params.extend([limit, offset])
             rows = conn.execute(query, params).fetchall()
         else:
-            query = "SELECT id FROM review_queue ORDER BY created_at ASC"
+            query = "SELECT id FROM review_queue ORDER BY created_at ASC, rowid ASC"
             if limit > 0:
                 query += " LIMIT ? OFFSET ?"
                 params.extend([limit, offset])
             rows = conn.execute(query, params).fetchall()
 
     return [row['id'] for row in rows], total
+
+
+def get_review_queue_position(item_id: str) -> tuple[int, int] | None:
+    """Return (0-based position, total_count) for a review queue item id."""
+    if not item_id:
+        return None
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT rowid, created_at FROM review_queue WHERE id = ?",
+            (item_id,)
+        ).fetchone()
+        if not row:
+            return None
+        created_at = row['created_at']
+        rowid = row['rowid']
+        pos_row = conn.execute(
+            """
+            SELECT COUNT(*) as c FROM review_queue
+            WHERE (created_at < ?) OR (created_at = ? AND rowid < ?)
+            """,
+            (created_at, created_at, rowid)
+        ).fetchone()
+        position = int(pos_row['c']) if pos_row else 0
+        total = _get_review_queue_count(conn, search='')
+        return position, total
 
 
 def remove_from_review_queue(item_id: str) -> bool:
@@ -1093,7 +1133,11 @@ def get_conversations_for_export(folder: str = 'wanted', ids: list | None = None
     return conversations
 
 def seed_default_presets(defaults_dir: Path):
-    """Ensure the built-in chat and export presets exist in SQLite."""
+    """Ensure the built-in presets exist in SQLite."""
+    # Variable presets (Generate → Variables)
+    if not get_presets('variable'):
+        save_preset('variable', 'Default', {'values': {}}, overwrite=False)
+
     for preset_type, filename in (('chat', 'Chat.txt'), ('export', 'Export.txt')):
         if get_presets(preset_type):
             continue
