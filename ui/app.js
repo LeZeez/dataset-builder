@@ -1442,6 +1442,7 @@ async function init() {
     await loadExportPresets();
     applyFirstRunDefaults();
     await loadReviewQueue();
+    applyDeferredDraftState(state._restoredDraft);
     await loadPromptHistory();
 
     setupEventListeners();
@@ -1701,8 +1702,12 @@ function renderPromptSelect() {
         els.promptSelect.appendChild(opt);
     });
     if (state.currentPromptName) {
-        els.promptSelect.value = state.currentPromptName;
-        return;
+        if (selectHasOption(els.promptSelect, state.currentPromptName)) {
+            els.promptSelect.value = state.currentPromptName;
+            selectPrompt();
+            return;
+        }
+        state.currentPromptName = '';
     }
 
     // First-run convenience: auto-load Default when nothing is selected and the editor is empty.
@@ -2616,6 +2621,11 @@ function refreshSelectableListUI(container, slice) {
     });
 }
 
+function filterSelectableIdsToLoadedItems(items, ids) {
+    const availableIds = new Set((items || []).map(item => String(item?.id || '')).filter(Boolean));
+    return new Set((ids || []).map(id => String(id || '')).filter(id => availableIds.has(id)));
+}
+
 function getSliceIndex(slice, items, id) {
     if (slice?.idToIndex && typeof slice.idToIndex.get === 'function') {
         const idx = slice.idToIndex.get(id);
@@ -2974,7 +2984,10 @@ async function handleBulkMove(from, to) {
         });
 
         await loadFilesModal(from, { reset: true });
-        state.filesModal.selectedIds = new Set(uniqueFailed.filter(isSafeConversationId));
+        state.filesModal.selectedIds = filterSelectableIdsToLoadedItems(
+            state.filesModal.files,
+            uniqueFailed.filter(isSafeConversationId)
+        );
         refreshSelectableListUI(els.filesModalList, state.filesModal);
         updateFilesModalCount();
         loadStats();
@@ -3112,7 +3125,7 @@ async function handleBulkDelete(folder) {
 
 	        // Keep failed items selected so the user can retry.
 	        await loadFilesModal(folder, { reset: true });
-	        state.filesModal.selectedIds = new Set(uniqueFailed);
+	        state.filesModal.selectedIds = filterSelectableIdsToLoadedItems(state.filesModal.files, uniqueFailed);
 	        refreshSelectableListUI(els.filesModalList, state.filesModal);
 	        updateFilesModalCount();
 	        loadStats();
@@ -5082,19 +5095,24 @@ function toggleAllReviewBrowser() {
 }
 
 async function handleReviewBrowserBulk(action) {
-    const ids = await ensureReviewQueueIdsSynced(Array.from(state.reviewBrowser.selectedIds));
-    if (!ids.length) return;
     const isKeep = action === 'keep';
     const verb = isKeep ? 'Save' : 'Reject';
+    const selectedCount = state.reviewBrowser.selectedIds.size;
     showSaveIndicator(isKeep ? 'Saving...' : 'Rejecting...');
     const controller = new AbortController();
     const taskId = createTask({
         title: `Browse queue: ${verb} selected`,
-        detail: `${ids.length} selected`,
+        detail: `${selectedCount} selected`,
         onCancel: () => controller.abort(),
     });
 	    const maxRetries = getBulkRetryAttempts();
 	    try {
+        const ids = await ensureReviewQueueIdsSynced(Array.from(state.reviewBrowser.selectedIds));
+        if (!ids.length) {
+            hideSaveIndicator(isKeep ? 'Saved ✓' : 'Rejected ✓');
+            finishTask(taskId, { status: 'done', detail: 'Nothing selected' });
+            return;
+        }
 	        let res;
 	        for (let attempt = 0; attempt <= maxRetries; attempt++) {
 	            try {
@@ -5121,25 +5139,28 @@ async function handleReviewBrowserBulk(action) {
             const err = await res?.json?.().catch(() => ({}));
             throw new Error(err?.error || 'Bulk review action failed');
         }
-        const data = await res.json().catch(() => ({}));
-        const errorCount = typeof data.error_count === 'number' ? data.error_count : 0;
-        const errors = Array.isArray(data.errors) ? data.errors : [];
-        const failedIds = errors.map(e => String(e?.id || '')).filter(Boolean);
+	        const data = await res.json().catch(() => ({}));
+	        const errorCount = typeof data.error_count === 'number' ? data.error_count : 0;
+	        const errors = Array.isArray(data.errors) ? data.errors : [];
+	        const failedIds = errors.map(e => String(e?.id || '')).filter(Boolean);
 
-        if (errorCount > 0 || failedIds.length > 0) {
-            state.reviewBrowser.selectedIds = new Set(failedIds);
-            toast(`Completed with ${errorCount || failedIds.length} error(s)`, 'warning');
-            finishTask(taskId, { status: 'done', detail: `Errors: ${errorCount || failedIds.length}` });
-        } else {
-            clearSelectableSelection(state.reviewBrowser);
-            toast(isKeep ? 'Saved selected items' : 'Rejected selected items', isKeep ? 'success' : 'info');
-            finishTask(taskId, { status: 'done', detail: 'Done' });
-        }
-
-        await loadReviewQueue();
-        await loadReviewBrowser({ reset: true });
-        loadStats();
-        hideSaveIndicator(isKeep ? 'Saved ✓' : 'Rejected ✓');
+	        await loadReviewQueue();
+	        await loadReviewBrowser({ reset: true });
+	        if (errorCount > 0 || failedIds.length > 0) {
+	            state.reviewBrowser.selectedIds = new Set(failedIds);
+	            refreshSelectableListUI(els.reviewBrowserList, state.reviewBrowser);
+	            updateReviewBrowserCount();
+	            toast(`Completed with ${errorCount || failedIds.length} error(s)`, 'warning');
+	            finishTask(taskId, { status: 'done', detail: `Errors: ${errorCount || failedIds.length}` });
+	        } else {
+	            clearSelectableSelection(state.reviewBrowser);
+	            refreshSelectableListUI(els.reviewBrowserList, state.reviewBrowser);
+	            updateReviewBrowserCount();
+	            toast(isKeep ? 'Saved selected items' : 'Rejected selected items', isKeep ? 'success' : 'info');
+	            finishTask(taskId, { status: 'done', detail: 'Done' });
+	        }
+	        loadStats();
+	        hideSaveIndicator(isKeep ? 'Saved ✓' : 'Rejected ✓');
     } catch (e) {
         if (e?.name === 'AbortError' || controller.signal.aborted) {
             toast(`${verb} canceled`, 'info');
@@ -6017,7 +6038,27 @@ async function saveDraftToLocal() {
     }
 }
 
+function mergeRecoveredQueueItems(...collections) {
+    const byId = new Map();
+    collections.flat().forEach(item => {
+        const itemId = String(item?.id || '');
+        if (!itemId) return;
+        byId.set(itemId, safeJsonClone(item, item));
+    });
+    return Array.from(byId.values());
+}
+
 async function buildDraftObject() {
+    const localReviewQueue = await dbGetAll('reviewQueue').catch(() => []);
+    const reviewQueueItems = mergeRecoveredQueueItems(localReviewQueue || [], state.review.queue || [], state.reviewBrowser.items || []);
+    const currentReviewItem = state.review.queue[state.review.currentIndex];
+    const reviewEditBuffer = state.review.isEditing ? String(els.reviewEditInput?.value || '') : '';
+    if (state.review.isEditing && currentReviewItem?.id) {
+        const currentId = String(currentReviewItem.id);
+        const existing = reviewQueueItems.find(item => String(item?.id || '') === currentId);
+        if (existing) existing.rawText = reviewEditBuffer;
+    }
+
     return {
         _sessionId: SESSION_ID,
         currentPromptName: state.currentPromptName,
@@ -6041,6 +6082,26 @@ async function buildDraftObject() {
             systemPrompt: els.exportSystemPrompt?.value || '',
             presetName: state.export.presetName || els.exportPresetSelect?.value || ''
         },
+        review: {
+            queueItems: reviewQueueItems,
+            currentIndex: state.review.currentIndex,
+            pageOffset: state.review.pageOffset,
+            total: state.review.total || reviewQueueItems.length,
+            isEditing: !!state.review.isEditing,
+            editBuffer: reviewEditBuffer,
+        },
+        filesModal: {
+            currentFolder: state.filesModal.currentFolder,
+            selectedIds: Array.from(state.filesModal.selectedIds || []),
+            previewId: state.filesModal.previewId || '',
+            search: els.filesSearchInput?.value || '',
+        },
+        reviewBrowser: {
+            items: safeJsonClone(state.reviewBrowser.items || [], []),
+            selectedIds: Array.from(state.reviewBrowser.selectedIds || []),
+            previewId: state.reviewBrowser.previewId || '',
+            search: els.reviewBrowserSearchInput?.value || '',
+        },
         _localTime: new Date().toISOString()
     };
 }
@@ -6048,16 +6109,16 @@ async function buildDraftObject() {
 async function restoreDraft() {
     try {
         const sessionDraft = await dbGet('drafts', SESSION_ID);
-        if (sessionDraft) { applyDraft(sessionDraft); return true; }
+        if (sessionDraft) { applyDraft(sessionDraft); return sessionDraft; }
     } catch (e) { }
     try {
         const serverDraft = await syncEngine.pull();
         if (serverDraft) {
             applyDraft(serverDraft);
-            return true;
+            return serverDraft;
         }
     } catch (e) { }
-    return false;
+    return null;
 }
 
 function applyDraft(draft) {
@@ -6120,6 +6181,64 @@ function applyDraft(draft) {
         state.export.presetName = draft.export.presetName;
         els.exportPresetSelect.value = draft.export.presetName;
     }
+    if (draft.filesModal) {
+        state.filesModal.currentFolder = String(draft.filesModal.currentFolder || state.filesModal.currentFolder || 'wanted');
+        state.filesModal.selectedIds = new Set((draft.filesModal.selectedIds || []).map(id => String(id || '')).filter(Boolean));
+        state.filesModal.previewId = String(draft.filesModal.previewId || '');
+        if (els.filesSearchInput && typeof draft.filesModal.search === 'string') {
+            els.filesSearchInput.value = draft.filesModal.search;
+        }
+    }
+    if (draft.reviewBrowser) {
+        state.reviewBrowser.items = safeJsonClone(draft.reviewBrowser.items || [], []);
+        state.reviewBrowser.total = state.reviewBrowser.items.length;
+        state.reviewBrowser.offset = state.reviewBrowser.items.length;
+        state.reviewBrowser.hasMore = false;
+        state.reviewBrowser.seenIds = new Set();
+        state.reviewBrowser.idToIndex = new Map();
+        state.reviewBrowser.items.forEach((item, index) => {
+            const itemId = String(item?.id || '');
+            if (!itemId) return;
+            state.reviewBrowser.seenIds.add(itemId);
+            state.reviewBrowser.idToIndex.set(itemId, index);
+        });
+        state.reviewBrowser.selectedIds = new Set((draft.reviewBrowser.selectedIds || []).map(id => String(id || '')).filter(Boolean));
+        state.reviewBrowser.previewId = String(draft.reviewBrowser.previewId || '');
+        state.reviewBrowser.previewConversation = state.reviewBrowser.items.find(item => String(item?.id || '') === state.reviewBrowser.previewId) || null;
+        if (els.reviewBrowserSearchInput && typeof draft.reviewBrowser.search === 'string') {
+            els.reviewBrowserSearchInput.value = draft.reviewBrowser.search;
+        }
+    }
+}
+
+function applyDeferredDraftState(draft) {
+    if (!draft?.review) return;
+
+    const draftQueueItems = safeJsonClone(draft.review.queueItems || [], []);
+    if (draftQueueItems.length) {
+        const byId = new Map(draftQueueItems.map(item => [String(item?.id || ''), item]));
+        if (state.review.queue.length) {
+            state.review.queue = state.review.queue.map(item => byId.get(String(item?.id || '')) || item);
+        } else {
+            state.review.queue = draftQueueItems;
+        }
+        state.review.total = Math.max(state.review.total || 0, draftQueueItems.length);
+    }
+
+    if (Number.isFinite(Number(draft.review.pageOffset))) {
+        state.review.pageOffset = Math.max(0, Number(draft.review.pageOffset));
+    }
+    if (Number.isFinite(Number(draft.review.currentIndex))) {
+        state.review.currentIndex = Math.max(0, Math.min(Number(draft.review.currentIndex), Math.max(0, state.review.queue.length - 1)));
+    }
+
+    const currentItem = state.review.queue[state.review.currentIndex];
+    if (currentItem && typeof draft.review.editBuffer === 'string' && draft.review.editBuffer.trim()) {
+        currentItem.rawText = draft.review.editBuffer;
+    }
+    state.review.isEditing = !!draft.review.isEditing && !!currentItem;
+    updateReviewBadge();
+    renderReviewItem();
 }
 
 async function manualSync() {

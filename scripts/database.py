@@ -784,18 +784,11 @@ def bulk_remove_from_review_queue(ids: list) -> list[str]:
     placeholders = ','.join('?' * len(unique_ids))
     with get_db() as conn:
         rows = conn.execute(
-            f"SELECT id FROM review_queue WHERE id IN ({placeholders})",
+            f"DELETE FROM review_queue WHERE id IN ({placeholders}) RETURNING id",
             unique_ids,
         ).fetchall()
-        matched_ids = {row['id'] for row in rows}
-
-        deleted_ids = [item_id for item_id in unique_ids if item_id in matched_ids]
-        if deleted_ids:
-            deleted_placeholders = ','.join('?' * len(deleted_ids))
-            conn.execute(
-                f"DELETE FROM review_queue WHERE id IN ({deleted_placeholders})",
-                deleted_ids,
-            )
+        deleted_set = {row['id'] for row in rows}
+        deleted_ids = [item_id for item_id in unique_ids if item_id in deleted_set]
 
     return deleted_ids
 

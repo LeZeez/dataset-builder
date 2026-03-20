@@ -35,7 +35,7 @@ import openai
 import yaml
 from flask import Flask, Response, jsonify, request, send_from_directory
 from flask_cors import CORS
-from werkzeug.exceptions import HTTPException
+from werkzeug.exceptions import BadRequest, HTTPException
 
 # Import our modules
 from scripts.parser import validate_conversation
@@ -55,8 +55,14 @@ LOGGER = logging.getLogger(__name__)
 
 
 def _get_json_object():
-    """Return a JSON object body or an empty dict for an empty/invalidly absent body."""
-    data = request.get_json(silent=True)
+    """Return a JSON object body or an empty dict for an empty body.
+
+    Raises `BadRequest` for malformed JSON payloads.
+    """
+    raw_body = request.get_data(cache=True)
+    if not raw_body or not raw_body.strip():
+        return {}
+    data = request.get_json(silent=False)
     if data is None:
         return {}
     if not isinstance(data, dict):
@@ -387,14 +393,8 @@ def security_check():
         server_host = str(server_config.get('host', '127.0.0.1') or '127.0.0.1').strip()
         server_host_is_loopback = _is_loopback_host(server_host)
 
-        # Some browser contexts (e.g., file:// or sandboxed frames) can send Origin: null.
-        # Treat it as "missing" for loopback-bound servers to avoid breaking local-only workflows.
         if origin and origin.lower() == 'null':
-            if server_host_is_loopback and request.remote_addr in ('127.0.0.1', '::1'):
-                origin = ''
-                origin_norm = ''
-            else:
-                return jsonify({'error': 'Forbidden: invalid origin'}), 403
+            return jsonify({'error': 'Forbidden: invalid origin'}), 403
 
         if origin_norm:
             if origin_norm not in allowed:
@@ -516,7 +516,10 @@ def update_server_config():
     For database.path, this endpoint only validates and persists the new path.
     A process restart is required to fully switch the live app to the new DB file.
     """
-    data = _get_json_object()
+    try:
+        data = _get_json_object()
+    except BadRequest:
+        return jsonify({'error': 'Invalid JSON payload'}), 400
     if data is None:
         return jsonify({'error': 'Invalid JSON payload'}), 400
     config = ensure_config_defaults()
@@ -1279,7 +1282,10 @@ def export_dataset_endpoint(format: str):
         return jsonify({'error': 'Invalid format'}), 400
     
     try:
-        data = _get_json_object()
+        try:
+            data = _get_json_object()
+        except BadRequest:
+            return jsonify({'error': 'Invalid JSON payload'}), 400
         if data is None:
             return jsonify({'error': 'Invalid JSON payload'}), 400
         selected_ids = data.get('ids', None)  # List of IDs or None for all
@@ -1347,7 +1353,10 @@ def export_preview_endpoint(export_format: str | None = None, **route_params):
     if export_format not in VALID_EXPORT_FORMATS:
         return jsonify({'error': 'Invalid format'}), 400
 
-    data = _get_json_object()
+    try:
+        data = _get_json_object()
+    except BadRequest:
+        return jsonify({'error': 'Invalid JSON payload'}), 400
     if data is None:
         return jsonify({'error': 'Invalid JSON payload'}), 400
     selected_ids = data.get('ids', None)
@@ -1475,7 +1484,10 @@ def delete_conversation(conv_id: str):
 @app.route('/api/conversations/bulk-delete', methods=['POST'])
 def bulk_delete_conversations():
     """Bulk delete conversations."""
-    data = _get_json_object()
+    try:
+        data = _get_json_object()
+    except BadRequest:
+        return jsonify({'error': 'Invalid JSON payload'}), 400
     if data is None:
         return jsonify({'error': 'Invalid JSON payload'}), 400
     ids = data.get('ids', [])
@@ -1490,6 +1502,11 @@ def bulk_delete_conversations():
     invalid = []
     safe_ids = []
     for raw_id in ids:
+        if isinstance(raw_id, str):
+            raw_id = raw_id.strip()
+            if not raw_id:
+                invalid.append(raw_id)
+                continue
         if not is_safe_id(raw_id):
             if isinstance(raw_id, str):
                 invalid.append(raw_id)
@@ -1511,7 +1528,10 @@ def bulk_delete_conversations():
 @app.route('/api/conversations/bulk-move', methods=['POST'])
 def bulk_move_conversations():
     """Bulk move conversations."""
-    data = _get_json_object()
+    try:
+        data = _get_json_object()
+    except BadRequest:
+        return jsonify({'error': 'Invalid JSON payload'}), 400
     if data is None:
         return jsonify({'error': 'Invalid JSON payload'}), 400
     ids = data.get('ids', [])
@@ -1526,6 +1546,11 @@ def bulk_move_conversations():
     invalid: list[str] = []
     safe_ids: list[str] = []
     for raw_id in ids:
+        if isinstance(raw_id, str):
+            raw_id = raw_id.strip()
+            if not raw_id:
+                invalid.append(raw_id)
+                continue
         if not is_safe_id(raw_id):
             if isinstance(raw_id, str):
                 invalid.append(raw_id)
@@ -2261,7 +2286,10 @@ def update_review_queue_item(item_id: str):
 @app.route('/api/review-queue/bulk-delete', methods=['POST'])
 def bulk_remove_from_review_queue():
     """Bulk remove items from the review queue."""
-    data = _get_json_object()
+    try:
+        data = _get_json_object()
+    except BadRequest:
+        return jsonify({'error': 'Invalid JSON payload'}), 400
     if data is None:
         return jsonify({'error': 'Invalid JSON payload'}), 400
     ids = data.get('ids', [])
@@ -2275,7 +2303,7 @@ def bulk_remove_from_review_queue():
             if isinstance(raw_id, str):
                 invalid.append(raw_id)
             continue
-        safe_ids.append(raw_id)
+        safe_ids.append(raw_id.strip())
 
     deleted = db.bulk_remove_from_review_queue(safe_ids)
     deleted_set = set(deleted)
@@ -2307,7 +2335,10 @@ def _persist_review_items(ids: list[str] | None, target_folder: str):
 @app.route('/api/review-queue/bulk-keep', methods=['POST'])
 def bulk_keep_from_review_queue():
     """Atomically save items from the review queue to wanted and remove them from the queue."""
-    data = _get_json_object()
+    try:
+        data = _get_json_object()
+    except BadRequest:
+        return jsonify({'error': 'Invalid JSON payload'}), 400
     if data is None:
         return jsonify({'error': 'Invalid JSON payload'}), 400
     ids = data.get('ids', [])
@@ -2319,13 +2350,26 @@ def bulk_keep_from_review_queue():
     if not keep_all and not ids:
         return jsonify({'error': 'No ids provided'}), 400
 
+    if not keep_all:
+        normalized_ids: list[str] = []
+        for raw_id in ids:
+            if not isinstance(raw_id, str) or not raw_id.strip():
+                return jsonify({'error': 'ids must contain only non-empty review queue item IDs'}), 400
+            normalized_ids.append(raw_id.strip())
+        if not normalized_ids:
+            return jsonify({'error': 'No ids provided'}), 400
+        ids = list(dict.fromkeys(normalized_ids))
+
     return _persist_review_items(None if keep_all else ids, 'wanted')
 
 
 @app.route('/api/review-queue/bulk-reject', methods=['POST'])
 def bulk_reject_from_review_queue():
     """Atomically save items from the review queue to rejected and remove them from the queue."""
-    data = _get_json_object()
+    try:
+        data = _get_json_object()
+    except BadRequest:
+        return jsonify({'error': 'Invalid JSON payload'}), 400
     if data is None:
         return jsonify({'error': 'Invalid JSON payload'}), 400
     ids = data.get('ids', [])
@@ -2336,6 +2380,16 @@ def bulk_reject_from_review_queue():
 
     if not reject_all and not ids:
         return jsonify({'error': 'No ids provided'}), 400
+
+    if not reject_all:
+        normalized_ids: list[str] = []
+        for raw_id in ids:
+            if not isinstance(raw_id, str) or not raw_id.strip():
+                return jsonify({'error': 'ids must contain only non-empty review queue item IDs'}), 400
+            normalized_ids.append(raw_id.strip())
+        if not normalized_ids:
+            return jsonify({'error': 'No ids provided'}), 400
+        ids = list(dict.fromkeys(normalized_ids))
 
     return _persist_review_items(None if reject_all else ids, 'rejected')
 
