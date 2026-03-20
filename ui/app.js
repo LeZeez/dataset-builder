@@ -285,7 +285,8 @@ let syncSettings = {
     syncInterval: 30,
     autoSaveEnabled: true,
     saveInterval: 2000,
-    askRejectReason: false
+    askRejectReason: false,
+    bulkRetryAttempts: 2
 };
 
 async function loadSyncSettings() {
@@ -303,6 +304,7 @@ async function saveSyncSettings() {
     syncSettings.autoSaveEnabled = el('auto-save-enabled')?.checked ?? true;
     syncSettings.saveInterval = parseInt(el('save-interval')?.value) || 2000;
     syncSettings.askRejectReason = el('ask-reject-reason')?.checked ?? false;
+    syncSettings.bulkRetryAttempts = Math.max(0, Math.min(5, parseInt(el('bulk-retry-attempts')?.value, 10) || 0));
     await dbSet('settings', 'syncSettings', syncSettings);
     syncEngine.stopAutoSync();
     syncEngine.startAutoSync();
@@ -316,6 +318,7 @@ function applySyncSettingsToUI() {
     if (el('auto-save-enabled')) el('auto-save-enabled').checked = syncSettings.autoSaveEnabled;
     if (el('save-interval')) el('save-interval').value = syncSettings.saveInterval;
     if (el('ask-reject-reason')) el('ask-reject-reason').checked = syncSettings.askRejectReason;
+    if (el('bulk-retry-attempts')) el('bulk-retry-attempts').value = String(syncSettings.bulkRetryAttempts ?? 2);
 }
 
 // ============ DEFAULT HOTKEYS ============
@@ -362,11 +365,15 @@ async function loadUiPrefs() {
         const saved = await dbGet('settings', UI_PREFS_KEY);
         if (!saved) return;
         state._hadUiPrefs = true;
-        state.uiPrefs = { ...state.uiPrefs, ...saved };
-        state.uiPrefs.exportSystemMode = normalizeExportSystemMode(state.uiPrefs.exportSystemMode);
-        state.uiPrefs.modalPageSize = clampNumber(state.uiPrefs.modalPageSize, { min: 50, max: 2000, fallback: MODAL_PAGE_SIZE });
-        state.uiPrefs.skipLoadAllWarning = !!state.uiPrefs.skipLoadAllWarning;
-        state.currentTab = state.uiPrefs.currentTab || 'generate';
+	        state.uiPrefs = { ...state.uiPrefs, ...saved };
+	        state.uiPrefs.exportSystemMode = normalizeExportSystemMode(state.uiPrefs.exportSystemMode);
+	        state.uiPrefs.modalPageSize = clampNumber(state.uiPrefs.modalPageSize, { min: 50, max: 2000, fallback: MODAL_PAGE_SIZE });
+	        if (state.uiPrefs.warnOnLoadAll === undefined) {
+	            state.uiPrefs.warnOnLoadAll = !(state.uiPrefs.skipLoadAllWarning === true);
+	        }
+	        state.uiPrefs.warnOnLoadAll = state.uiPrefs.warnOnLoadAll !== false;
+	        state.uiPrefs.skipLoadAllWarning = !state.uiPrefs.warnOnLoadAll;
+	        state.currentTab = state.uiPrefs.currentTab || 'generate';
         state.chat.zoomLevel = state.uiPrefs.chatZoom ?? 1;
         state.chat.showAllTools = !!state.uiPrefs.showAllTools;
         applyChatZoom();
@@ -379,12 +386,13 @@ async function loadUiPrefs() {
         }
         if (els.virtualListEnabled) els.virtualListEnabled.checked = state.uiPrefs.virtualListEnabled !== false;
         if (els.virtualBatchSize) els.virtualBatchSize.value = String(state.uiPrefs.virtualBatchSize ?? 200);
-        if (els.virtualMaxBatches) els.virtualMaxBatches.value = String(state.uiPrefs.virtualMaxBatches ?? 3);
-        if (els.autoLoadOnScroll) els.autoLoadOnScroll.checked = state.uiPrefs.autoLoadOnScroll !== false;
-        if (els.modalPageSize) els.modalPageSize.value = String(getModalPageSize());
-        applyVirtualPrefs();
-        updateSidebarExportButton();
-    } catch (e) { }
+	        if (els.virtualMaxBatches) els.virtualMaxBatches.value = String(state.uiPrefs.virtualMaxBatches ?? 3);
+	        if (els.autoLoadOnScroll) els.autoLoadOnScroll.checked = state.uiPrefs.autoLoadOnScroll !== false;
+	        if (els.modalPageSize) els.modalPageSize.value = String(getModalPageSize());
+	        if (els.warnLoadAll) els.warnLoadAll.checked = state.uiPrefs.warnOnLoadAll !== false;
+	        applyVirtualPrefs();
+	        updateSidebarExportButton();
+	    } catch (e) { }
 }
 
 function saveUiPrefs() {
@@ -395,11 +403,13 @@ function saveUiPrefs() {
     state.uiPrefs.settingsSearch = els.settingsSearchInput?.value || '';
     state.uiPrefs.lastExportFormat = normalizeExportFormat(state.uiPrefs.lastExportFormat);
     state.uiPrefs.exportFolder = (state.uiPrefs.exportFolder === 'rejected') ? 'rejected' : 'wanted';
-    state.uiPrefs.exportSystemMode = normalizeExportSystemMode(state.uiPrefs.exportSystemMode);
-    state.uiPrefs.exportPromptSource = ['custom', 'chat', 'generate'].includes(state.uiPrefs.exportPromptSource) ? state.uiPrefs.exportPromptSource : 'custom';
-    state.uiPrefs.modalPageSize = clampNumber(state.uiPrefs.modalPageSize, { min: 50, max: 2000, fallback: MODAL_PAGE_SIZE });
-    state.uiPrefs.skipLoadAllWarning = !!state.uiPrefs.skipLoadAllWarning;
-    dbSet('settings', UI_PREFS_KEY, state.uiPrefs).catch(() => { });
+	    state.uiPrefs.exportSystemMode = normalizeExportSystemMode(state.uiPrefs.exportSystemMode);
+	    state.uiPrefs.exportPromptSource = ['custom', 'chat', 'generate'].includes(state.uiPrefs.exportPromptSource) ? state.uiPrefs.exportPromptSource : 'custom';
+	    state.uiPrefs.modalPageSize = clampNumber(state.uiPrefs.modalPageSize, { min: 50, max: 2000, fallback: MODAL_PAGE_SIZE });
+	    if (els.warnLoadAll) state.uiPrefs.warnOnLoadAll = els.warnLoadAll.checked !== false;
+	    state.uiPrefs.warnOnLoadAll = state.uiPrefs.warnOnLoadAll !== false;
+	    state.uiPrefs.skipLoadAllWarning = !state.uiPrefs.warnOnLoadAll;
+	    dbSet('settings', UI_PREFS_KEY, state.uiPrefs).catch(() => { });
 }
 
 // ============ CREDENTIAL DRAFT (Local-only) ============
@@ -670,23 +680,24 @@ const state = {
         raw: '',
         hasFirstToken: false
     },
-    uiPrefs: {
-        currentTab: 'generate',
-        chatZoom: 1,
-        showAllTools: false,
-        chatPromptCollapsed: true,
-        settingsSearch: '',
-        lastExportFormat: 'sharegpt',
-        exportFolder: 'wanted',
-        exportSystemMode: 'add_if_missing',
-        exportPromptSource: 'custom',
-        modalPageSize: 500,
-        skipLoadAllWarning: false,
-        virtualListEnabled: true,
-        virtualBatchSize: 200,
-        virtualMaxBatches: 3,
-        autoLoadOnScroll: true
-    }
+	    uiPrefs: {
+	        currentTab: 'generate',
+	        chatZoom: 1,
+	        showAllTools: false,
+	        chatPromptCollapsed: true,
+	        settingsSearch: '',
+	        lastExportFormat: 'sharegpt',
+	        exportFolder: 'wanted',
+	        exportSystemMode: 'add_if_missing',
+	        exportPromptSource: 'custom',
+	        modalPageSize: 500,
+	        warnOnLoadAll: true,
+	        skipLoadAllWarning: false, // legacy (migrated to warnOnLoadAll)
+	        virtualListEnabled: true,
+	        virtualBatchSize: 200,
+	        virtualMaxBatches: 3,
+	        autoLoadOnScroll: true
+	    }
 };
 
 // Throttle utility for streaming updates
@@ -1020,7 +1031,13 @@ async function startLoadAllForSlice({ slice, title, loadNextPage, hasMore, getPr
         toast('Already loading...', 'info');
         return;
     }
-    if (!state.uiPrefs.skipLoadAllWarning) {
+    const canLoadMore = !!hasMore?.();
+    if (!canLoadMore && !slice.isLoading) {
+        toast('Nothing to load', 'info');
+        return;
+    }
+
+    if (state.uiPrefs.warnOnLoadAll !== false) {
         const { confirmed, checked } = await popupConfirmWithCheckbox({
             title: 'Load All',
             message: `Load All can be slow on large datasets.\n\nTip: Auto-load while scrolling is usually enough. If you see lag, lower "Modal fetch size" in Settings → Advanced.`,
@@ -1032,7 +1049,9 @@ async function startLoadAllForSlice({ slice, title, loadNextPage, hasMore, getPr
         });
         if (!confirmed) return;
         if (checked) {
+            state.uiPrefs.warnOnLoadAll = false;
             state.uiPrefs.skipLoadAllWarning = true;
+            if (els.warnLoadAll) els.warnLoadAll.checked = false;
             saveUiPrefs();
         }
     }
@@ -1377,19 +1396,21 @@ async function init() {
         builderItemsSection: $('#builder-items-section'),
         builderRollSection: $('#builder-roll-section'),
         builderRollInput: $('#builder-roll-input'),
-        builderPreviewText: $('#builder-preview-text'),
-        builderCopy: $('#builder-copy'),
-        historyMaxSetting: $('#history-max-setting'),
-        resetMacrosBtn: $('#reset-macros-btn'),
-        macrosStateBody: $('#macros-state-body')
-        ,
-        // Database settings
-        databasePath: $('#database-path'),
+	        builderPreviewText: $('#builder-preview-text'),
+	        builderCopy: $('#builder-copy'),
+	        historyMaxSetting: $('#history-max-setting'),
+	        bulkRetryAttempts: $('#bulk-retry-attempts'),
+	        resetMacrosBtn: $('#reset-macros-btn'),
+	        macrosStateBody: $('#macros-state-body')
+	        ,
+	        // Database settings
+	        databasePath: $('#database-path'),
         databasePathOptions: $('#database-path-options'),
         applyDatabasePath: $('#apply-database-path'),
-        scanDatabasePaths: $('#scan-database-paths'),
-        backupDatabaseBtn: $('#backup-database-btn'),
-        databasePathNote: $('#database-path-note'),
+	        scanDatabasePaths: $('#scan-database-paths'),
+	        backupDatabaseBtn: $('#backup-database-btn'),
+	        databasePathNote: $('#database-path-note'),
+	        warnLoadAll: $('#warn-load-all'),
 
         // Advanced settings
         virtualListEnabled: $('#virtual-list-enabled'),
@@ -1453,6 +1474,13 @@ function hideSaveIndicator(text) {
     if (!els.saveLabel) return;
     els.saveLabel.textContent = text || 'Saved';
     setTimeout(() => { if (els.saveIndicator) els.saveIndicator.classList.add('hidden'); }, 1500);
+}
+
+async function saveRecoveryDraft(_reason = '') {
+    try {
+        const draft = await buildDraftObject();
+        await dbSet('drafts', SESSION_ID, draft);
+    } catch (_e) { }
 }
 
 // ============ CONFIG ============
@@ -1672,7 +1700,18 @@ function renderPromptSelect() {
         opt.textContent = p.name + (p.variables?.length ? ` (${p.variables.join(', ')})` : '');
         els.promptSelect.appendChild(opt);
     });
-    if (state.currentPromptName) els.promptSelect.value = state.currentPromptName;
+    if (state.currentPromptName) {
+        els.promptSelect.value = state.currentPromptName;
+        return;
+    }
+
+    // First-run convenience: auto-load Default when nothing is selected and the editor is empty.
+    const defaultName = 'Default';
+    const generatePromptEmpty = !String(els.systemPrompt?.value || state.generate?.prompt || '').trim();
+    if (generatePromptEmpty && selectHasOption(els.promptSelect, defaultName)) {
+        els.promptSelect.value = defaultName;
+        selectPrompt();
+    }
 }
 
 function sanitizePromptName(name) {
@@ -2221,6 +2260,16 @@ function renderSystemPresetSelect(type, presets) {
     } else {
         selectEl.value = '';
         if (state[type]) state[type].presetName = '';
+    }
+
+    // First-run convenience: if nothing selected and prompt is empty, load Default silently.
+    const defaultName = 'Default';
+    const targetEl = els[`${type}SystemPrompt`];
+    const promptEmpty = !String(targetEl?.value || state[type]?.systemPrompt || '').trim();
+    if (!desired && promptEmpty && presets.some(p => p.name === defaultName)) {
+        selectEl.value = defaultName;
+        if (state[type]) state[type].presetName = defaultName;
+        loadSystemPreset(type, { silent: true });
     }
 }
 
@@ -2783,32 +2832,170 @@ function renderFilesModalList() {
 }
 
 // Bulk Actions Handlers
+function chunkArray(items, size) {
+    const out = [];
+    const safeSize = Math.max(1, Number(size) || 1);
+    for (let i = 0; i < items.length; i += safeSize) out.push(items.slice(i, i + safeSize));
+    return out;
+}
+
+function isSafeConversationId(idStr) {
+    if (typeof idStr !== 'string') return false;
+    if (!idStr) return false;
+    return !idStr.includes('..') && !idStr.includes('/') && !idStr.includes('\\');
+}
+
+function getBulkRetryAttempts() {
+    return Math.max(0, Math.min(5, parseInt(syncSettings.bulkRetryAttempts, 10) || 0));
+}
+
+function sleepWithAbort(ms, signal) {
+    return new Promise((resolve, reject) => {
+        if (signal?.aborted) return reject(Object.assign(new Error('Aborted'), { name: 'AbortError' }));
+        const t = setTimeout(() => {
+            if (signal) signal.removeEventListener('abort', onAbort);
+            resolve();
+        }, ms);
+        const onAbort = () => {
+            clearTimeout(t);
+            if (signal) signal.removeEventListener('abort', onAbort);
+            reject(Object.assign(new Error('Aborted'), { name: 'AbortError' }));
+        };
+        if (signal) signal.addEventListener('abort', onAbort, { once: true });
+    });
+}
+
 async function handleBulkMove(from, to) {
-    const ids = Array.from(state.filesModal.selectedIds);
+    const ids = Array.from(state.filesModal.selectedIds).map(id => String(id || '')).filter(Boolean);
     if (ids.length === 0) return;
 
     showSaveIndicator('Moving...');
-    try {
-        const res = await fetch('/api/conversations/bulk-move', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ ids, from, to })
+    const controller = new AbortController();
+    const taskId = createTask({
+        title: 'Files: Moving conversations',
+        detail: `${from} -> ${to}`,
+        onCancel: () => controller.abort(),
+    });
+
+    const invalidIds = [];
+    const safeIds = [];
+    for (const id of ids) {
+        if (isSafeConversationId(id)) safeIds.push(id);
+        else invalidIds.push(id);
+    }
+
+    const maxRetries = getBulkRetryAttempts();
+    const batchSize = 200;
+    let processed = invalidIds.length;
+    const movedIds = [];
+    const missingIds = [];
+    const failedIds = [];
+
+    const pushProgress = (detailSuffix = '') => {
+        const detail = [`${from} -> ${to}`, detailSuffix].filter(Boolean).join(' · ');
+        updateTask(taskId, {
+            detail,
+            current: Math.min(processed, ids.length),
+            total: ids.length,
+            indeterminate: false,
         });
-        if (res.ok) {
-            const data = await res.json();
-            const movedCount = Array.isArray(data.moved) ? data.moved.length : 0;
-            const toastType = movedCount === ids.length ? 'success' : 'warning';
-            toast(`Moved ${movedCount}/${ids.length} items to ${to}`, toastType);
-            clearSelectableSelection(state.filesModal);
-            loadFilesModal(from, { reset: true });
-            loadStats();
-        } else { toast('Failed to move', 'error'); }
-    } catch (e) { toast('Failed to move', 'error'); }
-    hideSaveIndicator('Moved');
+    };
+    pushProgress(`Starting (${invalidIds.length} invalid)`);
+
+    try {
+        for (const batch of chunkArray(safeIds, batchSize)) {
+            if (controller.signal.aborted) break;
+            let attempt = 0;
+            while (true) {
+                if (controller.signal.aborted) break;
+                try {
+                    const res = await fetch('/api/conversations/bulk-move', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ ids: batch, from, to }),
+                        signal: controller.signal,
+                    });
+                    if (!res.ok) {
+                        const err = await res.json().catch(() => ({}));
+                        const msg = err.error || `Bulk move failed (${res.status})`;
+                        const e = new Error(msg);
+                        e._status = res.status;
+                        throw e;
+                    }
+
+                    const data = await res.json().catch(() => ({}));
+                    const moved = Array.isArray(data.moved) ? data.moved.map(String) : [];
+                    const movedSet = new Set(moved);
+                    movedIds.push(...moved);
+
+                    const missing = Array.isArray(data.missing)
+                        ? data.missing.map(String).filter(Boolean)
+                        : batch.filter(id => !movedSet.has(id));
+                    if (missing.length) missingIds.push(...missing);
+
+                    processed += batch.length;
+                    pushProgress(`Moved ${movedIds.length}/${safeIds.length} · Missing ${missingIds.length} · Invalid ${invalidIds.length} · Failed ${failedIds.length}`);
+                    break;
+                } catch (e) {
+                    if (e?.name === 'AbortError' || controller.signal.aborted) throw e;
+                    const status = Number(e?._status || 0);
+                    const retryable = (status === 0 || status === 429 || status >= 500);
+                    attempt += 1;
+                    if (!retryable || attempt > maxRetries) {
+                        failedIds.push(...batch);
+                        processed += batch.length;
+                        pushProgress(`Moved ${movedIds.length}/${safeIds.length} · Missing ${missingIds.length} · Invalid ${invalidIds.length} · Failed ${failedIds.length}`);
+                        break;
+                    }
+                    pushProgress(`Retrying batch (${attempt}/${maxRetries}) · ${e?.message || 'Failed'}`);
+                    await sleepWithAbort(350 * attempt, controller.signal);
+                }
+            }
+        }
+
+        if (controller.signal.aborted) {
+            toast('Move canceled', 'info');
+            finishTask(taskId, { status: 'canceled', detail: `Canceled (${movedIds.length} moved)` });
+            hideSaveIndicator('Canceled');
+            return;
+        }
+
+        const uniqueMissing = Array.from(new Set(missingIds));
+        const uniqueFailed = Array.from(new Set([...invalidIds, ...failedIds]));
+        const movedUnique = Array.from(new Set(movedIds));
+
+        const hasFailures = uniqueFailed.length > 0;
+        const hasWarnings = uniqueMissing.length > 0;
+        const toastType = hasFailures ? 'error' : hasWarnings ? 'warning' : 'success';
+        toast(`Moved ${movedUnique.length}/${safeIds.length} items to ${to}`, toastType);
+        finishTask(taskId, {
+            status: hasFailures ? 'error' : 'done',
+            detail: hasFailures ? `Failed: ${uniqueFailed.length}` : hasWarnings ? `Missing: ${uniqueMissing.length}` : 'Done',
+        });
+
+        await loadFilesModal(from, { reset: true });
+        state.filesModal.selectedIds = new Set(uniqueFailed.filter(isSafeConversationId));
+        refreshSelectableListUI(els.filesModalList, state.filesModal);
+        updateFilesModalCount();
+        loadStats();
+        hideSaveIndicator(hasFailures ? 'Failed' : 'Moved');
+    } catch (e) {
+        if (e?.name === 'AbortError' || controller.signal.aborted) {
+            toast('Move canceled', 'info');
+            finishTask(taskId, { status: 'canceled', detail: 'Canceled' });
+            hideSaveIndicator('Canceled');
+            return;
+        }
+        console.error('Bulk move failed:', e);
+        toast(e?.message || 'Failed to move', 'error');
+        finishTask(taskId, { status: 'error', detail: e?.message || 'Failed' });
+        await saveRecoveryDraft('bulkMove');
+        hideSaveIndicator('Failed');
+    }
 }
 
 async function handleBulkDelete(folder) {
-    const ids = Array.from(state.filesModal.selectedIds);
+    const ids = Array.from(state.filesModal.selectedIds).map(id => String(id || '')).filter(Boolean);
     if (ids.length === 0) return;
     const ok = await popupConfirm({
         title: 'Delete Conversations',
@@ -2820,23 +3007,129 @@ async function handleBulkDelete(folder) {
     if (!ok) return;
 
     showSaveIndicator('Deleting...');
-    try {
-        const res = await fetch('/api/conversations/bulk-delete', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ ids, folder })
+    const controller = new AbortController();
+    const taskId = createTask({
+        title: 'Files: Deleting conversations',
+        detail: folder === 'rejected' ? 'Rejected' : 'Wanted',
+        onCancel: () => controller.abort(),
+    });
+
+    const invalidIds = [];
+    const safeIds = [];
+    for (const id of ids) {
+        if (isSafeConversationId(id)) safeIds.push(id);
+        else invalidIds.push(id);
+    }
+
+    const maxRetries = getBulkRetryAttempts();
+    const batchSize = 200;
+    let processed = invalidIds.length;
+    const deletedIds = [];
+    const missingIds = [];
+    const failedIds = [];
+
+    const pushProgress = (detailSuffix = '') => {
+        const baseDetail = folder === 'rejected' ? 'Rejected' : 'Wanted';
+        const detail = [baseDetail, detailSuffix].filter(Boolean).join(' · ');
+        updateTask(taskId, {
+            detail,
+            current: Math.min(processed, ids.length),
+            total: ids.length,
+            indeterminate: false,
         });
-        if (res.ok) {
-            const data = await res.json();
-            const deletedCount = Array.isArray(data.deleted) ? data.deleted.length : 0;
-            const toastType = deletedCount === ids.length ? 'success' : 'warning';
-            toast(`Deleted ${deletedCount}/${ids.length} items`, toastType);
-            clearSelectableSelection(state.filesModal);
-            loadFilesModal(folder, { reset: true });
-            loadStats();
-        } else { toast('Failed to delete', 'error'); }
-    } catch (e) { toast('Failed to delete', 'error'); }
-    hideSaveIndicator('Deleted');
+    };
+    pushProgress(`Starting (${invalidIds.length} invalid)`);
+    try {
+        for (const batch of chunkArray(safeIds, batchSize)) {
+            if (controller.signal.aborted) break;
+            let attempt = 0;
+            while (true) {
+                if (controller.signal.aborted) break;
+                try {
+                    const res = await fetch('/api/conversations/bulk-delete', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ ids: batch, folder }),
+                        signal: controller.signal,
+                    });
+                    if (!res.ok) {
+                        const err = await res.json().catch(() => ({}));
+                        const msg = err.error || `Bulk delete failed (${res.status})`;
+                        const e = new Error(msg);
+                        e._status = res.status;
+                        throw e;
+                    }
+
+                    const data = await res.json().catch(() => ({}));
+                    const deleted = Array.isArray(data.deleted) ? data.deleted.map(String) : [];
+                    const deletedSet = new Set(deleted);
+                    deletedIds.push(...deleted);
+
+                    const missing = batch.filter(id => !deletedSet.has(id));
+                    if (missing.length) missingIds.push(...missing);
+
+                    processed += batch.length;
+                    pushProgress(`Deleted ${deletedIds.length}/${safeIds.length} · Missing ${missingIds.length} · Invalid ${invalidIds.length} · Failed ${failedIds.length}`);
+                    break;
+                } catch (e) {
+                    if (e?.name === 'AbortError' || controller.signal.aborted) throw e;
+                    const status = Number(e?._status || 0);
+                    const retryable = (status === 0 || status === 429 || status >= 500);
+                    attempt += 1;
+                    if (!retryable || attempt > maxRetries) {
+                        failedIds.push(...batch);
+                        processed += batch.length;
+                        pushProgress(`Deleted ${deletedIds.length}/${safeIds.length} · Missing ${missingIds.length} · Invalid ${invalidIds.length} · Failed ${failedIds.length}`);
+                        break;
+                    }
+                    pushProgress(`Retrying batch (${attempt}/${maxRetries}) · ${e?.message || 'Failed'}`);
+                    await sleepWithAbort(350 * attempt, controller.signal);
+                }
+            }
+        }
+
+        const aborted = controller.signal.aborted;
+        const uniqueMissing = Array.from(new Set(missingIds));
+        const uniqueFailed = Array.from(new Set([...invalidIds, ...failedIds]));
+        const deletedUnique = Array.from(new Set(deletedIds));
+
+        if (aborted) {
+            toast('Delete canceled', 'info');
+            finishTask(taskId, { status: 'canceled', detail: `Canceled (${deletedUnique.length} deleted)` });
+            hideSaveIndicator('Canceled');
+            return;
+        }
+
+        const hasFailures = uniqueFailed.length > 0;
+        const hasWarnings = uniqueMissing.length > 0;
+        const toastType = hasFailures ? 'error' : hasWarnings ? 'warning' : 'success';
+        toast(`Deleted ${deletedUnique.length}/${safeIds.length} conversations`, toastType);
+
+	        finishTask(taskId, {
+	            status: hasFailures ? 'error' : 'done',
+	            detail: hasFailures ? `Failed: ${uniqueFailed.length}` : hasWarnings ? `Missing: ${uniqueMissing.length}` : 'Done',
+	        });
+
+	        // Keep failed items selected so the user can retry.
+	        await loadFilesModal(folder, { reset: true });
+	        state.filesModal.selectedIds = new Set(uniqueFailed);
+	        refreshSelectableListUI(els.filesModalList, state.filesModal);
+	        updateFilesModalCount();
+	        loadStats();
+	        hideSaveIndicator(hasFailures ? 'Failed' : 'Deleted');
+    } catch (e) {
+        if (e?.name === 'AbortError' || controller.signal.aborted) {
+            toast('Delete canceled', 'info');
+            finishTask(taskId, { status: 'canceled', detail: 'Canceled' });
+            hideSaveIndicator('Canceled');
+            return;
+        }
+        console.error('Bulk delete failed:', e);
+        toast(e?.message || 'Failed to delete', 'error');
+        finishTask(taskId, { status: 'error', detail: e?.message || 'Failed' });
+        await saveRecoveryDraft('bulkDelete');
+        hideSaveIndicator('Failed');
+    }
 }
 
 async function loadConversation(id, folder) {
@@ -3072,9 +3365,7 @@ async function generate() {
 
         const reader = response.body.getReader();
         let fullText = '';
-        let thinkingShown = true;
-        els.conversationView.innerHTML = '<div class="thinking-indicator"><div class="thinking-dots"><span></span><span></span><span></span></div> Thinking...</div><div class="streaming-text" style="display:none;"></div>';
-        const thinkingEl = els.conversationView.querySelector('.thinking-indicator');
+        els.conversationView.innerHTML = '<div class="streaming-text"></div>';
         const streamingEl = els.conversationView.querySelector('.streaming-text');
 
         await readSSEStream(reader, async (data) => {
@@ -3083,7 +3374,6 @@ async function generate() {
                     state.modelActivity.hasFirstToken = true;
                     setModelActivityPhase(modelRunId, 'writing');
                 }
-                if (thinkingShown) { thinkingEl.style.display = 'none'; streamingEl.style.display = ''; thinkingShown = false; }
                 fullText += data.content;
                 appendModelActivityText(modelRunId, data.content);
                 streamingEl.textContent = fullText;
@@ -3506,10 +3796,16 @@ async function saveConversation(folder, reason = null) {
             resetGenerateTab();
             loadStats();
         } else {
-            toast('Failed to save', 'error');
+            const err = await res.json().catch(() => ({}));
+            toast(err.error || 'Failed to save', 'error');
+            await saveRecoveryDraft('saveConversation');
             hideSaveIndicator('Save failed');
         }
-    } catch (e) { toast('Failed to save', 'error'); hideSaveIndicator('Save failed'); }
+    } catch (e) {
+        toast('Failed to save', 'error');
+        await saveRecoveryDraft('saveConversation');
+        hideSaveIndicator('Save failed');
+    }
 }
 
 function showRejectModal() {
@@ -3815,8 +4111,22 @@ async function saveChat() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ conversation, folder: 'wanted', metadata: { source: 'chat', model: getModelValue(), system_prompt: systemPrompt } })
         });
-        if (res.ok) { toast('Chat saved!', 'success'); hideSaveIndicator('Saved ✓'); await clearChat({ confirm: false }); loadStats(); }
-    } catch (e) { toast('Failed to save chat', 'error'); hideSaveIndicator('Save failed'); }
+        if (res.ok) {
+            toast('Chat saved!', 'success');
+            hideSaveIndicator('Saved ✓');
+            await clearChat({ confirm: false });
+            loadStats();
+        } else {
+            const err = await res.json().catch(() => ({}));
+            toast(err.error || 'Failed to save chat', 'error');
+            await saveRecoveryDraft('saveChat');
+            hideSaveIndicator('Save failed');
+        }
+    } catch (e) {
+        toast('Failed to save chat', 'error');
+        await saveRecoveryDraft('saveChat');
+        hideSaveIndicator('Save failed');
+    }
 }
 
 function forkChat(index) {
@@ -4001,6 +4311,7 @@ async function addReviewQueueItems(items) {
             try { await dbPut('reviewQueue', entry); } catch (_err) { }
         }
         console.error('Failed to add to server review queue, saved locally:', e);
+        toast('Server unreachable: saved review items locally', 'warning');
         await loadReviewQueue({ reset: true, targetAbsoluteIndex: startIndex });
         return localEntries;
     }
@@ -4233,7 +4544,7 @@ async function persistCurrentReviewEdits() {
         if (String(item.id).startsWith('local-')) {
             await dbPut('reviewQueue', item);
         } else {
-            await fetch(`/api/review-queue/${encodeURIComponent(item.id)}`, {
+            const res = await fetch(`/api/review-queue/${encodeURIComponent(item.id)}`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -4242,9 +4553,16 @@ async function persistCurrentReviewEdits() {
                     metadata: item.metadata || {}
                 })
             });
+            if (!res.ok) {
+                const err = await res.json().catch(() => ({}));
+                throw new Error(err.error || `Failed to save edit (${res.status})`);
+            }
         }
     } catch (e) {
         console.warn('Failed to persist inline review edit:', e);
+        toast(e?.message || 'Failed to save edit', 'error');
+        await saveRecoveryDraft('reviewEdit');
+        return false;
     }
 
     state.review.isEditing = false;
@@ -4300,8 +4618,17 @@ async function reviewKeep() {
             toast('Kept!', 'success');
             hideSaveIndicator('Saved ✓');
             loadStats();
+        } else {
+            const err = await res.json().catch(() => ({}));
+            toast(err.error || 'Failed to save', 'error');
+            await saveRecoveryDraft('reviewKeep');
+            hideSaveIndicator('Save failed');
         }
-    } catch (e) { toast('Failed to save', 'error'); hideSaveIndicator('Save failed'); }
+    } catch (e) {
+        toast('Failed to save', 'error');
+        await saveRecoveryDraft('reviewKeep');
+        hideSaveIndicator('Save failed');
+    }
 }
 
 async function reviewReject() {
@@ -4331,9 +4658,16 @@ async function reviewReject() {
             hideSaveIndicator('Rejected ✓');
             loadStats();
         } else {
-            toast('Failed to reject', 'error'); hideSaveIndicator('Reject failed');
+            const err = await res.json().catch(() => ({}));
+            toast(err.error || 'Failed to reject', 'error');
+            await saveRecoveryDraft('reviewReject');
+            hideSaveIndicator('Reject failed');
         }
-    } catch (e) { toast('Failed to reject', 'error'); hideSaveIndicator('Reject failed'); }
+    } catch (e) {
+        toast('Failed to reject', 'error');
+        await saveRecoveryDraft('reviewReject');
+        hideSaveIndicator('Reject failed');
+    }
 }
 
 async function removeFromReviewQueue(idx) {
@@ -4391,43 +4725,72 @@ async function persistAllReviewQueueInBatches(action) {
         onCancel: () => controller.abort()
     });
 
-    try {
-        await syncReviewQueueItemsToServer();
+	    try {
+	        await syncReviewQueueItemsToServer();
 
-        const batchLimit = 200; // client-side batch size for queue ids paging
-        let processed = 0;
-        let total = null;
-        let lastRemaining = null;
-        let stagnant = 0;
+	        const batchLimit = 200; // client-side batch size for queue ids paging
+	        const maxRetries = getBulkRetryAttempts();
+	        let processed = 0;
+	        let total = null;
+	        let lastRemaining = null;
+	        let stagnant = 0;
+	        let totalErrors = 0;
 
-        while (!controller.signal.aborted) {
-            const idsRes = await fetch(`/api/review-queue?limit=${batchLimit}&offset=0&ids_only=1`, { signal: controller.signal });
-            if (!idsRes.ok) throw new Error('Failed to fetch queue ids');
-            const idsData = await idsRes.json().catch(() => ({}));
+		        while (!controller.signal.aborted) {
+		            let idsRes;
+		            for (let attempt = 0; attempt <= maxRetries; attempt++) {
+		                try {
+		                    idsRes = await fetch(`/api/review-queue?limit=${batchLimit}&offset=0&ids_only=1`, { signal: controller.signal });
+		                } catch (e) {
+		                    if (e?.name === 'AbortError' || controller.signal.aborted) throw e;
+		                    if (attempt >= maxRetries) throw new Error('Failed to fetch queue ids');
+		                    await sleepWithAbort(350 * (attempt + 1), controller.signal);
+		                    continue;
+		                }
+		                if (idsRes.ok) break;
+		                const retryable = idsRes.status === 429 || idsRes.status >= 500;
+		                if (!retryable || attempt >= maxRetries) throw new Error('Failed to fetch queue ids');
+		                await sleepWithAbort(350 * (attempt + 1), controller.signal);
+		            }
+		            const idsData = await idsRes.json().catch(() => ({}));
 
-            if (total === null && typeof idsData.count === 'number') total = idsData.count;
-            const ids = Array.isArray(idsData.ids) ? idsData.ids : [];
-            if (ids.length === 0) break;
+	            if (total === null && typeof idsData.count === 'number') total = idsData.count;
+	            const ids = Array.isArray(idsData.ids) ? idsData.ids : [];
+	            if (ids.length === 0) break;
 
-            updateTask(taskId, {
-                detail: `Queue -> ${targetLabel}`,
-                current: total ? Math.min(processed, total) : null,
-                total: total || null,
-                indeterminate: !total
-            });
+	            updateTask(taskId, {
+	                detail: `Queue -> ${targetLabel}${totalErrors ? ` · Errors ${totalErrors}` : ''}`,
+	                current: total ? Math.min(processed, total) : null,
+	                total: total || null,
+	                indeterminate: !total
+	            });
 
-            const persistRes = await fetch(`/api/review-queue/bulk-${action}`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ ids }),
-                signal: controller.signal
-            });
-            if (!persistRes.ok) throw new Error(`Bulk ${action} failed`);
-            const persistData = await persistRes.json().catch(() => ({}));
+		            let persistRes;
+		            for (let attempt = 0; attempt <= maxRetries; attempt++) {
+		                try {
+		                    persistRes = await fetch(`/api/review-queue/bulk-${action}`, {
+		                        method: 'POST',
+		                        headers: { 'Content-Type': 'application/json' },
+		                        body: JSON.stringify({ ids }),
+		                        signal: controller.signal
+		                    });
+		                } catch (e) {
+		                    if (e?.name === 'AbortError' || controller.signal.aborted) throw e;
+		                    if (attempt >= maxRetries) throw new Error(`Bulk ${action} failed`);
+		                    await sleepWithAbort(350 * (attempt + 1), controller.signal);
+		                    continue;
+		                }
+		                if (persistRes.ok) break;
+		                const retryable = persistRes.status === 429 || persistRes.status >= 500;
+		                if (!retryable || attempt >= maxRetries) throw new Error(`Bulk ${action} failed`);
+		                await sleepWithAbort(350 * (attempt + 1), controller.signal);
+		            }
+		            const persistData = await persistRes.json().catch(() => ({}));
 
-            const savedCount = typeof persistData.saved_count === 'number' ? persistData.saved_count : ids.length;
-            const errorCount = typeof persistData.error_count === 'number' ? persistData.error_count : 0;
-            processed += savedCount;
+	            const savedCount = typeof persistData.saved_count === 'number' ? persistData.saved_count : ids.length;
+	            const errorCount = typeof persistData.error_count === 'number' ? persistData.error_count : 0;
+	            totalErrors += errorCount;
+	            processed += savedCount;
 
             const remaining = typeof persistData.count === 'number' ? persistData.count : null;
             if (remaining !== null) {
@@ -4439,17 +4802,17 @@ async function persistAllReviewQueueInBatches(action) {
                 if (remaining === 0) break;
             }
 
-            updateTask(taskId, {
-                detail: `Queue -> ${targetLabel}`,
-                current: total ? Math.min(processed, total) : null,
-                total: total || null,
-                indeterminate: !total
-            });
+	            updateTask(taskId, {
+	                detail: `Queue -> ${targetLabel}${totalErrors ? ` · Errors ${totalErrors}` : ''}`,
+	                current: total ? Math.min(processed, total) : null,
+	                total: total || null,
+	                indeterminate: !total
+	            });
 
-            if (savedCount === 0 && errorCount > 0) {
-                toast(`Stopped: ${errorCount} invalid item(s) stayed in the queue`, 'warning');
-                break;
-            }
+	            if (savedCount === 0 && errorCount > 0) {
+	                toast(`Stopped: ${errorCount} invalid item(s) stayed in the queue`, 'warning');
+	                break;
+	            }
 
             // Yield so the UI stays responsive.
             await new Promise(resolve => requestAnimationFrame(() => resolve()));
@@ -4462,23 +4825,25 @@ async function persistAllReviewQueueInBatches(action) {
             return;
         }
 
-        await loadReviewQueue({ reset: true, targetAbsoluteIndex: 0 });
-        loadStats();
-        hideSaveIndicator(isKeep ? 'Saved ✓' : 'Rejected ✓');
-        toast(isKeep ? `Saved ${processed} conversations` : `Rejected ${processed} conversations`, isKeep ? 'success' : 'info');
-        finishTask(taskId, { status: 'done', detail: isKeep ? `Saved ${processed}` : `Rejected ${processed}` });
-    } catch (e) {
-        if (e?.name === 'AbortError' || controller.signal.aborted) {
-            toast(`${verb} canceled`, 'info');
-            hideSaveIndicator('Canceled');
-            finishTask(taskId, { status: 'canceled', detail: 'Canceled' });
-            return;
-        }
-        console.error(`Bulk ${action} failed:`, e);
-        toast(`Bulk ${action} failed`, 'error');
-        hideSaveIndicator('Failed');
-        finishTask(taskId, { status: 'error', detail: 'Failed' });
-    }
+	        await loadReviewQueue({ reset: true, targetAbsoluteIndex: 0 });
+	        loadStats();
+		        hideSaveIndicator(isKeep ? 'Saved ✓' : 'Rejected ✓');
+		        const toastType = totalErrors ? 'warning' : (isKeep ? 'success' : 'info');
+		        toast(isKeep ? `Saved ${processed} conversations` : `Rejected ${processed} conversations`, toastType);
+		        finishTask(taskId, { status: 'done', detail: totalErrors ? `Completed with errors: ${totalErrors}` : (isKeep ? `Saved ${processed}` : `Rejected ${processed}`) });
+		    } catch (e) {
+	        if (e?.name === 'AbortError' || controller.signal.aborted) {
+	            toast(`${verb} canceled`, 'info');
+	            hideSaveIndicator('Canceled');
+	            finishTask(taskId, { status: 'canceled', detail: 'Canceled' });
+	            return;
+	        }
+	        console.error(`Bulk ${action} failed:`, e);
+	        toast(e?.message || `Bulk ${action} failed`, 'error');
+	        hideSaveIndicator('Failed');
+	        finishTask(taskId, { status: 'error', detail: 'Failed' });
+	        await saveRecoveryDraft(`bulk-${action}`);
+	    }
 }
 
 async function keepAllReview() {
@@ -4719,26 +5084,73 @@ function toggleAllReviewBrowser() {
 async function handleReviewBrowserBulk(action) {
     const ids = await ensureReviewQueueIdsSynced(Array.from(state.reviewBrowser.selectedIds));
     if (!ids.length) return;
-    showSaveIndicator(action === 'keep' ? 'Saving...' : 'Rejecting...');
-    try {
-        const res = await fetch(`/api/review-queue/bulk-${action}`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ ids })
-        });
-        if (res.ok) {
-            clearSelectableSelection(state.reviewBrowser);
-            await loadReviewQueue();
-            await loadReviewBrowser({ reset: true });
-            loadStats();
-            hideSaveIndicator(action === 'keep' ? 'Saved ✓' : 'Rejected ✓');
-        } else {
-            hideSaveIndicator('Action failed');
-            toast('Bulk review action failed', 'error');
+    const isKeep = action === 'keep';
+    const verb = isKeep ? 'Save' : 'Reject';
+    showSaveIndicator(isKeep ? 'Saving...' : 'Rejecting...');
+    const controller = new AbortController();
+    const taskId = createTask({
+        title: `Browse queue: ${verb} selected`,
+        detail: `${ids.length} selected`,
+        onCancel: () => controller.abort(),
+    });
+	    const maxRetries = getBulkRetryAttempts();
+	    try {
+	        let res;
+	        for (let attempt = 0; attempt <= maxRetries; attempt++) {
+	            try {
+	                res = await fetch(`/api/review-queue/bulk-${action}`, {
+	                    method: 'POST',
+	                    headers: { 'Content-Type': 'application/json' },
+	                    body: JSON.stringify({ ids }),
+	                    signal: controller.signal,
+	                });
+	            } catch (e) {
+	                if (e?.name === 'AbortError' || controller.signal.aborted) throw e;
+	                if (attempt >= maxRetries) break;
+	                updateTask(taskId, { detail: `Retrying (${attempt + 1}/${maxRetries})` });
+	                await sleepWithAbort(350 * (attempt + 1), controller.signal);
+	                continue;
+	            }
+	            if (res.ok) break;
+	            const retryable = res.status === 429 || res.status >= 500;
+	            if (!retryable || attempt >= maxRetries) break;
+	            updateTask(taskId, { detail: `Retrying (${attempt + 1}/${maxRetries})` });
+	            await sleepWithAbort(350 * (attempt + 1), controller.signal);
         }
+        if (!res?.ok) {
+            const err = await res?.json?.().catch(() => ({}));
+            throw new Error(err?.error || 'Bulk review action failed');
+        }
+        const data = await res.json().catch(() => ({}));
+        const errorCount = typeof data.error_count === 'number' ? data.error_count : 0;
+        const errors = Array.isArray(data.errors) ? data.errors : [];
+        const failedIds = errors.map(e => String(e?.id || '')).filter(Boolean);
+
+        if (errorCount > 0 || failedIds.length > 0) {
+            state.reviewBrowser.selectedIds = new Set(failedIds);
+            toast(`Completed with ${errorCount || failedIds.length} error(s)`, 'warning');
+            finishTask(taskId, { status: 'done', detail: `Errors: ${errorCount || failedIds.length}` });
+        } else {
+            clearSelectableSelection(state.reviewBrowser);
+            toast(isKeep ? 'Saved selected items' : 'Rejected selected items', isKeep ? 'success' : 'info');
+            finishTask(taskId, { status: 'done', detail: 'Done' });
+        }
+
+        await loadReviewQueue();
+        await loadReviewBrowser({ reset: true });
+        loadStats();
+        hideSaveIndicator(isKeep ? 'Saved ✓' : 'Rejected ✓');
     } catch (e) {
+        if (e?.name === 'AbortError' || controller.signal.aborted) {
+            toast(`${verb} canceled`, 'info');
+            hideSaveIndicator('Canceled');
+            finishTask(taskId, { status: 'canceled', detail: 'Canceled' });
+            return;
+        }
         hideSaveIndicator('Action failed');
-        toast('Bulk review action failed', 'error');
+        toast(e?.message || 'Bulk review action failed', 'error');
+        finishTask(taskId, { status: 'error', detail: 'Failed' });
+        await saveRecoveryDraft(`reviewBrowser-${action}`);
     }
 }
 
@@ -5184,7 +5596,7 @@ function normalizeExportSystemMode(mode) {
     const raw = String(mode || '').trim().toLowerCase();
     if (raw === 'override') return 'replace_all';
     if (raw === 'strip') return 'remove_all';
-    if (['keep', 'add_if_missing', 'replace_all', 'remove_all', 'prepend', 'append'].includes(raw)) return raw;
+    if (['keep', 'add_if_missing', 'replace_first', 'replace_all', 'remove_all', 'prepend', 'append'].includes(raw)) return raw;
     return 'add_if_missing';
 }
 
@@ -5281,7 +5693,7 @@ function getSelectedExportSystemMode() {
 
 function exportModeUsesPrompt(mode) {
     const m = normalizeExportSystemMode(mode);
-    return ['add_if_missing', 'replace_all', 'prepend', 'append'].includes(m);
+    return ['add_if_missing', 'replace_first', 'replace_all', 'prepend', 'append'].includes(m);
 }
 
 function getExportSystemModeMeta(mode) {
@@ -5289,6 +5701,7 @@ function getExportSystemModeMeta(mode) {
     const meta = {
         add_if_missing: { label: 'Add if missing', desc: 'Keep existing system; insert only when missing.' },
         keep: { label: 'Keep as-is', desc: 'Export exactly as stored.' },
+        replace_first: { label: 'Replace first system', desc: 'Replace only the leading system message (or insert at top). Mid-conversation system messages are preserved.' },
         replace_all: { label: 'Replace all system', desc: 'Remove existing system and insert your prompt first.' },
         remove_all: { label: 'Remove all system', desc: 'Remove all system messages; ignore your prompt.' },
         prepend: { label: 'Prepend', desc: 'Prepend prompt to first system (or insert if missing).' },
@@ -6375,10 +6788,10 @@ function setupEventListeners() {
         closeCredPicker();
     });
 
-    // Sync settings
-    document.querySelectorAll('#auto-sync-enabled, #sync-interval, #auto-save-enabled, #save-interval, #ask-reject-reason').forEach(el => {
-        el.addEventListener('change', saveSyncSettings);
-    });
+	    // Sync settings
+	    document.querySelectorAll('#auto-sync-enabled, #sync-interval, #auto-save-enabled, #save-interval, #ask-reject-reason, #bulk-retry-attempts').forEach(el => {
+	        el.addEventListener('change', saveSyncSettings);
+	    });
 
     // Handle meatball menu clicks and outside clicks
     document.addEventListener('click', (e) => {
@@ -6433,9 +6846,14 @@ function setupEventListeners() {
     document.querySelectorAll('.settings-category-btn').forEach(btn => {
         btn.addEventListener('click', () => scrollSettingsSection(btn.dataset.settingsTarget, btn));
     });
-    els.applyDatabasePath?.addEventListener('click', applyDatabasePath);
-    els.scanDatabasePaths?.addEventListener('click', () => loadDatabaseCandidates({ quiet: false }));
-    els.backupDatabaseBtn?.addEventListener('click', backupDatabaseNow);
+	    els.applyDatabasePath?.addEventListener('click', applyDatabasePath);
+	    els.scanDatabasePaths?.addEventListener('click', () => loadDatabaseCandidates({ quiet: false }));
+	    els.backupDatabaseBtn?.addEventListener('click', backupDatabaseNow);
+	    els.warnLoadAll?.addEventListener('change', () => {
+	        state.uiPrefs.warnOnLoadAll = els.warnLoadAll.checked !== false;
+	        state.uiPrefs.skipLoadAllWarning = !state.uiPrefs.warnOnLoadAll;
+	        saveUiPrefs();
+	    });
 
     // Files Modal Bulk Actions Static Listeners
     const selectAllFiles = () => {

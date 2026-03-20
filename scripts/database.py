@@ -763,16 +763,41 @@ def update_review_queue_item(item_id: str, conversations: list, raw_text: str, m
     return result.rowcount > 0
 
 
-def bulk_remove_from_review_queue(ids: list) -> int:
-    """Bulk remove items. Returns count removed."""
+def bulk_remove_from_review_queue(ids: list) -> list[str]:
+    """Bulk remove review queue items, returns list of deleted IDs (preserves request order)."""
     if not ids:
-        return 0
+        return []
+
+    unique_ids: list[str] = []
+    seen: set[str] = set()
+    for raw_id in ids:
+        if not isinstance(raw_id, str) or not raw_id:
+            continue
+        if raw_id in seen:
+            continue
+        unique_ids.append(raw_id)
+        seen.add(raw_id)
+
+    if not unique_ids:
+        return []
+
+    placeholders = ','.join('?' * len(unique_ids))
     with get_db() as conn:
-        placeholders = ','.join('?' * len(ids))
-        result = conn.execute(
-            f"DELETE FROM review_queue WHERE id IN ({placeholders})", ids
-        )
-    return result.rowcount
+        rows = conn.execute(
+            f"SELECT id FROM review_queue WHERE id IN ({placeholders})",
+            unique_ids,
+        ).fetchall()
+        matched_ids = {row['id'] for row in rows}
+
+        deleted_ids = [item_id for item_id in unique_ids if item_id in matched_ids]
+        if deleted_ids:
+            deleted_placeholders = ','.join('?' * len(deleted_ids))
+            conn.execute(
+                f"DELETE FROM review_queue WHERE id IN ({deleted_placeholders})",
+                deleted_ids,
+            )
+
+    return deleted_ids
 
 
 def clear_review_queue():

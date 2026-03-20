@@ -274,15 +274,47 @@ def build_allowed_origins(config: dict) -> list[str]:
     host = server_config.get('host', '127.0.0.1')
     port = server_config.get('port', 5000)
 
-    allowed_origins = [
+    allowed: set[str] = {
         f'http://localhost:{port}',
+        f'https://localhost:{port}',
         f'http://127.0.0.1:{port}',
+        f'https://127.0.0.1:{port}',
         f'http://0.0.0.0:{port}',
-    ]
+        f'https://0.0.0.0:{port}',
+    }
+
     # Always include the configured host; this is safe for CSRF checks because
     # the Origin header of a cross-site request will still be the attacker's origin.
-    allowed_origins.append(f'http://{host}:{port}')
-    return allowed_origins
+    if isinstance(host, str) and host.strip():
+        safe_host = host.strip()
+        allowed.add(f'http://{safe_host}:{port}')
+        allowed.add(f'https://{safe_host}:{port}')
+
+    # Allow user-specified trusted domains (useful for reverse proxies / dev servers).
+    # Accept either full origins (https://example.com:1234) or bare hosts (example.com).
+    trusted = server_config.get('trusted_domains', [])
+    if isinstance(trusted, list):
+        for entry in trusted:
+            if not isinstance(entry, str):
+                continue
+            value = entry.strip()
+            if not value:
+                continue
+            if '://' in value:
+                # Normalize to origin only.
+                try:
+                    parsed = urlparse(value)
+                    if parsed.scheme and parsed.netloc:
+                        allowed.add(f'{parsed.scheme}://{parsed.netloc}')
+                except Exception:
+                    continue
+            else:
+                allowed.add(f'http://{value}')
+                allowed.add(f'https://{value}')
+                allowed.add(f'http://{value}:{port}')
+                allowed.add(f'https://{value}:{port}')
+
+    return sorted(allowed)
 
 
 def initialize_app():
@@ -316,6 +348,16 @@ def security_check():
     config = load_config()
     server_config = config.get('server', {})
 
+    def _is_loopback_host(hostname: str) -> bool:
+        if not hostname:
+            return False
+        if hostname.lower() == 'localhost':
+            return True
+        try:
+            return ipaddress.ip_address(hostname).is_loopback
+        except Exception:
+            return False
+
     # Basic CSRF guard for browser-based requests:
     # For state-changing API calls, require Origin/Referer to match allowed origins.
     if request.method in ('POST', 'PUT', 'PATCH', 'DELETE') and request.path.startswith('/api/'):
@@ -342,10 +384,13 @@ def security_check():
         origin = (request.headers.get('Origin') or '').strip()
         origin_norm = _origin_from_url(origin) if origin else ''
 
+        server_host = str(server_config.get('host', '127.0.0.1') or '127.0.0.1').strip()
+        server_host_is_loopback = _is_loopback_host(server_host)
+
         # Some browser contexts (e.g., file:// or sandboxed frames) can send Origin: null.
-        # Treat it as "missing" only for loopback clients to avoid breaking local-only workflows.
+        # Treat it as "missing" for loopback-bound servers to avoid breaking local-only workflows.
         if origin and origin.lower() == 'null':
-            if request.remote_addr in ('127.0.0.1', '::1'):
+            if server_host_is_loopback and request.remote_addr in ('127.0.0.1', '::1'):
                 origin = ''
                 origin_norm = ''
             else:
@@ -353,7 +398,17 @@ def security_check():
 
         if origin_norm:
             if origin_norm not in allowed:
-                return jsonify({'error': 'Forbidden: invalid origin'}), 403
+                # Relaxation for common local dev workflows:
+                # - When the server is bound to loopback, allow any loopback/localhost Origin
+                #   even if it is on a different port (e.g., a local UI dev server).
+                try:
+                    parsed = urlparse(origin)
+                    origin_host = (parsed.hostname or '').strip()
+                except Exception:
+                    origin_host = ''
+
+                if not (server_host_is_loopback and _is_loopback_host(origin_host)):
+                    return jsonify({'error': 'Forbidden: invalid origin'}), 403
         else:
             referer = (request.headers.get('Referer') or '').strip()
             if referer:
@@ -1242,7 +1297,7 @@ def export_dataset_endpoint(format: str):
             system_prompt_mode = 'replace_all'
         elif system_prompt_mode == 'strip':
             system_prompt_mode = 'remove_all'
-        if system_prompt_mode not in ('keep', 'add_if_missing', 'replace_all', 'remove_all', 'prepend', 'append', None):
+        if system_prompt_mode not in ('keep', 'add_if_missing', 'replace_first', 'replace_all', 'remove_all', 'prepend', 'append', None):
             system_prompt_mode = None
         if filename:
             filename = re.sub(r'[^a-zA-Z0-9_.-]', '', filename)
@@ -1307,7 +1362,7 @@ def export_preview_endpoint(export_format: str | None = None, **route_params):
         system_prompt_mode = 'replace_all'
     elif system_prompt_mode == 'strip':
         system_prompt_mode = 'remove_all'
-    if system_prompt_mode not in ('keep', 'add_if_missing', 'replace_all', 'remove_all', 'prepend', 'append', None):
+    if system_prompt_mode not in ('keep', 'add_if_missing', 'replace_first', 'replace_all', 'remove_all', 'prepend', 'append', None):
         system_prompt_mode = None
     try:
         limit = max(1, min(int(data.get('limit', 20)), 200))
@@ -1420,22 +1475,45 @@ def delete_conversation(conv_id: str):
 @app.route('/api/conversations/bulk-delete', methods=['POST'])
 def bulk_delete_conversations():
     """Bulk delete conversations."""
-    data = request.get_json() or {}
+    data = _get_json_object()
+    if data is None:
+        return jsonify({'error': 'Invalid JSON payload'}), 400
     ids = data.get('ids', [])
     folder = data.get('folder', 'wanted')
 
     if not is_valid_folder(folder):
         return jsonify({'error': 'Invalid folder'}), 400
 
-    safe_ids = [cid for cid in ids if is_safe_id(cid)]
-    deleted = db.bulk_delete_conversations(safe_ids, folder)
+    if not isinstance(ids, list):
+        return jsonify({'error': 'ids must be an array of conversation IDs'}), 400
 
-    return jsonify({'success': True, 'deleted': deleted})
+    invalid = []
+    safe_ids = []
+    for raw_id in ids:
+        if not is_safe_id(raw_id):
+            if isinstance(raw_id, str):
+                invalid.append(raw_id)
+            continue
+        safe_ids.append(raw_id)
+
+    deleted = db.bulk_delete_conversations(safe_ids, folder)
+    deleted_set = set(deleted)
+    missing = [cid for cid in safe_ids if cid not in deleted_set]
+
+    return jsonify({
+        'success': True,
+        'deleted': deleted,
+        'deleted_count': len(deleted),
+        'missing': missing,
+        'invalid': invalid,
+    })
 
 @app.route('/api/conversations/bulk-move', methods=['POST'])
 def bulk_move_conversations():
     """Bulk move conversations."""
-    data = request.get_json() or {}
+    data = _get_json_object()
+    if data is None:
+        return jsonify({'error': 'Invalid JSON payload'}), 400
     ids = data.get('ids', [])
     from_folder = data.get('from', 'wanted')
     to_folder = data.get('to', 'rejected')
@@ -1443,10 +1521,28 @@ def bulk_move_conversations():
     if not is_valid_folder(from_folder) or not is_valid_folder(to_folder):
         return jsonify({'error': 'Invalid folder'}), 400
 
-    safe_ids = [cid for cid in ids if is_safe_id(cid)]
-    moved = db.bulk_move_conversations(safe_ids, from_folder, to_folder)
+    if not isinstance(ids, list):
+        return jsonify({'error': 'ids must be an array of conversation IDs'}), 400
+    invalid: list[str] = []
+    safe_ids: list[str] = []
+    for raw_id in ids:
+        if not is_safe_id(raw_id):
+            if isinstance(raw_id, str):
+                invalid.append(raw_id)
+            continue
+        safe_ids.append(raw_id)
 
-    return jsonify({'success': True, 'moved': moved})
+    moved = db.bulk_move_conversations(safe_ids, from_folder, to_folder)
+    moved_set = set(moved)
+    missing = [cid for cid in safe_ids if cid not in moved_set]
+
+    return jsonify({
+        'success': True,
+        'moved': moved,
+        'moved_count': len(moved),
+        'missing': missing,
+        'invalid': invalid,
+    })
 
 
 # ============ MODELS ============
@@ -2087,7 +2183,7 @@ def get_review_queue():
     search = request.args.get('search', '').strip()
     ids_only = request.args.get('ids_only', '').strip().lower() in ('1', 'true', 'yes')
     try:
-        limit = max(1, min(int(request.args.get('limit', 100)), 2000))
+        limit = max(1, min(int(request.args.get('limit', 500)), 2000))
         offset = max(0, int(request.args.get('offset', 0)))
     except ValueError:
         return jsonify({'error': 'Invalid pagination parameters'}), 400
@@ -2165,13 +2261,35 @@ def update_review_queue_item(item_id: str):
 @app.route('/api/review-queue/bulk-delete', methods=['POST'])
 def bulk_remove_from_review_queue():
     """Bulk remove items from the review queue."""
-    data = request.get_json() or {}
+    data = _get_json_object()
+    if data is None:
+        return jsonify({'error': 'Invalid JSON payload'}), 400
     ids = data.get('ids', [])
+    if not isinstance(ids, list):
+        return jsonify({'error': 'ids must be an array of review queue item IDs'}), 400
 
-    db.bulk_remove_from_review_queue(ids)
+    invalid: list[str] = []
+    safe_ids: list[str] = []
+    for raw_id in ids:
+        if not isinstance(raw_id, str) or not raw_id.strip():
+            if isinstance(raw_id, str):
+                invalid.append(raw_id)
+            continue
+        safe_ids.append(raw_id)
+
+    deleted = db.bulk_remove_from_review_queue(safe_ids)
+    deleted_set = set(deleted)
+    missing = [item_id for item_id in dict.fromkeys(safe_ids) if item_id not in deleted_set]
     total = db.get_review_queue_count()
 
-    return jsonify({'success': True, 'count': total})
+    return jsonify({
+        'success': True,
+        'deleted': deleted,
+        'deleted_count': len(deleted),
+        'missing': missing,
+        'invalid': invalid,
+        'count': total,
+    })
 
 
 def _persist_review_items(ids: list[str] | None, target_folder: str):
@@ -2189,9 +2307,14 @@ def _persist_review_items(ids: list[str] | None, target_folder: str):
 @app.route('/api/review-queue/bulk-keep', methods=['POST'])
 def bulk_keep_from_review_queue():
     """Atomically save items from the review queue to wanted and remove them from the queue."""
-    data = request.get_json() or {}
+    data = _get_json_object()
+    if data is None:
+        return jsonify({'error': 'Invalid JSON payload'}), 400
     ids = data.get('ids', [])
-    keep_all = bool(data.get('all'))
+    keep_all = _parse_bool_flag(data.get('all', False))
+
+    if not keep_all and not isinstance(ids, list):
+        return jsonify({'error': 'ids must be an array of review queue item IDs'}), 400
 
     if not keep_all and not ids:
         return jsonify({'error': 'No ids provided'}), 400
@@ -2202,9 +2325,14 @@ def bulk_keep_from_review_queue():
 @app.route('/api/review-queue/bulk-reject', methods=['POST'])
 def bulk_reject_from_review_queue():
     """Atomically save items from the review queue to rejected and remove them from the queue."""
-    data = request.get_json() or {}
+    data = _get_json_object()
+    if data is None:
+        return jsonify({'error': 'Invalid JSON payload'}), 400
     ids = data.get('ids', [])
-    reject_all = bool(data.get('all'))
+    reject_all = _parse_bool_flag(data.get('all', False))
+
+    if not reject_all and not isinstance(ids, list):
+        return jsonify({'error': 'ids must be an array of review queue item IDs'}), 400
 
     if not reject_all and not ids:
         return jsonify({'error': 'No ids provided'}), 400

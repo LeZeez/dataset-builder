@@ -800,34 +800,44 @@ gpt: response"></textarea>
                 <div class="export-body flex-col">
                     <div class="muted small mb-half">Choose how system messages are handled during export. This does not edit your stored conversations.</div>
                     <div id="export-system-mode-cards" class="mode-cards">
-                        <label class="mode-card">
-                            <input type="radio" name="export-system-mode-choice" value="add_if_missing" checked>
-                            <div class="mode-card-body">
-                                <div class="mode-card-title">Add if missing (default)</div>
-                                <div class="mode-card-desc">Keeps existing system messages; inserts your prompt only when a conversation has none.</div>
-                                <pre class="mode-card-example">Conversation already has a system message → unchanged
-Conversation has no system message → insert as first message:
-system: You are a precise, helpful assistant.</pre>
-                            </div>
-                        </label>
-                        <label class="mode-card">
-                            <input type="radio" name="export-system-mode-choice" value="keep">
-                            <div class="mode-card-body">
-                                <div class="mode-card-title">Keep as-is</div>
-                                <div class="mode-card-desc">Exports conversations exactly as stored (system message or not).</div>
-                                <pre class="mode-card-example">No changes (system messages stay exactly as saved)</pre>
-                            </div>
-                        </label>
-                        <label class="mode-card">
-                            <input type="radio" name="export-system-mode-choice" value="replace_all">
-                            <div class="mode-card-body">
-                                <div class="mode-card-title">Replace all system</div>
-                                <div class="mode-card-desc">Removes any existing system messages and inserts your prompt as the first message.</div>
-                                <pre class="mode-card-example">system: You are a precise, helpful assistant.
-user: …
+	                        <label class="mode-card">
+	                            <input type="radio" name="export-system-mode-choice" value="add_if_missing" checked>
+	                            <div class="mode-card-body">
+	                                <div class="mode-card-title">Add if missing (default)</div>
+	                                <div class="mode-card-desc">Keeps existing system messages; inserts your prompt only when a conversation has none.</div>
+	                                <pre class="mode-card-example">If the first message is system → unchanged
+If there is no system message → insert at the top:
+system: You are a careful, professional assistant.</pre>
+	                            </div>
+	                        </label>
+	                        <label class="mode-card">
+	                            <input type="radio" name="export-system-mode-choice" value="replace_first">
+	                            <div class="mode-card-body">
+	                                <div class="mode-card-title">Replace first system</div>
+	                                <div class="mode-card-desc">Replaces only the leading system message (or inserts one at the top). Any later system messages remain unchanged.</div>
+	                                <pre class="mode-card-example">system: You are a careful, professional assistant.
+user: What is the company refund policy?
 assistant: …</pre>
+	                            </div>
+	                        </label>
+	                        <label class="mode-card">
+	                            <input type="radio" name="export-system-mode-choice" value="keep">
+	                            <div class="mode-card-body">
+	                                <div class="mode-card-title">Keep as-is</div>
+	                                <div class="mode-card-desc">Exports conversations exactly as stored (system message or not).</div>
+	                                <pre class="mode-card-example">No changes (system messages stay exactly as saved)</pre>
                             </div>
                         </label>
+	                        <label class="mode-card">
+	                            <input type="radio" name="export-system-mode-choice" value="replace_all">
+	                            <div class="mode-card-body">
+	                                <div class="mode-card-title">Replace all system</div>
+	                                <div class="mode-card-desc">Removes any existing system messages and inserts your prompt as the first message.</div>
+	                                <pre class="mode-card-example">system: You are a careful, professional assistant.
+	user: …
+	assistant: …</pre>
+	                            </div>
+	                        </label>
                         <label class="mode-card">
                             <input type="radio" name="export-system-mode-choice" value="remove_all">
                             <div class="mode-card-body">
@@ -1012,6 +1022,15 @@ You are a precise, helpful assistant.</pre>
                                         <input type="number" id="history-max-setting" class="input input-sm" value="30" min="5" max="500">
                                     </div>
                                 </div>
+                                <div class="settings-row">
+                                    <label class="settings-row-label" for="bulk-retry-attempts">
+                                        Bulk auto-retry attempts
+                                        <span class="hint" title="When bulk actions fail (delete/keep/reject), retry failed items automatically. Set to 0 to disable.">i</span>
+                                    </label>
+                                    <div class="settings-row-control">
+                                        <input type="number" id="bulk-retry-attempts" class="input input-sm" value="2" min="0" max="5" step="1">
+                                    </div>
+                                </div>
                             </div>
                         </section>
 
@@ -1107,6 +1126,15 @@ You are a precise, helpful assistant.</pre>
                                             </div>
                                             <div class="muted small" id="database-path-note">Restart the server after switching databases for best results.</div>
                                         </div>
+                                    </div>
+                                </div>
+                                <div class="settings-row">
+                                    <label class="settings-row-label" for="warn-load-all">
+                                        Warn before Load All
+                                        <span class="hint" title="Show a confirmation before fetching every page in a modal.">i</span>
+                                    </label>
+                                    <div class="settings-row-control">
+                                        <input type="checkbox" id="warn-load-all" checked>
                                     </div>
                                 </div>
                             </div>
