@@ -576,6 +576,7 @@ const state = {
         currentFolder: 'wanted',
         files: [],
         selectedIds: new Set(),
+        pendingSelection: null,
         anchorId: null,
         previewId: null,
         previewConversation: null,
@@ -1442,7 +1443,7 @@ async function init() {
     await loadExportPresets();
     applyFirstRunDefaults();
     await loadReviewQueue();
-    applyDeferredDraftState(state._restoredDraft);
+    await applyDeferredDraftState(state._restoredDraft);
     await loadPromptHistory();
 
     setupEventListeners();
@@ -2252,7 +2253,7 @@ async function loadSystemPresets(type) {
 function renderSystemPresetSelect(type, presets) {
     const selectEl = els[`${type}PresetSelect`];
     if (!selectEl) return;
-    const desired = (state[type]?.presetName || selectEl.value || '').trim();
+    let desired = (state[type]?.presetName || selectEl.value || '').trim();
     selectEl.innerHTML = '<option value="">Load preset...</option>';
     presets.forEach(p => {
         const opt = document.createElement('option');
@@ -2265,6 +2266,7 @@ function renderSystemPresetSelect(type, presets) {
     } else {
         selectEl.value = '';
         if (state[type]) state[type].presetName = '';
+        desired = '';
     }
 
     // First-run convenience: if nothing selected and prompt is empty, load Default silently.
@@ -2626,6 +2628,50 @@ function filterSelectableIdsToLoadedItems(items, ids) {
     return new Set((ids || []).map(id => String(id || '')).filter(id => availableIds.has(id)));
 }
 
+function setFilesModalPendingSelection(selectedIds, previewId = '') {
+    const pendingIds = Array.from(selectedIds || []).map(id => String(id || '')).filter(Boolean);
+    const pendingPreviewId = String(previewId || '').trim();
+    if (!pendingIds.length && !pendingPreviewId) {
+        state.filesModal.pendingSelection = null;
+        return;
+    }
+    state.filesModal.pendingSelection = {
+        selectedIds: pendingIds,
+        previewId: pendingPreviewId,
+    };
+}
+
+function applyFilesModalPendingSelection() {
+    const pending = state.filesModal.pendingSelection;
+    if (!pending) return;
+
+    const availableIds = new Set((state.filesModal.files || []).map(item => String(item?.id || '')).filter(Boolean));
+    const matchedSelectedIds = (pending.selectedIds || []).filter(id => availableIds.has(id));
+    if (matchedSelectedIds.length) {
+        state.filesModal.selectedIds = new Set([
+            ...Array.from(state.filesModal.selectedIds || []),
+            ...matchedSelectedIds,
+        ]);
+    }
+
+    const previewId = String(pending.previewId || '');
+    if (previewId && availableIds.has(previewId)) {
+        state.filesModal.previewId = previewId;
+    }
+
+    const remainingSelectedIds = (pending.selectedIds || []).filter(id => !availableIds.has(id));
+    const remainingPreviewId = previewId && !availableIds.has(previewId) ? previewId : '';
+    if (!remainingSelectedIds.length && !remainingPreviewId) {
+        state.filesModal.pendingSelection = null;
+        return;
+    }
+
+    state.filesModal.pendingSelection = {
+        selectedIds: remainingSelectedIds,
+        previewId: remainingPreviewId,
+    };
+}
+
 function getSliceIndex(slice, items, id) {
     if (slice?.idToIndex && typeof slice.idToIndex.get === 'function') {
         const idx = slice.idToIndex.get(id);
@@ -2759,6 +2805,7 @@ async function loadFilesModal(folder = 'wanted', { reset = false, signal = null 
             state.filesModal.offset += items.length;
             if (items.length === 0) state.filesModal.hasMore = false;
             else state.filesModal.hasMore = state.filesModal.offset < state.filesModal.total;
+            applyFilesModalPendingSelection();
             if (!els.filesModal?.classList.contains('hidden')) {
                 renderFilesModalList();
             }
@@ -2934,14 +2981,12 @@ async function handleBulkMove(from, to) {
                     }
 
                     const data = await res.json().catch(() => ({}));
-                    const moved = Array.isArray(data.moved) ? data.moved.map(String) : [];
-                    const movedSet = new Set(moved);
+                    const moved = Array.isArray(data.moved) ? data.moved.map(String).filter(Boolean) : [];
+                    const missing = Array.isArray(data.missing) ? data.missing.map(String).filter(Boolean) : [];
+                    const invalid = Array.isArray(data.invalid) ? data.invalid.map(String).filter(Boolean) : [];
                     movedIds.push(...moved);
-
-                    const missing = Array.isArray(data.missing)
-                        ? data.missing.map(String).filter(Boolean)
-                        : batch.filter(id => !movedSet.has(id));
                     if (missing.length) missingIds.push(...missing);
+                    if (invalid.length) invalidIds.push(...invalid);
 
                     processed += batch.length;
                     pushProgress(`Moved ${movedIds.length}/${safeIds.length} · Missing ${missingIds.length} · Invalid ${invalidIds.length} · Failed ${failedIds.length}`);
@@ -3074,12 +3119,12 @@ async function handleBulkDelete(folder) {
                     }
 
                     const data = await res.json().catch(() => ({}));
-                    const deleted = Array.isArray(data.deleted) ? data.deleted.map(String) : [];
-                    const deletedSet = new Set(deleted);
+                    const deleted = Array.isArray(data.deleted) ? data.deleted.map(String).filter(Boolean) : [];
+                    const missing = Array.isArray(data.missing) ? data.missing.map(String).filter(Boolean) : [];
+                    const invalid = Array.isArray(data.invalid) ? data.invalid.map(String).filter(Boolean) : [];
                     deletedIds.push(...deleted);
-
-                    const missing = batch.filter(id => !deletedSet.has(id));
                     if (missing.length) missingIds.push(...missing);
+                    if (invalid.length) invalidIds.push(...invalid);
 
                     processed += batch.length;
                     pushProgress(`Deleted ${deletedIds.length}/${safeIds.length} · Missing ${missingIds.length} · Invalid ${invalidIds.length} · Failed ${failedIds.length}`);
@@ -6084,7 +6129,7 @@ async function buildDraftObject() {
         },
         review: {
             queueItems: reviewQueueItems,
-            currentIndex: state.review.currentIndex,
+            currentIndex: state.review.pageOffset + state.review.currentIndex,
             pageOffset: state.review.pageOffset,
             total: state.review.total || reviewQueueItems.length,
             isEditing: !!state.review.isEditing,
@@ -6098,6 +6143,9 @@ async function buildDraftObject() {
         },
         reviewBrowser: {
             items: safeJsonClone(state.reviewBrowser.items || [], []),
+            total: state.reviewBrowser.total,
+            offset: state.reviewBrowser.offset,
+            hasMore: state.reviewBrowser.hasMore,
             selectedIds: Array.from(state.reviewBrowser.selectedIds || []),
             previewId: state.reviewBrowser.previewId || '',
             search: els.reviewBrowserSearchInput?.value || '',
@@ -6183,20 +6231,24 @@ function applyDraft(draft) {
     }
     if (draft.filesModal) {
         state.filesModal.currentFolder = String(draft.filesModal.currentFolder || state.filesModal.currentFolder || 'wanted');
-        state.filesModal.selectedIds = new Set((draft.filesModal.selectedIds || []).map(id => String(id || '')).filter(Boolean));
-        state.filesModal.previewId = String(draft.filesModal.previewId || '');
+        const restoredSelectedIds = (draft.filesModal.selectedIds || []).map(id => String(id || '')).filter(Boolean);
+        const restoredPreviewId = String(draft.filesModal.previewId || '');
+        state.filesModal.selectedIds = new Set(restoredSelectedIds);
+        state.filesModal.previewId = restoredPreviewId;
+        setFilesModalPendingSelection(restoredSelectedIds, restoredPreviewId);
         if (els.filesSearchInput && typeof draft.filesModal.search === 'string') {
             els.filesSearchInput.value = draft.filesModal.search;
         }
     }
     if (draft.reviewBrowser) {
-        state.reviewBrowser.items = safeJsonClone(draft.reviewBrowser.items || [], []);
-        state.reviewBrowser.total = state.reviewBrowser.items.length;
-        state.reviewBrowser.offset = state.reviewBrowser.items.length;
-        state.reviewBrowser.hasMore = false;
+        const items = safeJsonClone(draft.reviewBrowser.items || [], []);
+        state.reviewBrowser.items = items;
+        state.reviewBrowser.total = draft.reviewBrowser.total ?? items.length;
+        state.reviewBrowser.offset = draft.reviewBrowser.offset ?? 0;
+        state.reviewBrowser.hasMore = draft.reviewBrowser.hasMore ?? (draft.reviewBrowser.total ? draft.reviewBrowser.total > items.length : false);
         state.reviewBrowser.seenIds = new Set();
         state.reviewBrowser.idToIndex = new Map();
-        state.reviewBrowser.items.forEach((item, index) => {
+        items.forEach((item, index) => {
             const itemId = String(item?.id || '');
             if (!itemId) return;
             state.reviewBrowser.seenIds.add(itemId);
@@ -6204,14 +6256,14 @@ function applyDraft(draft) {
         });
         state.reviewBrowser.selectedIds = new Set((draft.reviewBrowser.selectedIds || []).map(id => String(id || '')).filter(Boolean));
         state.reviewBrowser.previewId = String(draft.reviewBrowser.previewId || '');
-        state.reviewBrowser.previewConversation = state.reviewBrowser.items.find(item => String(item?.id || '') === state.reviewBrowser.previewId) || null;
+        state.reviewBrowser.previewConversation = items.find(item => String(item?.id || '') === state.reviewBrowser.previewId) || null;
         if (els.reviewBrowserSearchInput && typeof draft.reviewBrowser.search === 'string') {
             els.reviewBrowserSearchInput.value = draft.reviewBrowser.search;
         }
     }
 }
 
-function applyDeferredDraftState(draft) {
+async function applyDeferredDraftState(draft) {
     if (!draft?.review) return;
 
     const draftQueueItems = safeJsonClone(draft.review.queueItems || [], []);
@@ -6225,11 +6277,15 @@ function applyDeferredDraftState(draft) {
         state.review.total = Math.max(state.review.total || 0, draftQueueItems.length);
     }
 
-    if (Number.isFinite(Number(draft.review.pageOffset))) {
-        state.review.pageOffset = Math.max(0, Number(draft.review.pageOffset));
-    }
+    const reviewPageSize = getModalPageSize();
     if (Number.isFinite(Number(draft.review.currentIndex))) {
-        state.review.currentIndex = Math.max(0, Math.min(Number(draft.review.currentIndex), Math.max(0, state.review.queue.length - 1)));
+        const absoluteIndex = Math.max(0, Number(draft.review.currentIndex));
+        const pageOffset = Math.floor(absoluteIndex / reviewPageSize) * reviewPageSize;
+        state.review.pageOffset = pageOffset;
+        await loadReviewQueue({ reset: true, targetAbsoluteIndex: absoluteIndex });
+        state.review.currentIndex = Math.max(0, absoluteIndex - (state.review.pageOffset || 0));
+    } else if (Number.isFinite(Number(draft.review.pageOffset))) {
+        state.review.pageOffset = Math.max(0, Number(draft.review.pageOffset));
     }
 
     const currentItem = state.review.queue[state.review.currentIndex];

@@ -57,17 +57,29 @@ LOGGER = logging.getLogger(__name__)
 def _get_json_object():
     """Return a JSON object body or an empty dict for an empty body.
 
-    Raises `BadRequest` for malformed JSON payloads.
+    Returns `None` for JSON values that are not objects, including an explicit
+    `null` payload. Raises `BadRequest` for malformed JSON payloads.
     """
     raw_body = request.get_data(cache=True)
     if not raw_body or not raw_body.strip():
         return {}
     data = request.get_json(silent=False)
     if data is None:
-        return {}
+        return None
     if not isinstance(data, dict):
         return None
     return data
+
+
+def _get_json_object_or_error():
+    """Return a JSON object body or a ready-made 400 response tuple."""
+    try:
+        data = _get_json_object()
+    except BadRequest:
+        return None, (jsonify({'error': 'Invalid JSON payload'}), 400)
+    if data is None:
+        return None, (jsonify({'error': 'Invalid JSON payload'}), 400)
+    return data, None
 
 
 def _parse_bool_flag(raw_value) -> bool:
@@ -274,27 +286,94 @@ log = logging.getLogger('werkzeug')
 log.addFilter(QuietFilter())
 
 
-def build_allowed_origins(config: dict) -> list[str]:
+def _is_loopback_host(hostname: str) -> bool:
+    if not hostname:
+        return False
+    normalized = hostname.strip().strip('[]')
+    if not normalized:
+        return False
+    if normalized.lower() == 'localhost':
+        return True
+    if normalized == '0.0.0.0':
+        return True
+    try:
+        return ipaddress.ip_address(normalized).is_loopback
+    except Exception:
+        return False
+
+
+def _normalize_origin(url: str) -> str:
+    try:
+        parsed = urlparse(url)
+        if not parsed.scheme or not parsed.netloc:
+            return ''
+        return f'{parsed.scheme}://{parsed.netloc}'
+    except Exception:
+        return ''
+
+
+def _append_origin(allowed: list, origin):
+    if origin and origin not in allowed:
+        allowed.append(origin)
+
+
+def _origin_matches_allowed(origin: str, allowed_origins: list) -> bool:
+    for allowed in allowed_origins:
+        if isinstance(allowed, str):
+            if origin == allowed:
+                return True
+            continue
+        try:
+            if allowed.match(origin):
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _add_origin_variants(allowed_exact: set[str], host: str, port: int | str | None = None):
+    if not isinstance(host, str) or not host.strip():
+        return
+    safe_host = host.strip()
+    hosts = {safe_host}
+    normalized_host = safe_host.strip('[]')
+    if ':' in normalized_host and safe_host == normalized_host:
+        hosts.add(f'[{normalized_host}]')
+    for candidate in hosts:
+        allowed_exact.add(f'http://{candidate}')
+        allowed_exact.add(f'https://{candidate}')
+        if port is not None:
+            allowed_exact.add(f'http://{candidate}:{port}')
+            allowed_exact.add(f'https://{candidate}:{port}')
+
+
+def _build_loopback_origin_patterns() -> list[re.Pattern[str]]:
+    return [
+        re.compile(r'^https?://(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d+)?$'),
+    ]
+
+
+def build_allowed_origins(config: dict) -> list:
     """Build the allowed origins list for CORS."""
     server_config = config.get('server', {})
     host = server_config.get('host', '127.0.0.1')
     port = server_config.get('port', 5000)
 
-    allowed: set[str] = {
-        f'http://localhost:{port}',
-        f'https://localhost:{port}',
-        f'http://127.0.0.1:{port}',
-        f'https://127.0.0.1:{port}',
-        f'http://0.0.0.0:{port}',
-        f'https://0.0.0.0:{port}',
-    }
+    allowed_exact: set[str] = set()
+    allowed_patterns: list[re.Pattern[str]] = []
+
+    _add_origin_variants(allowed_exact, 'localhost', port=port)
+    _add_origin_variants(allowed_exact, '127.0.0.1', port=port)
+    _add_origin_variants(allowed_exact, '0.0.0.0', port=port)
+    _add_origin_variants(allowed_exact, '::1', port=port)
+
+    if _is_loopback_host(str(host or '').strip()):
+        allowed_patterns.extend(_build_loopback_origin_patterns())
 
     # Always include the configured host; this is safe for CSRF checks because
     # the Origin header of a cross-site request will still be the attacker's origin.
     if isinstance(host, str) and host.strip():
-        safe_host = host.strip()
-        allowed.add(f'http://{safe_host}:{port}')
-        allowed.add(f'https://{safe_host}:{port}')
+        _add_origin_variants(allowed_exact, host, port=port)
 
     # Allow user-specified trusted domains (useful for reverse proxies / dev servers).
     # Accept either full origins (https://example.com:1234) or bare hosts (example.com).
@@ -311,16 +390,20 @@ def build_allowed_origins(config: dict) -> list[str]:
                 try:
                     parsed = urlparse(value)
                     if parsed.scheme and parsed.netloc:
-                        allowed.add(f'{parsed.scheme}://{parsed.netloc}')
+                        allowed_exact.add(f'{parsed.scheme}://{parsed.netloc}')
+                        if _is_loopback_host(parsed.hostname or ''):
+                            allowed_patterns.extend(_build_loopback_origin_patterns())
                 except Exception:
                     continue
             else:
-                allowed.add(f'http://{value}')
-                allowed.add(f'https://{value}')
-                allowed.add(f'http://{value}:{port}')
-                allowed.add(f'https://{value}:{port}')
+                _add_origin_variants(allowed_exact, value, port=port)
+                if _is_loopback_host(value):
+                    allowed_patterns.extend(_build_loopback_origin_patterns())
 
-    return sorted(allowed)
+    allowed: list = sorted(allowed_exact)
+    for pattern in allowed_patterns:
+        _append_origin(allowed, pattern)
+    return allowed
 
 
 def initialize_app():
@@ -354,66 +437,34 @@ def security_check():
     config = load_config()
     server_config = config.get('server', {})
 
-    def _is_loopback_host(hostname: str) -> bool:
-        if not hostname:
-            return False
-        if hostname.lower() == 'localhost':
-            return True
-        try:
-            return ipaddress.ip_address(hostname).is_loopback
-        except Exception:
-            return False
-
     # Basic CSRF guard for browser-based requests:
     # For state-changing API calls, require Origin/Referer to match allowed origins.
     if request.method in ('POST', 'PUT', 'PATCH', 'DELETE') and request.path.startswith('/api/'):
-        allowed = set(build_allowed_origins(config))
+        allowed = list(build_allowed_origins(config))
 
         # Also allow the current host origin in both http/https forms (covers opening the app via
         # 0.0.0.0 / LAN IP / hostname / proxy where scheme may differ).
         try:
-            allowed.add(f'http://{request.host}')
-            allowed.add(f'https://{request.host}')
-            allowed.add(f'{request.scheme}://{request.host}')
+            _append_origin(allowed, f'http://{request.host}')
+            _append_origin(allowed, f'https://{request.host}')
+            _append_origin(allowed, f'{request.scheme}://{request.host}')
         except Exception:
             pass
 
-        def _origin_from_url(url: str) -> str:
-            try:
-                parsed = urlparse(url)
-                if not parsed.scheme or not parsed.netloc:
-                    return ''
-                return f'{parsed.scheme}://{parsed.netloc}'
-            except Exception:
-                return ''
-
         origin = (request.headers.get('Origin') or '').strip()
-        origin_norm = _origin_from_url(origin) if origin else ''
-
-        server_host = str(server_config.get('host', '127.0.0.1') or '127.0.0.1').strip()
-        server_host_is_loopback = _is_loopback_host(server_host)
+        origin_norm = _normalize_origin(origin) if origin else ''
 
         if origin and origin.lower() == 'null':
             return jsonify({'error': 'Forbidden: invalid origin'}), 403
 
         if origin_norm:
-            if origin_norm not in allowed:
-                # Relaxation for common local dev workflows:
-                # - When the server is bound to loopback, allow any loopback/localhost Origin
-                #   even if it is on a different port (e.g., a local UI dev server).
-                try:
-                    parsed = urlparse(origin)
-                    origin_host = (parsed.hostname or '').strip()
-                except Exception:
-                    origin_host = ''
-
-                if not (server_host_is_loopback and _is_loopback_host(origin_host)):
-                    return jsonify({'error': 'Forbidden: invalid origin'}), 403
+            if not _origin_matches_allowed(origin_norm, allowed):
+                return jsonify({'error': 'Forbidden: invalid origin'}), 403
         else:
             referer = (request.headers.get('Referer') or '').strip()
             if referer:
-                ref_origin = _origin_from_url(referer)
-                if ref_origin and ref_origin not in allowed:
+                ref_origin = _normalize_origin(referer)
+                if ref_origin and not _origin_matches_allowed(ref_origin, allowed):
                     return jsonify({'error': 'Forbidden: invalid referer'}), 403
 
     # Check IP Whitelist
@@ -613,7 +664,9 @@ def backup_database_file():
 @app.route('/api/config', methods=['POST'])
 def update_config():
     """Update configuration (API keys, base URLs, etc) - stored in DB."""
-    data = request.get_json() or {}
+    data, error = _get_json_object_or_error()
+    if error:
+        return error
 
     # Update provider-specific settings
     if 'provider' in data:
@@ -645,7 +698,9 @@ def update_config():
 @app.route('/api/config/key', methods=['POST'])
 def set_api_key():
     """Set API key for a provider."""
-    data = request.get_json() or {}
+    data, error = _get_json_object_or_error()
+    if error:
+        return error
     provider = data.get('provider')
     api_key = data.get('api_key', '')
 
@@ -660,7 +715,9 @@ def set_api_key():
 @app.route('/api/config/baseurl', methods=['POST'])
 def set_base_url():
     """Set base URL for a provider."""
-    data = request.get_json() or {}
+    data, error = _get_json_object_or_error()
+    if error:
+        return error
     provider = data.get('provider')
     base_url = data.get('base_url', '')
 
@@ -721,7 +778,9 @@ def get_prompt(name: str):
 @app.route('/api/prompts', methods=['POST'])
 def save_prompt():
     """Create or update a prompt template."""
-    data = request.get_json() or {}
+    data, error = _get_json_object_or_error()
+    if error:
+        return error
     name = data.get('name', '').strip()
     content = data.get('content', '')
     
@@ -963,7 +1022,9 @@ def _build_google_clients(api_key: str, base_url: str):
 @app.route('/api/generate', methods=['POST'])
 def generate_conversation():
     """Generate a conversation using configured LLM."""
-    data = request.get_json() or {}
+    data, error = _get_json_object_or_error()
+    if error:
+        return error
     prompt = data.get('prompt', '')
     provider = data.get('provider', 'openai')
     model = data.get('model', 'gpt-4o')
@@ -1097,7 +1158,9 @@ def generate_google(prompt: str, model: str, temperature: float, config: dict, c
 @app.route('/api/save', methods=['POST'])
 def save_conversation_endpoint():
     """Save a conversation to wanted or rejected folder."""
-    data = request.get_json() or {}
+    data, error = _get_json_object_or_error()
+    if error:
+        return error
     conversation = data.get('conversation', {})
     folder = data.get('folder', 'wanted')  # 'wanted' or 'rejected'
     metadata = data.get('metadata', {})
@@ -1142,7 +1205,9 @@ def save_conversation_endpoint():
 @app.route('/api/save/bulk', methods=['POST'])
 def save_bulk_conversations():
     """Save multiple conversations at once (for bulk generation review)."""
-    data = request.get_json() or {}
+    data, error = _get_json_object_or_error()
+    if error:
+        return error
     items = data.get('items', [])
     folder = data.get('folder', 'wanted')
 
@@ -1259,7 +1324,9 @@ def delete_export(format: str, filename: str):
 @validate_export_params
 def rename_export(format: str, filename: str):
     '''Rename an exported dataset.'''
-    data = request.get_json() or {}
+    data, error = _get_json_object_or_error()
+    if error:
+        return error
     new_filename = data.get('new_name', '')
     new_filename = re.sub(r'[^a-zA-Z0-9_.-]', '', new_filename)
     if not new_filename or new_filename.startswith('.') or not new_filename.endswith('.jsonl'):
@@ -1452,7 +1519,9 @@ def move_conversation(conv_id: str):
     if not is_safe_id(conv_id):
         return jsonify({'error': 'Invalid conversation ID'}), 400
 
-    data = request.get_json() or {}
+    data, error = _get_json_object_or_error()
+    if error:
+        return error
     from_folder = data.get('from', 'wanted')
     to_folder = data.get('to', 'rejected')
 
@@ -1484,12 +1553,9 @@ def delete_conversation(conv_id: str):
 @app.route('/api/conversations/bulk-delete', methods=['POST'])
 def bulk_delete_conversations():
     """Bulk delete conversations."""
-    try:
-        data = _get_json_object()
-    except BadRequest:
-        return jsonify({'error': 'Invalid JSON payload'}), 400
-    if data is None:
-        return jsonify({'error': 'Invalid JSON payload'}), 400
+    data, error = _get_json_object_or_error()
+    if error:
+        return error
     ids = data.get('ids', [])
     folder = data.get('folder', 'wanted')
 
@@ -1502,14 +1568,15 @@ def bulk_delete_conversations():
     invalid = []
     safe_ids = []
     for raw_id in ids:
-        if isinstance(raw_id, str):
-            raw_id = raw_id.strip()
-            if not raw_id:
-                invalid.append(raw_id)
-                continue
+        if not isinstance(raw_id, str):
+            invalid.append(raw_id)
+            continue
+        raw_id = raw_id.strip()
+        if not raw_id:
+            invalid.append(raw_id)
+            continue
         if not is_safe_id(raw_id):
-            if isinstance(raw_id, str):
-                invalid.append(raw_id)
+            invalid.append(raw_id)
             continue
         safe_ids.append(raw_id)
 
@@ -1528,12 +1595,9 @@ def bulk_delete_conversations():
 @app.route('/api/conversations/bulk-move', methods=['POST'])
 def bulk_move_conversations():
     """Bulk move conversations."""
-    try:
-        data = _get_json_object()
-    except BadRequest:
-        return jsonify({'error': 'Invalid JSON payload'}), 400
-    if data is None:
-        return jsonify({'error': 'Invalid JSON payload'}), 400
+    data, error = _get_json_object_or_error()
+    if error:
+        return error
     ids = data.get('ids', [])
     from_folder = data.get('from', 'wanted')
     to_folder = data.get('to', 'rejected')
@@ -1543,17 +1607,18 @@ def bulk_move_conversations():
 
     if not isinstance(ids, list):
         return jsonify({'error': 'ids must be an array of conversation IDs'}), 400
-    invalid: list[str] = []
+    invalid = []
     safe_ids: list[str] = []
     for raw_id in ids:
-        if isinstance(raw_id, str):
-            raw_id = raw_id.strip()
-            if not raw_id:
-                invalid.append(raw_id)
-                continue
+        if not isinstance(raw_id, str):
+            invalid.append(raw_id)
+            continue
+        raw_id = raw_id.strip()
+        if not raw_id:
+            invalid.append(raw_id)
+            continue
         if not is_safe_id(raw_id):
-            if isinstance(raw_id, str):
-                invalid.append(raw_id)
+            invalid.append(raw_id)
             continue
         safe_ids.append(raw_id)
 
@@ -1576,7 +1641,9 @@ def bulk_move_conversations():
 def list_models():
     """Fetch available models from provider."""
     if request.method == 'POST':
-        data = request.get_json() or {}
+        data, error = _get_json_object_or_error()
+        if error:
+            return error
         provider = data.get('provider', 'openai')
         credentials_override = normalize_credentials_override(data.get('credentials_override'))
     else:
@@ -1688,7 +1755,9 @@ def fetch_google_models(provider_config: dict) -> list:
 @app.route('/api/generate/stream', methods=['POST'])
 def generate_stream():
     """Generate conversation with streaming response (SSE)."""
-    data = request.get_json() or {}
+    data, error = _get_json_object_or_error()
+    if error:
+        return error
     prompt = data.get('prompt', '')
     provider = data.get('provider', 'openai')
     model = data.get('model', 'gpt-4o')
@@ -1855,7 +1924,9 @@ def get_presets():
 @app.route('/api/presets', methods=['POST'])
 def save_preset():
     """Save a new variable preset."""
-    data = request.get_json() or {}
+    data, error = _get_json_object_or_error()
+    if error:
+        return error
     name = data.get('name', '')
     values = data.get('values', {})
     overwrite = data.get('overwrite', True)
@@ -1934,7 +2005,9 @@ def list_credentials(provider: str):
 def save_credential_key(provider: str):
     if provider not in VALID_PROVIDERS:
         return jsonify({'error': 'Invalid provider'}), 400
-    data = request.get_json() or {}
+    data, error = _get_json_object_or_error()
+    if error:
+        return error
     name = (data.get('name') or '').strip()
     api_key = (data.get('api_key') or '').strip()
     overwrite = bool(data.get('overwrite', True))
@@ -1964,7 +2037,9 @@ def delete_credential_key(provider: str, name: str):
 def save_credential_url(provider: str):
     if provider not in VALID_PROVIDERS:
         return jsonify({'error': 'Invalid provider'}), 400
-    data = request.get_json() or {}
+    data, error = _get_json_object_or_error()
+    if error:
+        return error
     name = (data.get('name') or '').strip()
     base_url = (data.get('base_url') or '').strip()
     overwrite = bool(data.get('overwrite', True))
@@ -1994,7 +2069,9 @@ def delete_credential_url(provider: str, name: str):
 def apply_credentials(provider: str):
     if provider not in VALID_PROVIDERS:
         return jsonify({'error': 'Invalid provider'}), 400
-    data = request.get_json() or {}
+    data, error = _get_json_object_or_error()
+    if error:
+        return error
     key_name = data.get('key_name', None)
     url_name = data.get('url_name', None)
 
@@ -2068,7 +2145,9 @@ def get_drafts():
 @app.route('/api/drafts', methods=['POST'])
 def save_draft_endpoint():
     """Save drafts for cross-device sync (per-session)."""
-    data = request.get_json() or {}
+    data, error = _get_json_object_or_error()
+    if error:
+        return error
     session_id = data.get('_sessionId', 'default')
 
     # Only save a whitelist of fields to avoid bloat
@@ -2135,7 +2214,9 @@ def get_export_presets():
 @app.route('/api/export-presets', methods=['POST'])
 def save_export_preset():
     """Save an export system prompt preset."""
-    data = request.get_json() or {}
+    data, error = _get_json_object_or_error()
+    if error:
+        return error
     name = data.get('name', '').strip()
     prompt = data.get('prompt', '')
     overwrite = data.get('overwrite', True)
@@ -2168,7 +2249,9 @@ def get_chat_presets():
 @app.route('/api/chat-presets', methods=['POST'])
 def save_chat_preset():
     """Save a chat system prompt preset."""
-    data = request.get_json() or {}
+    data, error = _get_json_object_or_error()
+    if error:
+        return error
     name = data.get('name', '').strip()
     prompt = data.get('prompt', '')
     overwrite = data.get('overwrite', True)
@@ -2237,7 +2320,9 @@ def get_review_queue_position(item_id: str):
 @app.route('/api/review-queue', methods=['POST'])
 def add_to_review_queue():
     """Add one or more items to the review queue."""
-    data = request.get_json() or {}
+    data, error = _get_json_object_or_error()
+    if error:
+        return error
     items = data.get('items', [])
 
     # Also support single-item POST
@@ -2270,7 +2355,9 @@ def remove_from_review_queue(item_id: str):
 @app.route('/api/review-queue/<item_id>', methods=['PUT'])
 def update_review_queue_item(item_id: str):
     """Update a specific review queue item after inline edits."""
-    data = request.get_json() or {}
+    data, error = _get_json_object_or_error()
+    if error:
+        return error
     conversations = data.get('conversations', [])
     raw_text = data.get('raw_text', '')
     metadata = data.get('metadata', {})
@@ -2286,24 +2373,24 @@ def update_review_queue_item(item_id: str):
 @app.route('/api/review-queue/bulk-delete', methods=['POST'])
 def bulk_remove_from_review_queue():
     """Bulk remove items from the review queue."""
-    try:
-        data = _get_json_object()
-    except BadRequest:
-        return jsonify({'error': 'Invalid JSON payload'}), 400
-    if data is None:
-        return jsonify({'error': 'Invalid JSON payload'}), 400
+    data, error = _get_json_object_or_error()
+    if error:
+        return error
     ids = data.get('ids', [])
     if not isinstance(ids, list):
         return jsonify({'error': 'ids must be an array of review queue item IDs'}), 400
 
-    invalid: list[str] = []
+    invalid = []
     safe_ids: list[str] = []
     for raw_id in ids:
-        if not isinstance(raw_id, str) or not raw_id.strip():
-            if isinstance(raw_id, str):
-                invalid.append(raw_id)
+        if not isinstance(raw_id, str):
+            invalid.append(raw_id)
             continue
-        safe_ids.append(raw_id.strip())
+        raw_id = raw_id.strip()
+        if not raw_id:
+            invalid.append(raw_id)
+            continue
+        safe_ids.append(raw_id)
 
     deleted = db.bulk_remove_from_review_queue(safe_ids)
     deleted_set = set(deleted)

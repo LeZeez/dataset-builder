@@ -428,26 +428,28 @@ def bulk_delete_conversations(ids: list, folder: str) -> list:
     if not ids:
         return []
 
-    placeholders = ','.join('?' * len(ids))
+    unique_ids: list[str] = []
+    seen: set[str] = set()
+    for raw_id in ids:
+        if not isinstance(raw_id, str) or not raw_id:
+            continue
+        if raw_id in seen:
+            continue
+        unique_ids.append(raw_id)
+        seen.add(raw_id)
+
+    if not unique_ids:
+        return []
+
+    placeholders = ','.join('?' * len(unique_ids))
     with get_db() as conn:
         rows = conn.execute(
-            f"SELECT id FROM conversations WHERE folder = ? AND id IN ({placeholders})",
-            [folder, *ids]
+            f"DELETE FROM conversations WHERE folder = ? AND id IN ({placeholders}) RETURNING id",
+            [folder, *unique_ids],
         ).fetchall()
-        matched_ids = {row['id'] for row in rows}
-        deleted_ids = []
-        seen_ids = set()
-        for conv_id in ids:
-            if conv_id in matched_ids and conv_id not in seen_ids:
-                deleted_ids.append(conv_id)
-                seen_ids.add(conv_id)
-
+        deleted_lookup = {row['id']: row['id'] for row in rows}
+        deleted_ids = [deleted_lookup[conv_id] for conv_id in unique_ids if conv_id in deleted_lookup]
         if deleted_ids:
-            deleted_placeholders = ','.join('?' * len(deleted_ids))
-            conn.execute(
-                f"DELETE FROM conversations WHERE folder = ? AND id IN ({deleted_placeholders})",
-                [folder, *deleted_ids]
-            )
             _invalidate_stats_cache()
 
     return deleted_ids
@@ -458,29 +460,32 @@ def bulk_move_conversations(ids: list, from_folder: str, to_folder: str) -> list
     if not ids:
         return []
 
+    unique_ids: list[str] = []
+    seen: set[str] = set()
+    for raw_id in ids:
+        if not isinstance(raw_id, str) or not raw_id:
+            continue
+        if raw_id in seen:
+            continue
+        unique_ids.append(raw_id)
+        seen.add(raw_id)
+
+    if not unique_ids:
+        return []
+
     now = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
-    placeholders = ','.join('?' * len(ids))
+    placeholders = ','.join('?' * len(unique_ids))
     with get_db() as conn:
         rows = conn.execute(
-            f"SELECT id FROM conversations WHERE folder = ? AND id IN ({placeholders})",
-            [from_folder, *ids]
+            f"""UPDATE conversations
+                SET folder = ?, updated_at = ?
+                WHERE folder = ? AND id IN ({placeholders})
+                RETURNING id""",
+            [to_folder, now, from_folder, *unique_ids],
         ).fetchall()
-        matched_ids = {row['id'] for row in rows}
-        moved_ids = []
-        seen_ids = set()
-        for conv_id in ids:
-            if conv_id in matched_ids and conv_id not in seen_ids:
-                moved_ids.append(conv_id)
-                seen_ids.add(conv_id)
-
+        moved_lookup = {row['id']: row['id'] for row in rows}
+        moved_ids = [moved_lookup[conv_id] for conv_id in unique_ids if conv_id in moved_lookup]
         if moved_ids:
-            moved_placeholders = ','.join('?' * len(moved_ids))
-            conn.execute(
-                f"""UPDATE conversations
-                    SET folder = ?, updated_at = ?
-                    WHERE folder = ? AND id IN ({moved_placeholders})""",
-                [to_folder, now, from_folder, *moved_ids]
-            )
             _invalidate_stats_cache()
 
     return moved_ids
