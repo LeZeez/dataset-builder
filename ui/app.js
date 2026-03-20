@@ -3424,8 +3424,8 @@ function splitRawConversationBlocks(text) {
 }
 
 function buildGenerateMetadata({
-    promptResolved = state.generate.lastResolvedPrompt || '',
-    macroTrace = state.generate.lastMacroTrace,
+    promptResolved = null,
+    macroTrace = null,
     generatedAt = null,
     rejectReason = null
 } = {}) {
@@ -3434,11 +3434,11 @@ function buildGenerateMetadata({
         model: getModelValue(),
         temperature: parseFloat(els.temperature.value),
         prompt_template: state.currentPromptName,
-        prompt_resolved: promptResolved,
-        macro_trace: safeJsonClone(macroTrace, null),
         variables: safeJsonClone(state.generate.variables, {}),
         custom_params: safeJsonClone(state.customParams, {})
     };
+    if (promptResolved !== null) metadata.prompt_resolved = promptResolved;
+    if (macroTrace !== null) metadata.macro_trace = safeJsonClone(macroTrace, null);
     if (generatedAt) metadata.generated_at = generatedAt;
     if (rejectReason) metadata.reject_reason = rejectReason;
     return metadata;
