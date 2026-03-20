@@ -95,6 +95,8 @@ def _apply_system_prompt_mode(conv_data: dict, system_prompt: str | None, system
             else:
                 messages[idx]["value"] = f"{existing}\n\n{prompt}"
         else:
+            if prompt_is_blank:
+                return
             messages.insert(0, {"from": "system", "value": prompt})
         return
 
