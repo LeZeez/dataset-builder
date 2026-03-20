@@ -1709,9 +1709,6 @@ function renderPromptSelect() {
         }
         state.currentPromptName = '';
     }
-        }
-        state.currentPromptName = '';
-    }
 
     // First-run convenience: auto-load Default when nothing is selected and the editor is empty.
     const defaultName = 'Default';
@@ -3031,10 +3028,13 @@ async function handleBulkMove(from, to) {
         });
 
         await loadFilesModal(from, { reset: true });
+        const safeFailedIds = uniqueFailed.filter(isSafeConversationId);
         state.filesModal.selectedIds = filterSelectableIdsToLoadedItems(
             state.filesModal.files,
-            uniqueFailed.filter(isSafeConversationId)
+            safeFailedIds
         );
+        const remainingFailed = safeFailedIds.filter(id => !state.filesModal.selectedIds.has(id));
+        setFilesModalPendingSelection(remainingFailed);
         refreshSelectableListUI(els.filesModalList, state.filesModal);
         updateFilesModalCount();
         loadStats();
@@ -3172,7 +3172,10 @@ async function handleBulkDelete(folder) {
 
 	        // Keep failed items selected so the user can retry.
 	        await loadFilesModal(folder, { reset: true });
-	        state.filesModal.selectedIds = filterSelectableIdsToLoadedItems(state.filesModal.files, uniqueFailed);
+	        const safeFailedIds = uniqueFailed.filter(isSafeConversationId);
+	        state.filesModal.selectedIds = filterSelectableIdsToLoadedItems(state.filesModal.files, safeFailedIds);
+	        const remainingFailed = safeFailedIds.filter(id => !state.filesModal.selectedIds.has(id));
+	        setFilesModalPendingSelection(remainingFailed);
 	        refreshSelectableListUI(els.filesModalList, state.filesModal);
 	        updateFilesModalCount();
 	        loadStats();
@@ -6285,7 +6288,6 @@ async function applyDeferredDraftState(draft) {
         const pageOffset = Math.floor(absoluteIndex / reviewPageSize) * reviewPageSize;
         state.review.pageOffset = pageOffset;
         await loadReviewQueue({ reset: true, targetAbsoluteIndex: absoluteIndex });
-    } else if (Number.isFinite(Number(draft.review.pageOffset))) {
     } else if (Number.isFinite(Number(draft.review.pageOffset))) {
         state.review.pageOffset = Math.max(0, Number(draft.review.pageOffset));
     }
