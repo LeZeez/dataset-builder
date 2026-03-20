@@ -3222,7 +3222,7 @@ async function loadConversation(id, folder) {
         if (res.ok) {
             const conv = await res.json();
             state.generate.conversation = conv;
-            setGenerateRawText(conversationToRaw(conv.conversations));
+            setGenerateRawText(conversationToRaw(conv.conversations), { persist: true });
             renderConversation(conv.conversations);
             updateTurnCount(countConversationTurns(conv.conversations));
             enableActionButtons();
@@ -3397,10 +3397,14 @@ function dismissModelActivity() {
 }
 
 // ============ GENERATION (Single & Bulk) ============
-function setGenerateRawText(rawText) {
+function setGenerateRawText(rawText, { persist = false } = {}) {
     const next = String(rawText ?? '');
     state.generate.rawText = next;
     if (els.conversationEdit) els.conversationEdit.value = next;
+    if (persist) {
+        syncEngine.markDirty();
+        debouncedSaveDraft();
+    }
     return next;
 }
 
@@ -3480,8 +3484,17 @@ function renderGenerateMultiConversationNotice(count) {
 }
 
 function syncGenerateActionButtons() {
-    if (hasSavableGenerateContent()) enableActionButtons();
+    if (!state.generate.isLoading && hasSavableGenerateContent()) enableActionButtons();
     else disableActionButtons();
+}
+
+let syncGenerateActionButtonsTimer = null;
+function debouncedSyncGenerateActionButtons(delay = 120) {
+    if (syncGenerateActionButtonsTimer) clearTimeout(syncGenerateActionButtonsTimer);
+    syncGenerateActionButtonsTimer = setTimeout(() => {
+        syncGenerateActionButtonsTimer = null;
+        syncGenerateActionButtons();
+    }, delay);
 }
 
 async function generate() {
@@ -3511,6 +3524,7 @@ async function generate() {
     els.generateBtn.classList.add('btn-danger');
     els.generateBtn.classList.remove('btn-primary');
     els.generateBtn.textContent = 'Stop';
+    syncGenerateActionButtons();
 
     const promptText = applyVariables(els.systemPrompt.value);
     state.generate.lastResolvedPrompt = promptText;
@@ -3566,16 +3580,21 @@ async function generate() {
                     generatedAt: new Date().toISOString()
                 })
             });
-            if (added.length > 0) {
+            if (added.length === blocks.length) {
                 toast(`Added ${added.length} conversations to review queue`, 'success');
                 resetGenerateTab();
                 await saveRecoveryDraft('generateQueued');
+            } else if (added.length > 0) {
+                setGenerateRawText(extractedText, { persist: true });
+                parseAndRender();
+                toast(`Added ${added.length}/${blocks.length} conversations to review queue. Kept the remaining blocks in Generate.`, 'warning');
+                await saveRecoveryDraft('generateQueuedPartial');
             } else {
-                setGenerateRawText(extractedText);
+                setGenerateRawText(extractedText, { persist: true });
                 parseAndRender();
             }
         } else {
-            setGenerateRawText(extractedText);
+            setGenerateRawText(extractedText, { persist: true });
             parseAndRender();
         }
     } catch (e) {
@@ -3599,6 +3618,7 @@ async function generate() {
         els.generateBtn.classList.remove('btn-danger');
         els.generateBtn.classList.add('btn-primary');
         els.generateBtn.textContent = 'Generate';
+        syncGenerateActionButtons();
     }
 }
 
@@ -3942,12 +3962,17 @@ async function saveConversation(folder, reason = null) {
         const { added } = await queueRawConversations(rawText, {
             metadata: buildGenerateMetadata({ rejectReason: reason })
         });
-        if (added.length > 0) {
+        if (added.length === blocks.length) {
             toast(`Added ${added.length} conversations to review queue`, 'success');
             hideSaveIndicator('Queued ✓');
             resetGenerateTab();
             await saveRecoveryDraft('saveConversationQueue');
             switchTab('review');
+        } else if (added.length > 0) {
+            setGenerateRawText(rawText, { persist: true });
+            parseAndRender();
+            toast(`Added ${added.length}/${blocks.length} conversations to review queue. Kept the remaining blocks in Generate.`, 'warning');
+            await saveRecoveryDraft('saveConversationQueuePartial');
         } else {
             toast('No valid conversations found to add to the review queue', 'info');
         }
@@ -3994,7 +4019,7 @@ function hideRejectModal() { els.rejectModal.classList.add('hidden'); }
 
 function resetGenerateTab() {
     state.generate.conversation = null;
-    setGenerateRawText('');
+    setGenerateRawText('', { persist: true });
     renderConversation([]);
     updateTurnCount(0);
     disableActionButtons();
@@ -7429,7 +7454,7 @@ function setupEventListeners() {
     els.conversationEdit.addEventListener('input', () => {
         if (!state.generate.isEditing) return;
         setGenerateRawText(els.conversationEdit.value);
-        syncGenerateActionButtons();
+        debouncedSyncGenerateActionButtons();
         debouncedSaveDraft();
     });
 
