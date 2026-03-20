@@ -23,13 +23,21 @@ def parse_minimal_format(text: str, conv_id: str | None = None, metadata: dict |
         if not block:
             continue
 
-        match = re.match(r'^(user|gpt):\s*(.*)', block, re.DOTALL)
+        match = re.match(r'^(user|gpt|system):\s*(.*)', block, re.DOTALL)
         if match:
             role, content = match.groups()
             conversations.append({
-                "from": "human" if role == "user" else "gpt",
+                "from": "human" if role == "user" else ("system" if role == "system" else "gpt"),
                 "value": content.strip()
             })
+
+    # Normalize system messages to the front (Alpaca export only consumes a leading system prompt).
+    # Preserve relative order within system vs non-system messages.
+    has_nonleading_system = any((m.get("from") == "system") and idx != 0 for idx, m in enumerate(conversations))
+    if has_nonleading_system:
+        system_messages = [m for m in conversations if m.get("from") == "system"]
+        non_system_messages = [m for m in conversations if m.get("from") != "system"]
+        conversations = system_messages + non_system_messages
 
     return {
         "id": conv_id or "",

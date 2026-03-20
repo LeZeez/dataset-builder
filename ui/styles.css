@@ -4,6 +4,7 @@
     --bg-glass-light: rgba(35, 38, 50, 0.5);
     --text-primary: #f0f0f5;
     --text-secondary: #8888aa;
+    --text-muted: var(--text-secondary);
     --accent: #7c3aed;
     --accent-glow: rgba(124, 58, 237, 0.4);
     --success: #22c55e;
@@ -1517,6 +1518,11 @@ kbd {
     width: 95%;
 }
 
+.export-mode-modal-content {
+    max-width: 720px;
+    width: 95%;
+}
+
 .popup-modal-content {
     max-width: 520px;
     width: 92%;
@@ -1559,6 +1565,55 @@ kbd {
     display: flex;
     flex-direction: column;
     gap: 0.6rem;
+}
+
+.mode-cards {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 0.6rem;
+}
+
+.mode-card {
+    display: flex;
+    gap: 0.75rem;
+    padding: 0.75rem;
+    border: 1px solid var(--border-glass);
+    border-radius: 12px;
+    background: rgba(255, 255, 255, 0.04);
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s;
+}
+
+.mode-card:hover {
+    background: rgba(255, 255, 255, 0.06);
+    border-color: rgba(255, 255, 255, 0.18);
+}
+
+.mode-card input[type="radio"] {
+    margin-top: 0.2rem;
+    flex: 0 0 auto;
+}
+
+.mode-card-title {
+    font-weight: 600;
+    margin-bottom: 0.15rem;
+}
+
+.mode-card-desc {
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    line-height: 1.35;
+}
+
+.mode-card-example {
+    margin: 0.45rem 0 0;
+    padding: 0.55rem 0.7rem;
+    border-radius: 10px;
+    border: 1px solid var(--border-glass);
+    background: rgba(0, 0, 0, 0.25);
+    font-size: 0.78rem;
+    color: var(--text-secondary);
+    white-space: pre-wrap;
 }
 
 .export-selection {
@@ -1746,6 +1801,61 @@ kbd {
     text-overflow: ellipsis;
     white-space: nowrap;
     font-weight: 500;
+}
+
+.bulk-run-preview {
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
+    min-width: 0;
+}
+
+.bulk-run-preview > span {
+    flex: 0 0 auto;
+}
+
+.bulk-run-preview .bulk-run-detail {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.bulk-status-pill {
+    font-size: 0.65rem;
+    padding: 0.06rem 0.38rem;
+    border-radius: 999px;
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    background: rgba(255, 255, 255, 0.06);
+    color: rgba(255, 255, 255, 0.82);
+    letter-spacing: 0.01em;
+}
+
+.bulk-status-thinking {
+    background: rgba(96, 165, 250, 0.12);
+    border-color: rgba(96, 165, 250, 0.22);
+}
+
+.bulk-status-writing {
+    background: rgba(124, 58, 237, 0.18);
+    border-color: rgba(124, 58, 237, 0.30);
+}
+
+.bulk-status-done {
+    background: rgba(34, 197, 94, 0.12);
+    border-color: rgba(34, 197, 94, 0.22);
+}
+
+.bulk-status-error {
+    background: rgba(239, 68, 68, 0.14);
+    border-color: rgba(239, 68, 68, 0.24);
+}
+
+.bulk-status-canceled {
+    background: rgba(255, 255, 255, 0.08);
+    border-color: rgba(255, 255, 255, 0.16);
+    color: rgba(255, 255, 255, 0.70);
 }
 
 .export-file-meta {
@@ -1969,6 +2079,13 @@ kbd {
 
 .macros-tab-content.active {
     display: flex;
+}
+
+.macros-state-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
 }
 
 /* Variables tab */
@@ -2333,6 +2450,22 @@ kbd {
     width: 140px;
 }
 
+.settings-row-control-col {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 0.35rem;
+    width: 100%;
+}
+
+.settings-inline-actions {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+    justify-content: flex-end;
+    margin-bottom: 0.65rem;
+}
+
 .hint {
     width: 18px;
     height: 18px;
@@ -2359,12 +2492,6 @@ kbd {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 0.8rem;
     margin-bottom: 0.7rem;
-}
-
-.settings-inline-actions {
-    display: flex;
-    gap: 0.5rem;
-    margin-bottom: 0.65rem;
 }
 
 .custom-params-summary {

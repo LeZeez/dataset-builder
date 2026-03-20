@@ -13,6 +13,7 @@ Provides API endpoints for:
 
 import argparse
 import hmac
+import hashlib
 import ipaddress
 import json
 import logging
@@ -38,7 +39,7 @@ from werkzeug.exceptions import HTTPException
 
 # Import our modules
 from scripts.parser import validate_conversation
-from scripts.exporter import export_dataset
+from scripts.exporter import export_dataset, to_sharegpt, to_openai, to_alpaca, preview_export_lines
 from scripts import database as db
 
 # Load config
@@ -46,8 +47,99 @@ CONFIG_PATH = Path('config.yaml')
 DATA_DIR = Path('data')
 VALID_FOLDERS = ('wanted', 'rejected')
 VALID_PROVIDERS = ('openai', 'anthropic', 'google')
+MAX_RESPONSE_BYTES = 4 * 1024 * 1024
+MAX_MESSAGE_FIELD_CHARS = 16_000
 
 _config_lock = threading.Lock()
+LOGGER = logging.getLogger(__name__)
+
+
+def _get_json_object():
+    """Return a JSON object body or an empty dict for an empty/invalidly absent body."""
+    data = request.get_json(silent=True)
+    if data is None:
+        return {}
+    if not isinstance(data, dict):
+        return None
+    return data
+
+
+def _parse_bool_flag(raw_value) -> bool:
+    """Parse booleans explicitly so string payloads like 'false' stay false."""
+    if isinstance(raw_value, bool):
+        return raw_value
+    if isinstance(raw_value, str):
+        normalized = raw_value.strip().lower()
+        if normalized in ('true', '1', 'yes', 'on'):
+            return True
+        if normalized in ('false', '0', 'no', 'off'):
+            return False
+    return False
+
+
+def _truncate_large_fields(value, max_chars: int = MAX_MESSAGE_FIELD_CHARS):
+    """Recursively cap large string payloads before returning them to the client."""
+    truncated = False
+
+    if isinstance(value, str):
+        if len(value) <= max_chars:
+            return value, False
+        return value[:max_chars] + "\n[truncated]", True
+
+    if isinstance(value, list):
+        items = []
+        for item in value:
+            capped_item, item_truncated = _truncate_large_fields(item, max_chars=max_chars)
+            items.append(capped_item)
+            truncated = truncated or item_truncated
+        return items, truncated
+
+    if isinstance(value, dict):
+        output = {}
+        for key, item in value.items():
+            capped_item, item_truncated = _truncate_large_fields(item, max_chars=max_chars)
+            output[key] = capped_item
+            truncated = truncated or item_truncated
+        return output, truncated
+
+    return value, False
+
+
+def _cap_paginated_response(item_key: str, items: list, total: int, limit: int, offset: int):
+    """Keep paginated JSON responses below a server-side byte ceiling."""
+    base_payload = {item_key: [], 'count' if item_key == 'queue' else 'total': total, 'limit': limit, 'offset': offset}
+    envelope_bytes = len(json.dumps(base_payload, ensure_ascii=False).encode('utf-8')) - 2
+
+    bounded_items = []
+    items_bytes = 2
+    fields_truncated = False
+    response_truncated = False
+
+    for item in items:
+        bounded_item, item_truncated = _truncate_large_fields(item)
+        item_bytes = len(json.dumps(bounded_item, ensure_ascii=False).encode('utf-8'))
+        next_total_bytes = envelope_bytes + items_bytes + item_bytes + (1 if bounded_items else 0)
+        if next_total_bytes > MAX_RESPONSE_BYTES:
+            response_truncated = True
+            break
+        bounded_items.append(bounded_item)
+        items_bytes += item_bytes + (1 if len(bounded_items) > 1 else 0)
+        fields_truncated = fields_truncated or item_truncated
+
+    if (fields_truncated or response_truncated) and items:
+        LOGGER.warning(
+            "Capped paginated response for %s at offset=%s limit=%s returned=%s total=%s field_truncated=%s response_truncated=%s",
+            item_key,
+            offset,
+            limit,
+            len(bounded_items),
+            total,
+            fields_truncated,
+            response_truncated,
+        )
+
+    oversized_single_item = bool(items and not bounded_items)
+    return bounded_items, (fields_truncated or response_truncated), oversized_single_item
 
 
 def is_safe_id(id_str: str) -> bool:
@@ -93,7 +185,10 @@ def setup_defaults():
                     'password': '',
                     'allow_local_network': True,
                     'trusted_domains': []
-                }
+                },
+                'database': {
+                    'path': 'data/dataset.db'
+                },
             }
             try:
                 with open(CONFIG_PATH, 'w', encoding='utf-8') as f:
@@ -102,6 +197,52 @@ def setup_defaults():
                 print("[Warning] Permission denied when creating config.yaml")
 
 setup_defaults()
+
+def ensure_config_defaults() -> dict:
+    """Ensure config.yaml has required default keys without overwriting user values."""
+    config = load_config()
+    if not isinstance(config, dict):
+        config = {}
+
+    changed = False
+
+    server_cfg = config.get('server')
+    if not isinstance(server_cfg, dict):
+        server_cfg = {}
+        config['server'] = server_cfg
+        changed = True
+
+    # Only fill missing keys; never override a user-provided value.
+    for k, v in {
+        'host': '127.0.0.1',
+        'port': 5000,
+        'allowed_ips': [],
+        'password': '',
+        'allow_local_network': True,
+        'trusted_domains': [],
+    }.items():
+        if k not in server_cfg:
+            server_cfg[k] = v
+            changed = True
+
+    db_cfg = config.get('database')
+    if not isinstance(db_cfg, dict):
+        db_cfg = {}
+        config['database'] = db_cfg
+        changed = True
+
+    if not isinstance(db_cfg.get('path'), str) or not db_cfg.get('path', '').strip():
+        db_cfg['path'] = 'data/dataset.db'
+        changed = True
+
+    if changed:
+        try:
+            save_config(config)
+        except Exception:
+            # Best-effort; avoid crashing server start because config is read-only.
+            LOGGER.exception("Failed to save config; continuing startup")
+
+    return config
 
 def load_config() -> dict:
     with _config_lock:
@@ -135,10 +276,12 @@ def build_allowed_origins(config: dict) -> list[str]:
 
     allowed_origins = [
         f'http://localhost:{port}',
-        f'http://127.0.0.1:{port}'
+        f'http://127.0.0.1:{port}',
+        f'http://0.0.0.0:{port}',
     ]
-    if host not in ('127.0.0.1', 'localhost', '0.0.0.0'):
-        allowed_origins.append(f'http://{host}:{port}')
+    # Always include the configured host; this is safe for CSRF checks because
+    # the Origin header of a cross-site request will still be the attacker's origin.
+    allowed_origins.append(f'http://{host}:{port}')
     return allowed_origins
 
 
@@ -152,7 +295,14 @@ def initialize_app():
     (DATA_DIR / 'prompts').mkdir(parents=True, exist_ok=True)
     Path('exports').mkdir(exist_ok=True)
 
-    config = load_config()
+    config = ensure_config_defaults()
+    # Configure SQLite path early so migrations/seed happen in the right file.
+    db_path = (config.get('database', {}) or {}).get('path') or 'data/dataset.db'
+    try:
+        db.set_db_path(Path(db_path))
+    except Exception:
+        # Fall back to default path if config is invalid.
+        db.set_db_path(Path('data/dataset.db'))
     db.init_db()
     db.seed_default_presets(Path(__file__).parent / 'defaults')
 
@@ -165,6 +315,51 @@ def security_check():
     """Ensure basic IP whitelisting and Basic Authentication if configured."""
     config = load_config()
     server_config = config.get('server', {})
+
+    # Basic CSRF guard for browser-based requests:
+    # For state-changing API calls, require Origin/Referer to match allowed origins.
+    if request.method in ('POST', 'PUT', 'PATCH', 'DELETE') and request.path.startswith('/api/'):
+        allowed = set(build_allowed_origins(config))
+
+        # Also allow the current host origin in both http/https forms (covers opening the app via
+        # 0.0.0.0 / LAN IP / hostname / proxy where scheme may differ).
+        try:
+            allowed.add(f'http://{request.host}')
+            allowed.add(f'https://{request.host}')
+            allowed.add(f'{request.scheme}://{request.host}')
+        except Exception:
+            pass
+
+        def _origin_from_url(url: str) -> str:
+            try:
+                parsed = urlparse(url)
+                if not parsed.scheme or not parsed.netloc:
+                    return ''
+                return f'{parsed.scheme}://{parsed.netloc}'
+            except Exception:
+                return ''
+
+        origin = (request.headers.get('Origin') or '').strip()
+        origin_norm = _origin_from_url(origin) if origin else ''
+
+        # Some browser contexts (e.g., file:// or sandboxed frames) can send Origin: null.
+        # Treat it as "missing" only for loopback clients to avoid breaking local-only workflows.
+        if origin and origin.lower() == 'null':
+            if request.remote_addr in ('127.0.0.1', '::1'):
+                origin = ''
+                origin_norm = ''
+            else:
+                return jsonify({'error': 'Forbidden: invalid origin'}), 403
+
+        if origin_norm:
+            if origin_norm not in allowed:
+                return jsonify({'error': 'Forbidden: invalid origin'}), 403
+        else:
+            referer = (request.headers.get('Referer') or '').strip()
+            if referer:
+                ref_origin = _origin_from_url(referer)
+                if ref_origin and ref_origin not in allowed:
+                    return jsonify({'error': 'Forbidden: invalid referer'}), 403
 
     # Check IP Whitelist
     allowed_ips = server_config.get('allowed_ips', [])
@@ -237,6 +432,124 @@ def get_config():
         if key and len(key) > 4:
             provider['api_key'] = '•' * 20 + key[-4:]
     return jsonify(safe_settings)
+
+@app.route('/api/server-config', methods=['GET'])
+def get_server_config():
+    """Get server-side configuration (config.yaml-backed)."""
+    config = ensure_config_defaults()
+    server_config = config.get('server', {}) or {}
+    database_config = config.get('database', {}) or {}
+    return jsonify({
+        'server': {
+            'host': server_config.get('host', '127.0.0.1'),
+            'port': server_config.get('port', 5000),
+            'allowed_ips': server_config.get('allowed_ips', []),
+            'password': '•' * 8 if server_config.get('password') else '',
+            'allow_local_network': bool(server_config.get('allow_local_network', True)),
+            'trusted_domains': server_config.get('trusted_domains', []),
+        },
+        'database': {
+            'path': database_config.get('path', 'data/dataset.db'),
+        }
+    })
+
+
+@app.route('/api/server-config', methods=['POST'])
+def update_server_config():
+    """Update server-side config (config.yaml-backed).
+
+    For database.path, this endpoint only validates and persists the new path.
+    A process restart is required to fully switch the live app to the new DB file.
+    """
+    data = _get_json_object()
+    if data is None:
+        return jsonify({'error': 'Invalid JSON payload'}), 400
+    config = ensure_config_defaults()
+    if not isinstance(config, dict):
+        config = {}
+
+    db_cfg = config.get('database', {}) if isinstance(config.get('database', {}), dict) else {}
+    desired_path = (data.get('database', {}) or {}).get('path')
+    if isinstance(desired_path, str):
+        desired_path = desired_path.strip()
+        if not desired_path:
+            return jsonify({'error': 'database.path is required'}), 400
+        # Basic guardrail: disallow null bytes
+        if '\x00' in desired_path:
+            return jsonify({'error': 'Invalid database.path'}), 400
+        db_cfg['path'] = desired_path
+        config['database'] = db_cfg
+
+        # Validate that we can open/create the file (without hot-swapping the live DB).
+        try:
+            import sqlite3
+            p = Path(desired_path)
+            if p.exists() and p.is_dir():
+                return jsonify({'error': 'database.path must be a file, not a directory'}), 400
+            p.parent.mkdir(parents=True, exist_ok=True)
+            with sqlite3.connect(str(p), timeout=1) as test_conn:
+                test_conn.execute("PRAGMA user_version")
+        except Exception as e:
+            return jsonify({'error': f'Failed to validate database.path: {e}'}), 400
+
+    save_config(config)
+    return jsonify({'success': True, 'restart_required': True})
+
+@app.route('/api/databases/list', methods=['GET'])
+def list_database_files():
+    """List candidate SQLite database files for the Settings → Databases chooser.
+
+    This is intentionally limited to known local workspace folders to avoid leaking server
+    filesystem structure.
+    """
+    config = ensure_config_defaults()
+    current = ((config.get('database', {}) or {}).get('path') or 'data/dataset.db').strip()
+    candidates: set[str] = set()
+    if current:
+        candidates.add(current)
+
+    roots = [Path('data'), Path('data') / 'backups', Path('benchmark')]
+    for root in roots:
+        try:
+            if root.exists() and root.is_dir():
+                for p in sorted(root.glob('*.db')):
+                    candidates.add(str(p))
+        except Exception:
+            continue
+
+    return jsonify({
+        'current': current,
+        'candidates': sorted(candidates),
+    })
+
+
+@app.route('/api/databases/backup', methods=['POST'])
+def backup_database_file():
+    """Create a safe SQLite backup copy of the current database into data/backups/."""
+    initialize_app()
+    src = Path(db.DB_PATH)
+    if not src.exists():
+        return jsonify({'error': f'Database not found: {src}'}), 404
+
+    backup_dir = DATA_DIR / 'backups'
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')
+    dest = backup_dir / f'dataset_backup_{ts}.db'
+
+    try:
+        import sqlite3
+        with sqlite3.connect(str(src), check_same_thread=False) as src_conn:
+            with sqlite3.connect(str(dest), check_same_thread=False) as dest_conn:
+                src_conn.backup(dest_conn)
+    except Exception as e:
+        try:
+            if dest.exists():
+                dest.unlink()
+        except Exception:
+            pass
+        return jsonify({'error': f'Backup failed: {e}'}), 500
+
+    return jsonify({'success': True, 'path': str(dest)})
 
 
 @app.route('/api/config', methods=['POST'])
@@ -911,10 +1224,26 @@ def export_dataset_endpoint(format: str):
         return jsonify({'error': 'Invalid format'}), 400
     
     try:
-        data = request.get_json() or {}
+        data = _get_json_object()
+        if data is None:
+            return jsonify({'error': 'Invalid JSON payload'}), 400
         selected_ids = data.get('ids', None)  # List of IDs or None for all
-        system_prompt = data.get('system_prompt', None)  # Override system prompt
+        if selected_ids is not None and not isinstance(selected_ids, list):
+            return jsonify({'error': 'ids must be an array of conversation IDs'}), 400
+        folder = data.get('folder', 'wanted')
+        if not is_valid_folder(folder):
+            return jsonify({'error': 'Invalid folder'}), 400
+        system_prompt = data.get('system_prompt', None)
+        system_prompt_mode = data.get('system_prompt_mode', None)
         filename = data.get('filename', None) # Optional custom filename
+        write_manifest = _parse_bool_flag(data.get('write_manifest', False))
+        prompt_source = data.get('prompt_source', '')
+        if system_prompt_mode == 'override':
+            system_prompt_mode = 'replace_all'
+        elif system_prompt_mode == 'strip':
+            system_prompt_mode = 'remove_all'
+        if system_prompt_mode not in ('keep', 'add_if_missing', 'replace_all', 'remove_all', 'prepend', 'append', None):
+            system_prompt_mode = None
         if filename:
             filename = re.sub(r'[^a-zA-Z0-9_.-]', '', filename)
             if not filename or filename.startswith('.'):
@@ -923,15 +1252,80 @@ def export_dataset_endpoint(format: str):
         
         output_path = export_dataset(
             output_dir='exports',
-            format=format,
+            export_format=format,
             selected_ids=selected_ids,
             system_prompt=system_prompt,
+            system_prompt_mode=system_prompt_mode,
             filename=filename,
-            folder='wanted'
+            folder=folder
         )
+        manifest_path = None
+        if write_manifest:
+            manifest = {
+                'created_at': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
+                'format': format,
+                'folder': folder,
+                'filename': output_path.name,
+                'selected_ids_count': (len(selected_ids) if isinstance(selected_ids, list) else None),
+                'system_prompt_provided': bool(system_prompt),
+                'system_prompt_sha256': hashlib.sha256((system_prompt or '').encode('utf-8')).hexdigest() if system_prompt else '',
+                'prompt_source': prompt_source if isinstance(prompt_source, str) else '',
+                'system_prompt_mode': system_prompt_mode if isinstance(system_prompt_mode, str) else '',
+            }
+            manifest_path = output_path.with_name(output_path.name + '.manifest.json')
+            with open(manifest_path, 'w', encoding='utf-8') as f:
+                json.dump(manifest, f, ensure_ascii=False, indent=2)
         return jsonify({
             'success': True,
-            'path': str(output_path)
+            'path': str(output_path),
+            'manifest_path': str(manifest_path) if manifest_path else ''
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/export-preview/<format>', methods=['POST'])
+def export_preview_endpoint(export_format: str | None = None, **route_params):
+    """Preview export conversion without writing files."""
+    if export_format is None:
+        export_format = route_params.get('format')
+    if export_format not in VALID_EXPORT_FORMATS:
+        return jsonify({'error': 'Invalid format'}), 400
+
+    data = _get_json_object()
+    if data is None:
+        return jsonify({'error': 'Invalid JSON payload'}), 400
+    selected_ids = data.get('ids', None)
+    if selected_ids is not None and not isinstance(selected_ids, list):
+        return jsonify({'error': 'ids must be an array of conversation IDs'}), 400
+    folder = data.get('folder', 'wanted')
+    if not is_valid_folder(folder):
+        return jsonify({'error': 'Invalid folder'}), 400
+    system_prompt = data.get('system_prompt', None)
+    system_prompt_mode = data.get('system_prompt_mode', None)
+    if system_prompt_mode == 'override':
+        system_prompt_mode = 'replace_all'
+    elif system_prompt_mode == 'strip':
+        system_prompt_mode = 'remove_all'
+    if system_prompt_mode not in ('keep', 'add_if_missing', 'replace_all', 'remove_all', 'prepend', 'append', None):
+        system_prompt_mode = None
+    try:
+        limit = max(1, min(int(data.get('limit', 20)), 200))
+    except Exception:
+        limit = 20
+
+    try:
+        total_conversations = db.count_conversations_for_export(folder=folder, ids=selected_ids)
+        conversations_iter = db.iter_conversations_for_export(folder=folder, ids=selected_ids)
+        preview = preview_export_lines(conversations_iter, export_format=export_format, system_prompt=system_prompt, system_prompt_mode=system_prompt_mode, limit=limit)
+
+        return jsonify({
+            'success': True,
+            'lines': preview.get('lines', []),
+            'total_conversations': total_conversations,
+            'total_entries': preview.get('total_entries', 0),
+            'truncated': bool(preview.get('truncated', False)),
+            'limit': preview.get('limit', limit)
         })
     except Exception as e:
         return jsonify({'error': str(e)}), 500
@@ -949,7 +1343,7 @@ def list_conversations():
     search = request.args.get('search', '').strip().lower()
     tag_filter = request.args.get('tag', '').strip()
     try:
-        limit = max(1, min(int(request.args.get('limit', 50)), 200))
+        limit = max(1, min(int(request.args.get('limit', 50)), 2000))
         offset = max(0, int(request.args.get('offset', 0)))
     except ValueError:
         return jsonify({'error': 'Invalid pagination parameters'}), 400
@@ -958,12 +1352,16 @@ def list_conversations():
         folder=folder, search=search, tag=tag_filter,
         limit=limit, offset=offset
     )
+    conversations, response_truncated, oversized_single_item = _cap_paginated_response('conversations', conversations, total, limit, offset)
+    if oversized_single_item:
+        return jsonify({'error': 'Response page too large; reduce limit'}), 413
 
     return jsonify({
         'conversations': conversations,
         'total': total,
         'limit': limit,
-        'offset': offset
+        'offset': offset,
+        'response_truncated': response_truncated
     })
 
 
@@ -1553,15 +1951,35 @@ def save_draft_endpoint():
     session_id = data.get('_sessionId', 'default')
 
     # Only save a whitelist of fields to avoid bloat
+    list_iterators = data.get('listIterators', {})
+    if not isinstance(list_iterators, dict):
+        list_iterators = {}
+    # Keep small: cap entries and coerce values to ints when possible.
+    safe_iterators = {}
+    for k, v in list(list_iterators.items())[:200]:
+        if not isinstance(k, str) or len(k) > 200:
+            continue
+        try:
+            safe_iterators[k] = int(v)
+        except Exception:
+            continue
+
+    macro_trace_last = data.get('macroTraceLast', None)
+    if not isinstance(macro_trace_last, dict):
+        macro_trace_last = None
+
     draft = {
         '_sessionId': session_id,
         'currentPromptName': data.get('currentPromptName', ''),
         'model': data.get('model', ''),
         'temperature': data.get('temperature'),
         'customParams': data.get('customParams', {}),
+        'listIterators': safe_iterators,
+        'macroTraceLast': macro_trace_last,
         'generate': {
             'prompt': data.get('generate', {}).get('prompt', ''),
             'variables': data.get('generate', {}).get('variables', {}),
+            'presetName': data.get('generate', {}).get('presetName', ''),
             'rawText': data.get('generate', {}).get('rawText', '')
         },
         'chat': {
@@ -1669,7 +2087,7 @@ def get_review_queue():
     search = request.args.get('search', '').strip()
     ids_only = request.args.get('ids_only', '').strip().lower() in ('1', 'true', 'yes')
     try:
-        limit = max(1, min(int(request.args.get('limit', 100)), 200))
+        limit = max(1, min(int(request.args.get('limit', 100)), 2000))
         offset = max(0, int(request.args.get('offset', 0)))
     except ValueError:
         return jsonify({'error': 'Invalid pagination parameters'}), 400
@@ -1679,7 +2097,20 @@ def get_review_queue():
         return jsonify({'ids': ids, 'count': total, 'limit': limit, 'offset': offset})
 
     queue, total = db.get_review_queue(limit=limit, offset=offset, search=search)
-    return jsonify({'queue': queue, 'count': total, 'limit': limit, 'offset': offset})
+    queue, response_truncated, oversized_single_item = _cap_paginated_response('queue', queue, total, limit, offset)
+    if oversized_single_item:
+        return jsonify({'error': 'Response page too large; reduce limit'}), 413
+    return jsonify({'queue': queue, 'count': total, 'limit': limit, 'offset': offset, 'response_truncated': response_truncated})
+
+
+@app.route('/api/review-queue-position/<item_id>', methods=['GET'])
+def get_review_queue_position(item_id: str):
+    """Get 0-based absolute position of an item in the review queue."""
+    pos = db.get_review_queue_position(item_id)
+    if pos is None:
+        return jsonify({'error': 'Item not found'}), 404
+    position, total = pos
+    return jsonify({'position': int(position), 'count': int(total)})
 
 
 @app.route('/api/review-queue', methods=['POST'])
