@@ -4,6 +4,7 @@
     --bg-glass-light: rgba(35, 38, 50, 0.5);
     --text-primary: #f0f0f5;
     --text-secondary: #8888aa;
+    --text-muted: var(--text-secondary);
     --accent: #7c3aed;
     --accent-glow: rgba(124, 58, 237, 0.4);
     --success: #22c55e;
@@ -2462,6 +2463,7 @@ kbd {
     gap: 0.5rem;
     align-items: center;
     justify-content: flex-end;
+    margin-bottom: 0.65rem;
 }
 
 .hint {
@@ -2490,12 +2492,6 @@ kbd {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 0.8rem;
     margin-bottom: 0.7rem;
-}
-
-.settings-inline-actions {
-    display: flex;
-    gap: 0.5rem;
-    margin-bottom: 0.65rem;
 }
 
 .custom-params-summary {

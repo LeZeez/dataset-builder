@@ -4806,10 +4806,14 @@ async function applyDatabasePath() {
         });
         const data = await res.json().catch(() => ({}));
         if (!res.ok) throw new Error(data.error || 'Failed to apply database');
-        toast('Database path saved. Restart server if needed.', 'success');
+        const needsRestart = !!data.restart_required || !!data.restart_recommended;
+        toast(needsRestart ? 'Database path saved. Restart the server to switch databases.' : 'Database path saved.', 'success');
+        if (els.databasePathNote) {
+            els.databasePathNote.textContent = needsRestart
+                ? 'Restart the server to switch databases.'
+                : 'Database path updated.';
+        }
         hideSaveIndicator('Saved ✓');
-        // Reload UI state against the newly selected DB.
-        setTimeout(() => window.location.reload(), 450);
     } catch (e) {
         toast(e.message || 'Failed to apply database', 'error');
         hideSaveIndicator('Apply failed');

@@ -367,8 +367,8 @@ def get_server_config():
 def update_server_config():
     """Update server-side config (config.yaml-backed).
 
-    For database.path, the new path is applied for new connections, but a server restart
-    is recommended to ensure all threads use the new DB file.
+    For database.path, this endpoint only validates and persists the new path.
+    A process restart is required to fully switch the live app to the new DB file.
     """
     data = request.get_json() or {}
     config = ensure_config_defaults()
@@ -387,15 +387,20 @@ def update_server_config():
         db_cfg['path'] = desired_path
         config['database'] = db_cfg
 
-        # Apply for new connections in the current process.
+        # Validate that we can open/create the file (without hot-swapping the live DB).
         try:
-            db.set_db_path(Path(desired_path))
-            db.init_db()
+            import sqlite3
+            p = Path(desired_path)
+            if p.exists() and p.is_dir():
+                return jsonify({'error': 'database.path must be a file, not a directory'}), 400
+            p.parent.mkdir(parents=True, exist_ok=True)
+            with sqlite3.connect(str(p), timeout=1) as test_conn:
+                test_conn.execute("PRAGMA user_version")
         except Exception as e:
-            return jsonify({'error': f'Failed to apply database.path: {e}'}), 400
+            return jsonify({'error': f'Failed to validate database.path: {e}'}), 400
 
     save_config(config)
-    return jsonify({'success': True, 'restart_recommended': True})
+    return jsonify({'success': True, 'restart_required': True})
 
 @app.route('/api/databases/list', methods=['GET'])
 def list_database_files():
@@ -1190,6 +1195,8 @@ def export_preview_endpoint(format: str):
 
     data = request.get_json() or {}
     selected_ids = data.get('ids', None)
+    if selected_ids is not None and not isinstance(selected_ids, list):
+        selected_ids = None
     folder = data.get('folder', 'wanted')
     if not is_valid_folder(folder):
         return jsonify({'error': 'Invalid folder'}), 400
@@ -1207,13 +1214,14 @@ def export_preview_endpoint(format: str):
         limit = 20
 
     try:
-        conversations = db.get_conversations_for_export(folder=folder, ids=selected_ids)
-        preview = preview_export_lines(conversations, format=format, system_prompt=system_prompt, system_prompt_mode=system_prompt_mode, limit=limit)
+        total_conversations = db.count_conversations_for_export(folder=folder, ids=selected_ids)
+        conversations_iter = db.iter_conversations_for_export(folder=folder, ids=selected_ids)
+        preview = preview_export_lines(conversations_iter, format=format, system_prompt=system_prompt, system_prompt_mode=system_prompt_mode, limit=limit)
 
         return jsonify({
             'success': True,
             'lines': preview.get('lines', []),
-            'total_conversations': len(conversations),
+            'total_conversations': total_conversations,
             'total_entries': preview.get('total_entries', 0),
             'truncated': bool(preview.get('truncated', False)),
             'limit': preview.get('limit', limit)

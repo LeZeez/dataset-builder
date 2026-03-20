@@ -8,7 +8,7 @@ import json
 import sys
 import time
 from pathlib import Path
-from typing import Literal
+from typing import Iterable, Literal
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -45,7 +45,7 @@ def _apply_system_prompt_mode(conv_data: dict, system_prompt: str | None, system
         # Backwards-compatible behavior:
         # - if a non-empty system prompt is provided: replace_all
         # - otherwise: keep original system messages
-        mode = "replace_all" if (system_prompt is not None and str(system_prompt) != "") else "keep"
+        mode = "replace_all" if (system_prompt is not None and str(system_prompt).strip() != "") else "keep"
 
     messages = conv_data.get("conversations", [])
     if not isinstance(messages, list):
@@ -59,6 +59,7 @@ def _apply_system_prompt_mode(conv_data: dict, system_prompt: str | None, system
         return
 
     prompt = "" if system_prompt is None else str(system_prompt)
+    prompt_is_blank = (prompt.strip() == "")
     system_indexes = [idx for idx, m in enumerate(messages) if isinstance(m, dict) and m.get("from") == "system"]
 
     if mode == "remove_all":
@@ -68,10 +69,14 @@ def _apply_system_prompt_mode(conv_data: dict, system_prompt: str | None, system
     if mode == "add_if_missing":
         if system_indexes:
             return
+        if prompt_is_blank:
+            return
         messages.insert(0, {"from": "system", "value": prompt})
         return
 
     if mode == "replace_all":
+        if prompt_is_blank:
+            return
         conv_data["conversations"] = [m for m in messages if isinstance(m, dict) and m.get("from") != "system"]
         conv_data["conversations"].insert(0, {"from": "system", "value": prompt})
         return
@@ -148,7 +153,7 @@ def to_alpaca(conv: dict) -> list[dict]:
 
 
 def preview_export_lines(
-    conversations: list[dict],
+    conversations: Iterable[dict],
     format: Literal["sharegpt", "openai", "alpaca"] = "sharegpt",
     system_prompt: str | None = None,
     system_prompt_mode: SystemPromptMode | None = None,
@@ -171,6 +176,20 @@ def preview_export_lines(
 
     safe_limit = max(1, min(int(limit), 200))
 
+    def _count_alpaca_pairs(messages: list) -> int:
+        if not isinstance(messages, list) or not messages:
+            return 0
+        start_idx = 1 if (messages and isinstance(messages[0], dict) and messages[0].get("from") == "system") else 0
+        count = 0
+        i = start_idx
+        while i < len(messages) - 1:
+            if isinstance(messages[i], dict) and isinstance(messages[i + 1], dict) and messages[i].get("from") == "human" and messages[i + 1].get("from") == "gpt":
+                count += 1
+                i += 2
+            else:
+                i += 1
+        return count
+
     for conv in conversations:
         conv_data = {
             "id": conv.get("id"),
@@ -180,24 +199,26 @@ def preview_export_lines(
 
         _apply_system_prompt_mode(conv_data, system_prompt, system_prompt_mode)
 
+        if format == "alpaca" and truncated:
+            # Fast-path counting without building full pair dicts once preview lines are already full.
+            total_entries += _count_alpaca_pairs(conv_data.get("conversations", []))
+            continue
+
         converted = converter(conv_data)
 
         if isinstance(converted, list):
             total_entries += len(converted)
             for item in converted:
-                if len(lines) >= safe_limit:
+                if len(lines) < safe_limit:
+                    lines.append(json.dumps(item, ensure_ascii=False))
+                else:
                     truncated = True
-                    break
-                lines.append(json.dumps(item, ensure_ascii=False))
         else:
             total_entries += 1
             if len(lines) < safe_limit:
                 lines.append(json.dumps(converted, ensure_ascii=False))
             else:
                 truncated = True
-
-        if truncated:
-            break
 
     return {
         "lines": lines,

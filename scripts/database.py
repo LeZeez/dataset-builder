@@ -1132,6 +1132,61 @@ def get_conversations_for_export(folder: str = 'wanted', ids: list | None = None
 
     return conversations
 
+
+def count_conversations_for_export(folder: str = 'wanted', ids: list[str] | None = None) -> int:
+    """Count conversations for export without loading message bodies."""
+    with get_db() as conn:
+        params: list = [folder]
+        query = "SELECT COUNT(*) as c FROM conversations WHERE folder = ?"
+        if ids is not None:
+            if not ids:
+                return 0
+            placeholders = ','.join('?' * len(ids))
+            query += f" AND id IN ({placeholders})"
+            params.extend(ids)
+        row = conn.execute(query, params).fetchone()
+    return int(row['c']) if row and row['c'] is not None else 0
+
+
+def iter_conversations_for_export(folder: str = 'wanted', ids: list[str] | None = None):
+    """Yield full conversations for export without materializing the entire result set.
+
+    Preserves requested ID order when `ids` is provided.
+    """
+    conn = _get_conn()
+    if ids is not None:
+        if not ids:
+            return
+        for conv_id in ids:
+            row = conn.execute(
+                "SELECT id, messages, metadata FROM conversations WHERE folder = ? AND id = ?",
+                (folder, conv_id),
+            ).fetchone()
+            if not row:
+                continue
+            yield {
+                'id': row['id'],
+                'conversations': json.loads(row['messages']),
+                'metadata': json.loads(row['metadata']) if row['metadata'] else {},
+            }
+        return
+
+    cursor = conn.execute(
+        """
+        SELECT id, messages, metadata
+        FROM conversations
+        WHERE folder = ?
+        ORDER BY created_at DESC
+        """,
+        (folder,),
+    )
+    for row in cursor:
+        yield {
+            'id': row['id'],
+            'conversations': json.loads(row['messages']),
+            'metadata': json.loads(row['metadata']) if row['metadata'] else {},
+        }
+
 def seed_default_presets(defaults_dir: Path):
     """Ensure the built-in presets exist in SQLite."""
     # Variable presets (Generate → Variables)

@@ -31,6 +31,14 @@ def parse_minimal_format(text: str, conv_id: str | None = None, metadata: dict |
                 "value": content.strip()
             })
 
+    # Normalize system messages to the front (Alpaca export only consumes a leading system prompt).
+    # Preserve relative order within system vs non-system messages.
+    has_nonleading_system = any((m.get("from") == "system") and idx != 0 for idx, m in enumerate(conversations))
+    if has_nonleading_system:
+        system_messages = [m for m in conversations if m.get("from") == "system"]
+        non_system_messages = [m for m in conversations if m.get("from") != "system"]
+        conversations = system_messages + non_system_messages
+
     return {
         "id": conv_id or "",
         "conversations": conversations,
