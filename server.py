@@ -47,6 +47,8 @@ CONFIG_PATH = Path('config.yaml')
 DATA_DIR = Path('data')
 VALID_FOLDERS = ('wanted', 'rejected')
 VALID_PROVIDERS = ('openai', 'anthropic', 'google')
+MAX_RESPONSE_BYTES = 4 * 1024 * 1024
+MAX_MESSAGE_FIELD_CHARS = 16_000
 
 _config_lock = threading.Lock()
 LOGGER = logging.getLogger(__name__)
@@ -73,6 +75,71 @@ def _parse_bool_flag(raw_value) -> bool:
         if normalized in ('false', '0', 'no', 'off'):
             return False
     return False
+
+
+def _truncate_large_fields(value, max_chars: int = MAX_MESSAGE_FIELD_CHARS):
+    """Recursively cap large string payloads before returning them to the client."""
+    truncated = False
+
+    if isinstance(value, str):
+        if len(value) <= max_chars:
+            return value, False
+        return value[:max_chars] + "\n[truncated]", True
+
+    if isinstance(value, list):
+        items = []
+        for item in value:
+            capped_item, item_truncated = _truncate_large_fields(item, max_chars=max_chars)
+            items.append(capped_item)
+            truncated = truncated or item_truncated
+        return items, truncated
+
+    if isinstance(value, dict):
+        output = {}
+        for key, item in value.items():
+            capped_item, item_truncated = _truncate_large_fields(item, max_chars=max_chars)
+            output[key] = capped_item
+            truncated = truncated or item_truncated
+        return output, truncated
+
+    return value, False
+
+
+def _cap_paginated_response(item_key: str, items: list, total: int, limit: int, offset: int):
+    """Keep paginated JSON responses below a server-side byte ceiling."""
+    base_payload = {item_key: [], 'count' if item_key == 'queue' else 'total': total, 'limit': limit, 'offset': offset}
+    envelope_bytes = len(json.dumps(base_payload, ensure_ascii=False).encode('utf-8')) - 2
+
+    bounded_items = []
+    items_bytes = 2
+    fields_truncated = False
+    response_truncated = False
+
+    for item in items:
+        bounded_item, item_truncated = _truncate_large_fields(item)
+        item_bytes = len(json.dumps(bounded_item, ensure_ascii=False).encode('utf-8'))
+        next_total_bytes = envelope_bytes + items_bytes + item_bytes + (1 if bounded_items else 0)
+        if next_total_bytes > MAX_RESPONSE_BYTES:
+            response_truncated = True
+            break
+        bounded_items.append(bounded_item)
+        items_bytes += item_bytes + (1 if len(bounded_items) > 1 else 0)
+        fields_truncated = fields_truncated or item_truncated
+
+    if (fields_truncated or response_truncated) and items:
+        LOGGER.warning(
+            "Capped paginated response for %s at offset=%s limit=%s returned=%s total=%s field_truncated=%s response_truncated=%s",
+            item_key,
+            offset,
+            limit,
+            len(bounded_items),
+            total,
+            fields_truncated,
+            response_truncated,
+        )
+
+    oversized_single_item = bool(items and not bounded_items)
+    return bounded_items, (fields_truncated or response_truncated), oversized_single_item
 
 
 def is_safe_id(id_str: str) -> bool:
@@ -1218,9 +1285,11 @@ def export_dataset_endpoint(format: str):
 
 
 @app.route('/api/export-preview/<format>', methods=['POST'])
-def export_preview_endpoint(format: str):
+def export_preview_endpoint(export_format: str | None = None, **route_params):
     """Preview export conversion without writing files."""
-    if format not in VALID_EXPORT_FORMATS:
+    if export_format is None:
+        export_format = route_params.get('format')
+    if export_format not in VALID_EXPORT_FORMATS:
         return jsonify({'error': 'Invalid format'}), 400
 
     data = _get_json_object()
@@ -1248,7 +1317,7 @@ def export_preview_endpoint(format: str):
     try:
         total_conversations = db.count_conversations_for_export(folder=folder, ids=selected_ids)
         conversations_iter = db.iter_conversations_for_export(folder=folder, ids=selected_ids)
-        preview = preview_export_lines(conversations_iter, export_format=format, system_prompt=system_prompt, system_prompt_mode=system_prompt_mode, limit=limit)
+        preview = preview_export_lines(conversations_iter, export_format=export_format, system_prompt=system_prompt, system_prompt_mode=system_prompt_mode, limit=limit)
 
         return jsonify({
             'success': True,
@@ -1283,12 +1352,16 @@ def list_conversations():
         folder=folder, search=search, tag=tag_filter,
         limit=limit, offset=offset
     )
+    conversations, response_truncated, oversized_single_item = _cap_paginated_response('conversations', conversations, total, limit, offset)
+    if oversized_single_item:
+        return jsonify({'error': 'Response page too large; reduce limit'}), 413
 
     return jsonify({
         'conversations': conversations,
         'total': total,
         'limit': limit,
-        'offset': offset
+        'offset': offset,
+        'response_truncated': response_truncated
     })
 
 
@@ -2024,7 +2097,10 @@ def get_review_queue():
         return jsonify({'ids': ids, 'count': total, 'limit': limit, 'offset': offset})
 
     queue, total = db.get_review_queue(limit=limit, offset=offset, search=search)
-    return jsonify({'queue': queue, 'count': total, 'limit': limit, 'offset': offset})
+    queue, response_truncated, oversized_single_item = _cap_paginated_response('queue', queue, total, limit, offset)
+    if oversized_single_item:
+        return jsonify({'error': 'Response page too large; reduce limit'}), 413
+    return jsonify({'queue': queue, 'count': total, 'limit': limit, 'offset': offset, 'response_truncated': response_truncated})
 
 
 @app.route('/api/review-queue-position/<item_id>', methods=['GET'])
