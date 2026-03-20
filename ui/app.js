@@ -1705,8 +1705,10 @@ function renderPromptSelect() {
     if (state.currentPromptName) {
         if (selectHasOption(els.promptSelect, state.currentPromptName)) {
             els.promptSelect.value = state.currentPromptName;
-            selectPrompt();
             return;
+        }
+        state.currentPromptName = '';
+    }
         }
         state.currentPromptName = '';
     }
