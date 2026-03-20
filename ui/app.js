@@ -6283,7 +6283,7 @@ async function applyDeferredDraftState(draft) {
         const pageOffset = Math.floor(absoluteIndex / reviewPageSize) * reviewPageSize;
         state.review.pageOffset = pageOffset;
         await loadReviewQueue({ reset: true, targetAbsoluteIndex: absoluteIndex });
-        state.review.currentIndex = Math.max(0, absoluteIndex - (state.review.pageOffset || 0));
+    } else if (Number.isFinite(Number(draft.review.pageOffset))) {
     } else if (Number.isFinite(Number(draft.review.pageOffset))) {
         state.review.pageOffset = Math.max(0, Number(draft.review.pageOffset));
     }
