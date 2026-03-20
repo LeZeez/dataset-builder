@@ -631,7 +631,8 @@ const state = {
         pageOffset: 0,
         total: 0,
         hasMore: false,
-        isLoading: false
+        isLoading: false,
+        requestSeq: 0
     },
 	    reviewBrowser: {
         items: [],
@@ -650,10 +651,11 @@ const state = {
 	        virtualBatchSize: 200,
 	        virtualMaxBatches: 3,
 	        virtualRowHeight: 60,
-	        virtualRafPending: false,
+        virtualRafPending: false,
         autoLoadOnScroll: true,
         loadAllTaskId: null,
-        loadAllController: null
+        loadAllController: null,
+        requestSeq: 0
     },
     bulk: {
         isRunning: false,
@@ -4507,6 +4509,7 @@ async function addReviewQueueItems(items, { refreshView = true } = {}) {
             state.review.total = total;
             updateReviewBadge();
         }
+        await refreshReviewBrowserIfOpen({ reset: true });
         return added;
     } catch (e) {
         const prevTotal = state.review.total || 0;
@@ -4524,6 +4527,7 @@ async function addReviewQueueItems(items, { refreshView = true } = {}) {
             state.review.total = prevTotal + localEntries.length;
             updateReviewBadge();
         }
+        await refreshReviewBrowserIfOpen({ reset: true });
         return localEntries;
     }
 }
@@ -4623,6 +4627,71 @@ async function ensureReviewQueueIdsSynced(ids) {
     return ids.map(id => idMap.get(id) || id);
 }
 
+async function fetchReviewQueueWindowFromServer({ offset = 0, limit = 0, search = '', signal = null } = {}) {
+    const safeOffset = Math.max(0, Math.floor(Number(offset) || 0));
+    const safeLimit = Math.max(1, Math.floor(Number(limit) || getModalPageSize()));
+    const collected = [];
+    let total = 0;
+    let nextOffset = safeOffset;
+    let guard = 0;
+
+    // The server may cap oversized pages by bytes, so keep fetching until we
+    // reconstruct the logical page the UI asked for.
+    while (collected.length < safeLimit && guard < safeLimit) {
+        const requested = safeLimit - collected.length;
+        const params = new URLSearchParams({
+            limit: String(requested),
+            offset: String(nextOffset)
+        });
+        if (search) params.set('search', search);
+        const res = await fetch(`/api/review-queue?${params.toString()}`, signal ? { signal } : undefined);
+        if (!res.ok) throw new Error('Failed to load review queue');
+
+        const data = await res.json().catch(() => ({}));
+        if (data.error) throw new Error(data.error);
+
+        const pageItems = Array.isArray(data.queue) ? data.queue : [];
+        if (typeof data.count === 'number') total = data.count;
+        if (!pageItems.length) break;
+
+        collected.push(...pageItems);
+        nextOffset += pageItems.length;
+
+        const responseTruncated = data.response_truncated === true;
+        if (total > 0 && nextOffset >= total) break;
+        if (!responseTruncated && pageItems.length < requested) break;
+        guard++;
+    }
+
+    return { items: collected, total: total || collected.length };
+}
+
+function syncReviewBrowserPreviewState() {
+    const previewId = String(state.reviewBrowser.previewId || '');
+    const loadedPreview = state.reviewBrowser.items.find(item => String(item?.id || '') === previewId) || null;
+    if (loadedPreview) {
+        state.reviewBrowser.previewConversation = loadedPreview;
+        return;
+    }
+
+    const currentReviewItem = state.review.queue[state.review.currentIndex] || null;
+    if (currentReviewItem?.id) {
+        state.reviewBrowser.previewId = String(currentReviewItem.id);
+        state.reviewBrowser.previewConversation = currentReviewItem;
+        return;
+    }
+
+    const firstItem = state.reviewBrowser.items[0] || null;
+    state.reviewBrowser.previewId = String(firstItem?.id || '');
+    state.reviewBrowser.previewConversation = firstItem;
+}
+
+async function refreshReviewBrowserIfOpen({ reset = true } = {}) {
+    if (els.reviewBrowserModal?.classList.contains('hidden')) return;
+    cancelSliceLoadAll(state.reviewBrowser, 'Refreshing');
+    await loadReviewBrowser({ reset });
+}
+
 async function loadReviewQueue({ reset = true, targetAbsoluteIndex = null } = {}) {
     const pageSize = getModalPageSize();
     const currentAbsolute = state.review.pageOffset + state.review.currentIndex;
@@ -4630,6 +4699,8 @@ async function loadReviewQueue({ reset = true, targetAbsoluteIndex = null } = {}
         ? Math.max(0, Math.floor(targetAbsoluteIndex))
         : currentAbsolute;
     const desiredPageOffset = Math.floor(desiredAbsolute / pageSize) * pageSize;
+    const requestSeq = (state.review.requestSeq || 0) + 1;
+    state.review.requestSeq = requestSeq;
 
     if (reset) {
         state.review.queue = [];
@@ -4639,21 +4710,20 @@ async function loadReviewQueue({ reset = true, targetAbsoluteIndex = null } = {}
     }
 
     state.review.isLoading = true;
+    if (reset && state.currentTab === 'review') {
+        renderReviewItem();
+    }
     try {
         await syncReviewQueueItemsToServer();
-        const params = new URLSearchParams({
-            limit: String(pageSize),
-            offset: String(state.review.pageOffset)
+        if (state.review.requestSeq !== requestSeq) return;
+        const data = await fetchReviewQueueWindowFromServer({
+            offset: state.review.pageOffset,
+            limit: pageSize
         });
-        const res = await fetch(`/api/review-queue?${params.toString()}`);
-        if (!res.ok) throw new Error('Failed to load review queue');
-
-        const data = await res.json();
-        if (data.error) throw new Error(data.error);
-
-        const items = data.queue || [];
+        if (state.review.requestSeq !== requestSeq) return;
+        const items = data.items || [];
         state.review.queue = items;
-        state.review.total = data.count || state.review.queue.length;
+        state.review.total = data.total || state.review.queue.length;
         state.review.hasMore = (state.review.pageOffset + state.review.queue.length) < state.review.total;
 
         const nextAbsolute = Math.min(desiredAbsolute, Math.max(0, state.review.total - 1));
@@ -4664,6 +4734,7 @@ async function loadReviewQueue({ reset = true, targetAbsoluteIndex = null } = {}
         console.warn('Server unreachable, loading review queue from IndexedDB');
         try {
             const items = await dbGetAll('reviewQueue');
+            if (state.review.requestSeq !== requestSeq) return;
             const allItems = items || [];
             state.review.total = allItems.length;
             const safeOffset = Math.max(0, Math.min(state.review.pageOffset, Math.max(0, state.review.total - 1)));
@@ -4678,8 +4749,29 @@ async function loadReviewQueue({ reset = true, targetAbsoluteIndex = null } = {}
             console.error('Failed to load review queue:', err);
         }
     } finally {
-        state.review.isLoading = false;
+        if (state.review.requestSeq === requestSeq) {
+            state.review.isLoading = false;
+            if (state.currentTab === 'review' && state.review.queue.length === 0) {
+                renderReviewItem();
+            }
+        }
     }
+}
+
+async function navigateReviewToAbsolute(targetAbsoluteIndex) {
+    const total = state.review.total || state.review.queue.length;
+    if (total === 0) return;
+
+    const target = Math.max(0, Math.min(Math.floor(targetAbsoluteIndex), total - 1));
+    const pageStart = state.review.pageOffset;
+    const pageEnd = pageStart + state.review.queue.length - 1;
+    if (target >= pageStart && target <= pageEnd) {
+        state.review.currentIndex = target - pageStart;
+        renderReviewItem();
+        return;
+    }
+
+    await loadReviewQueue({ reset: true, targetAbsoluteIndex: target });
 }
 
 function updateReviewBadge() {
@@ -4704,7 +4796,11 @@ function renderReviewItem() {
     const idx = state.review.currentIndex;
 
     if (queue.length === 0) {
-        els.reviewConversation.innerHTML = `<div class="empty-state"><div class="empty-icon">${ICON_EMPTY_QUEUE}</div><p>No items in review queue</p><p class="small">Generate conversations in bulk to fill the queue</p></div>`;
+        if (state.review.isLoading) {
+            els.reviewConversation.innerHTML = '<div class="empty-state"><div class="empty-icon"><span class="inline-spinner"></span></div><p>Loading review queue...</p><p class="small">Refreshing the current page</p></div>';
+        } else {
+            els.reviewConversation.innerHTML = `<div class="empty-state"><div class="empty-icon">${ICON_EMPTY_QUEUE}</div><p>No items in review queue</p><p class="small">Generate conversations in bulk to fill the queue</p></div>`;
+        }
         els.reviewEditInput.classList.add('hidden');
         els.reviewKeepBtn.disabled = true;
         els.reviewRejectBtn.disabled = true;
@@ -4792,7 +4888,7 @@ async function reviewNext() {
     const next = absolute + 1;
     const total = state.review.total || state.review.queue.length;
     if (next >= total) return;
-    await loadReviewQueue({ reset: true, targetAbsoluteIndex: next });
+    await navigateReviewToAbsolute(next);
 }
 
 async function reviewPrev() {
@@ -4800,7 +4896,7 @@ async function reviewPrev() {
     const absolute = state.review.pageOffset + state.review.currentIndex;
     const prev = absolute - 1;
     if (prev < 0) return;
-    await loadReviewQueue({ reset: true, targetAbsoluteIndex: prev });
+    await navigateReviewToAbsolute(prev);
 }
 
 async function reviewKeep() {
@@ -4826,6 +4922,7 @@ async function reviewKeep() {
             const nextTotal = (typeof data.count === 'number') ? data.count : Math.max(0, (state.review.total || 0) - 1);
             const nextAbsolute = Math.min(absolute, Math.max(0, nextTotal - 1));
             await loadReviewQueue({ reset: true, targetAbsoluteIndex: nextTotal > 0 ? nextAbsolute : 0 });
+            await refreshReviewBrowserIfOpen({ reset: true });
             toast('Kept!', 'success');
             hideSaveIndicator('Saved ✓');
             loadStats();
@@ -4865,6 +4962,7 @@ async function reviewReject() {
             const nextTotal = (typeof data.count === 'number') ? data.count : Math.max(0, (state.review.total || 0) - 1);
             const nextAbsolute = Math.min(absolute, Math.max(0, nextTotal - 1));
             await loadReviewQueue({ reset: true, targetAbsoluteIndex: nextTotal > 0 ? nextAbsolute : 0 });
+            await refreshReviewBrowserIfOpen({ reset: true });
             toast('Rejected', 'info');
             hideSaveIndicator('Rejected ✓');
             loadStats();
@@ -4896,6 +4994,7 @@ async function removeFromReviewQueue(idx) {
     const nextTotal = Math.max(0, (state.review.total || 0) - 1);
     const nextAbsolute = Math.min(absolute, Math.max(0, nextTotal - 1));
     await loadReviewQueue({ reset: true, targetAbsoluteIndex: nextTotal > 0 ? nextAbsolute : 0 });
+    await refreshReviewBrowserIfOpen({ reset: true });
 }
 
 async function reviewEdit() {
@@ -5037,6 +5136,7 @@ async function persistAllReviewQueueInBatches(action) {
         }
 
 	        await loadReviewQueue({ reset: true, targetAbsoluteIndex: 0 });
+	        await refreshReviewBrowserIfOpen({ reset: true });
 	        loadStats();
 		        hideSaveIndicator(isKeep ? 'Saved ✓' : 'Rejected ✓');
 		        const toastType = totalErrors ? 'warning' : (isKeep ? 'success' : 'info');
@@ -5087,6 +5187,7 @@ async function clearReviewQueue() {
         state.review.hasMore = false;
         updateReviewBadge();
         renderReviewItem();
+        await refreshReviewBrowserIfOpen({ reset: true });
         hideSaveIndicator('Cleared');
         toast('Queue cleared', 'info');
     } catch (e) {
@@ -5101,12 +5202,14 @@ function openReviewBrowserModal() {
     state.reviewBrowser.previewConversation = currentItem || null;
     els.reviewBrowserModal.classList.remove('hidden');
     const hasActiveLoadAll = !!state.reviewBrowser.loadAllTaskId && state.tasks.items.has(state.reviewBrowser.loadAllTaskId);
-    const shouldReset = !hasActiveLoadAll && state.reviewBrowser.items.length === 0;
-    if (shouldReset) loadReviewBrowser({ reset: true });
+    if (!hasActiveLoadAll) loadReviewBrowser({ reset: true });
     else { renderReviewBrowserList(); renderReviewBrowserPreview(); updateReviewBrowserPaginationUI(); }
 }
 
 function closeReviewBrowserModal() {
+    cancelSliceLoadAll(state.reviewBrowser, 'Closed');
+    state.reviewBrowser.requestSeq = (state.reviewBrowser.requestSeq || 0) + 1;
+    state.reviewBrowser.isLoading = false;
     els.reviewBrowserModal.classList.add('hidden');
 }
 
@@ -5124,7 +5227,7 @@ async function jumpReviewToItemId(itemId) {
         const livePreview = String(state.reviewBrowser.previewId || '');
         if (livePreview !== requestedId && livePreview !== String(syncedId || '')) return;
         state.review.isEditing = false;
-        await loadReviewQueue({ reset: true, targetAbsoluteIndex: pos });
+        await navigateReviewToAbsolute(pos);
     } catch (e) {
         // Offline fallback: compute index from IndexedDB list order.
         try {
@@ -5133,7 +5236,7 @@ async function jumpReviewToItemId(itemId) {
             if (idx === -1) return;
             if (state.reviewBrowser.previewId !== requestedId) return;
             state.review.isEditing = false;
-            await loadReviewQueue({ reset: true, targetAbsoluteIndex: idx });
+            await navigateReviewToAbsolute(idx);
         } catch (_err) { }
     }
 }
@@ -5197,6 +5300,8 @@ function renderReviewBrowserRowHtml(item) {
 
 async function loadReviewBrowser({ reset = false, signal = null } = {}) {
     const pageSize = getModalPageSize();
+    const requestSeq = (state.reviewBrowser.requestSeq || 0) + 1;
+    state.reviewBrowser.requestSeq = requestSeq;
     if (reset) {
         state.reviewBrowser.items = [];
         clearSelectableSelection(state.reviewBrowser);
@@ -5210,22 +5315,23 @@ async function loadReviewBrowser({ reset = false, signal = null } = {}) {
     }
 
     state.reviewBrowser.isLoading = true;
+    if (reset) syncReviewBrowserPreviewState();
     if (!els.reviewBrowserModal?.classList.contains('hidden')) {
         // Show immediate feedback (spinner / "Loading...") and ensure virtual loading row state is correct.
         renderReviewBrowserList();
+        renderReviewBrowserPreview();
         updateReviewBrowserPaginationUI();
     }
     try {
-        const params = new URLSearchParams({
-            limit: String(pageSize),
-            offset: String(state.reviewBrowser.offset)
-        });
         const search = els.reviewBrowserSearchInput?.value?.trim() || '';
-        if (search) params.set('search', search);
-        const res = await fetch(`/api/review-queue?${params.toString()}`, signal ? { signal } : undefined);
-        if (!res.ok) throw new Error('Failed to load review browser');
-        const data = await res.json();
-        const items = data.queue || [];
+        const data = await fetchReviewQueueWindowFromServer({
+            offset: state.reviewBrowser.offset,
+            limit: pageSize,
+            search,
+            signal
+        });
+        if (state.reviewBrowser.requestSeq !== requestSeq) return;
+        const items = data.items || [];
         for (const item of items) {
             const rawId = item?.id;
             const itemId = (rawId === undefined || rawId === null) ? '' : String(rawId);
@@ -5235,7 +5341,7 @@ async function loadReviewBrowser({ reset = false, signal = null } = {}) {
             state.reviewBrowser.idToIndex.set(itemId, state.reviewBrowser.items.length);
             state.reviewBrowser.items.push(item);
         }
-        state.reviewBrowser.total = data.count || state.reviewBrowser.items.length;
+        state.reviewBrowser.total = data.total || state.reviewBrowser.items.length;
         state.reviewBrowser.offset += items.length;
         if (items.length === 0) state.reviewBrowser.hasMore = false;
         else state.reviewBrowser.hasMore = state.reviewBrowser.offset < state.reviewBrowser.total;
@@ -5244,11 +5350,12 @@ async function loadReviewBrowser({ reset = false, signal = null } = {}) {
         }
     } catch (e) {
         if (e?.name === 'AbortError') {
-            state.reviewBrowser.isLoading = false;
+            if (state.reviewBrowser.requestSeq === requestSeq) state.reviewBrowser.isLoading = false;
             return;
         }
         const search = els.reviewBrowserSearchInput?.value?.trim().toLowerCase() || '';
         const localItems = await dbGetAll('reviewQueue').catch(() => []);
+        if (state.reviewBrowser.requestSeq !== requestSeq) return;
         const filtered = (localItems || []).filter(item => {
             if (!search) return true;
             return (item.rawText || '').toLowerCase().includes(search);
@@ -5271,7 +5378,9 @@ async function loadReviewBrowser({ reset = false, signal = null } = {}) {
             renderReviewBrowserList();
         }
     }
+    if (state.reviewBrowser.requestSeq !== requestSeq) return;
     state.reviewBrowser.isLoading = false;
+    syncReviewBrowserPreviewState();
     if (!els.reviewBrowserModal?.classList.contains('hidden')) {
         renderReviewBrowserPreview();
         updateReviewBrowserPaginationUI();
