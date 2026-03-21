@@ -2894,8 +2894,10 @@ async function loadFilesModal(folder = 'wanted', { reset = false, signal = null,
         if (e?.name === 'AbortError') aborted = true;
         else if (!isSliceRequestStale(state.filesModal, activeRequestSeq, signal)) console.error('Failed to load files:', e);
     } finally {
+        const requestIsStale = state.filesModal.requestSeq !== activeRequestSeq;
+        if (requestIsStale) return;
         state.filesModal.isLoading = false;
-        if (isSliceRequestStale(state.filesModal, activeRequestSeq, signal)) return;
+        if (aborted || signal?.aborted) return;
         if (!aborted) updateFilesPaginationUI();
         if (!els.filesModal?.classList.contains('hidden')) {
             // Ensure the "Loading more..." row is hidden after paging completes.
@@ -5606,10 +5608,11 @@ async function loadReviewBrowserPreviewItem(itemId) {
         state.reviewBrowser.previewConversation = null;
         toast('Failed to preview queue item', 'error');
     } finally {
-        if (state.reviewBrowser.currentRequest !== requestToken) return;
-        state.reviewBrowser.currentRequest = null;
-        state.reviewBrowser.previewLoading = false;
-        renderReviewBrowserPreview();
+        if (state.reviewBrowser.currentRequest === requestToken) {
+            state.reviewBrowser.currentRequest = null;
+            state.reviewBrowser.previewLoading = false;
+            renderReviewBrowserPreview();
+        }
     }
 }
 
@@ -6540,8 +6543,10 @@ async function loadExportFiles({ reset = false, signal = null, requestSeq = null
         if (e?.name === 'AbortError') aborted = true;
         else if (!isSliceRequestStale(state.export, activeRequestSeq, signal)) { state.export.files = []; renderExportFileList(); renderExportPreview(); }
     } finally {
+        const requestIsStale = state.export.requestSeq !== activeRequestSeq;
+        if (requestIsStale) return;
         state.export.isLoading = false;
-        if (isSliceRequestStale(state.export, activeRequestSeq, signal)) return;
+        if (aborted || signal?.aborted) return;
         if (!aborted) updateExportPaginationUI();
         if (!els.exportModal?.classList.contains('hidden')) {
             // Ensure the "Loading more..." row is hidden after paging completes.

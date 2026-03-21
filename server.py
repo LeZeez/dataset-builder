@@ -162,17 +162,19 @@ def _cap_paginated_response(item_key: str, items: list, total: int, limit: int, 
 
 def _cap_single_response(item_key: str, item: dict):
     """Keep single-item JSON responses below the server-side byte ceiling."""
+    original_item_bytes = len(json.dumps(item, ensure_ascii=False).encode('utf-8'))
+    oversized = original_item_bytes > MAX_RESPONSE_BYTES
     bounded_item, item_truncated = _truncate_large_fields(item)
-    item_bytes = len(json.dumps(bounded_item, ensure_ascii=False).encode('utf-8'))
-    oversized = item_bytes > MAX_RESPONSE_BYTES
+    bounded_item_bytes = len(json.dumps(bounded_item, ensure_ascii=False).encode('utf-8'))
 
     if item_truncated or oversized:
         LOGGER.warning(
-            "Capped single response for %s item_truncated=%s oversized=%s bytes=%s",
+            "Capped single response for %s item_truncated=%s oversized=%s original_bytes=%s bounded_bytes=%s",
             item_key,
             item_truncated,
             oversized,
-            item_bytes,
+            original_item_bytes,
+            bounded_item_bytes,
         )
 
     return bounded_item, item_truncated, oversized
@@ -2341,10 +2343,10 @@ def get_review_queue_item_endpoint(item_id: str):
     item = db.get_review_queue_item(item_id)
     if not item:
         return jsonify({'error': 'Review queue item not found'}), 404
-    _, item_truncated, oversized = _cap_single_response('review_queue_item', item)
-    if item_truncated or oversized:
+    bounded_item, _, oversized = _cap_single_response('review_queue_item', item)
+    if oversized:
         return jsonify({'error': 'Response too large to return for this item'}), 413
-    return jsonify(item)
+    return jsonify(bounded_item)
 
 
 @app.route('/api/review-queue-position/<item_id>', methods=['GET'])
