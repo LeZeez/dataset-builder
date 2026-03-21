@@ -733,6 +733,20 @@ def get_review_queue_position(item_id: str, search: str = '') -> tuple[int, int]
         if search:
             safe_search = search.replace('"', '""')
             match = f'"{safe_search}"*'
+            # If the requested item isn't in the filtered queue, treat it as not found
+            # under this search so callers don't compute an invalid "position".
+            included = conn.execute(
+                """
+                SELECT 1 FROM review_queue r
+                JOIN review_queue_fts f ON r.rowid = f.rowid
+                WHERE review_queue_fts MATCH ?
+                  AND r.rowid = ?
+                LIMIT 1
+                """,
+                (match, rowid)
+            ).fetchone()
+            if not included:
+                return None
             pos_row = conn.execute(
                 """
                 SELECT COUNT(*) as c FROM review_queue r

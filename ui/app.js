@@ -5430,7 +5430,7 @@ async function loadReviewBrowser({ reset = false, signal = null, preserveState =
         const prevSelectedIds = preserveState ? new Set(Array.from(state.reviewBrowser.selectedIds || []).map(id => String(id || '')).filter(Boolean)) : null;
         const prevAnchorId = preserveState ? String(state.reviewBrowser.anchorId || '') : '';
         const prevPreviewId = preserveState ? String(state.reviewBrowser.previewId || '') : '';
-        let preservedOffset = 0;
+        let preservedOffset = null;
 
         // When refreshing while the user is browsing, keep the page window that contains
         // the currently previewed item (otherwise we jump back to the first page).
@@ -5450,7 +5450,7 @@ async function loadReviewBrowser({ reset = false, signal = null, preserveState =
             } catch (e) {
                 console.warn('Failed to get review queue position from API:', e);
             }
-            if (!preservedOffset) {
+            if (preservedOffset == null) {
                 try {
                     const localItems = await dbGetAll('reviewQueue').catch(() => []);
                     const filteredLocalItems = !activeSearchLower
@@ -5473,7 +5473,7 @@ async function loadReviewBrowser({ reset = false, signal = null, preserveState =
             state.reviewBrowser.anchorId = prevAnchorId || null;
             state.reviewBrowser.previewId = prevPreviewId || null;
         }
-        state.reviewBrowser.offset = preservedOffset || 0;
+        state.reviewBrowser.offset = preservedOffset ?? 0;
         state.reviewBrowser.total = 0;
         state.reviewBrowser.hasMore = false;
         state.reviewBrowser.renderedCount = 0;
