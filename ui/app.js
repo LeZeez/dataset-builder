@@ -2894,8 +2894,8 @@ async function loadFilesModal(folder = 'wanted', { reset = false, signal = null,
         if (e?.name === 'AbortError') aborted = true;
         else if (!isSliceRequestStale(state.filesModal, activeRequestSeq, signal)) console.error('Failed to load files:', e);
     } finally {
-        if (isSliceRequestStale(state.filesModal, activeRequestSeq, signal)) return;
         state.filesModal.isLoading = false;
+        if (isSliceRequestStale(state.filesModal, activeRequestSeq, signal)) return;
         if (!aborted) updateFilesPaginationUI();
         if (!els.filesModal?.classList.contains('hidden')) {
             // Ensure the "Loading more..." row is hidden after paging completes.
@@ -4843,13 +4843,25 @@ function syncReviewBrowserPreviewState({ allowFallback = true } = {}) {
     state.reviewBrowser.currentRequest = null;
     const previewId = String(state.reviewBrowser.previewId || '');
     const loadedPreview = state.reviewBrowser.items.find(item => String(item?.id || '') === previewId) || null;
+    const existingPreview = String(state.reviewBrowser.previewConversation?.id || '') === previewId
+        ? state.reviewBrowser.previewConversation
+        : null;
     if (loadedPreview?.conversations?.length) {
         state.reviewBrowser.previewConversation = loadedPreview;
         state.reviewBrowser.previewLoading = false;
         return;
     }
 
-    if (previewId && !allowFallback) {
+    if (previewId) {
+        const matchingReviewItem = state.review.queue.find(item => String(item?.id || '') === previewId) || null;
+        state.reviewBrowser.previewConversation = matchingReviewItem?.conversations?.length
+            ? matchingReviewItem
+            : (existingPreview?.conversations?.length ? existingPreview : null);
+        state.reviewBrowser.previewLoading = false;
+        return;
+    }
+
+    if (!allowFallback) {
         state.reviewBrowser.previewConversation = null;
         state.reviewBrowser.previewLoading = false;
         return;
@@ -6528,8 +6540,8 @@ async function loadExportFiles({ reset = false, signal = null, requestSeq = null
         if (e?.name === 'AbortError') aborted = true;
         else if (!isSliceRequestStale(state.export, activeRequestSeq, signal)) { state.export.files = []; renderExportFileList(); renderExportPreview(); }
     } finally {
-        if (isSliceRequestStale(state.export, activeRequestSeq, signal)) return;
         state.export.isLoading = false;
+        if (isSliceRequestStale(state.export, activeRequestSeq, signal)) return;
         if (!aborted) updateExportPaginationUI();
         if (!els.exportModal?.classList.contains('hidden')) {
             // Ensure the "Loading more..." row is hidden after paging completes.

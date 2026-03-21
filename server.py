@@ -2343,7 +2343,7 @@ def get_review_queue_item_endpoint(item_id: str):
         return jsonify({'error': 'Review queue item not found'}), 404
     _, item_truncated, oversized = _cap_single_response('review_queue_item', item)
     if item_truncated or oversized:
-        return jsonify({'error': 'Response page too large; reduce limit'}), 413
+        return jsonify({'error': 'Response too large to return for this item'}), 413
     return jsonify(item)
 
 
