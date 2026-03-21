@@ -3631,6 +3631,7 @@ async function generate() {
 function requestBulkPauseAfterCurrentRun() {
     if (!state.bulk.isRunning) return;
     if (state.bulk.isPaused) return;
+    if (state.bulk.pauseRequested) return;
     state.bulk.pauseRequested = true;
     updateBulkProgress();
     toast('Will pause after the current run finishes', 'info');
@@ -3651,10 +3652,18 @@ function resumeBulkGeneration() {
 function toggleBulkPause() {
     if (!state.bulk.isRunning) return;
     if (state.bulk.isPaused) {
+        state.bulk.pauseRequested = false;
         resumeBulkGeneration();
         toast('Bulk resumed', 'success');
     } else {
-        requestBulkPauseAfterCurrentRun();
+        // Toggle the pending pause request on/off (do not affect the in-flight request).
+        if (state.bulk.pauseRequested) {
+            state.bulk.pauseRequested = false;
+            updateBulkProgress();
+            toast('Pause request canceled', 'info');
+        } else {
+            requestBulkPauseAfterCurrentRun();
+        }
     }
 }
 
@@ -3854,12 +3863,12 @@ function updateBulkProgress() {
         } else {
             const status = String(active.status || 'running');
             const meta = [formatProviderLabel(active.provider), active.model || '—'].filter(Boolean).join(' · ');
-            const paused = state.bulk.isPaused ? ' · paused' : '';
+            const paused = state.bulk.isPaused ? ' · paused' : (state.bulk.pauseRequested ? ' · pause requested' : '');
             els.bulkProgressText.textContent = `${base} · #${idx + 1} ${status}${paused} · ${meta}`;
         }
     }
     if (els.bulkPause) {
-        els.bulkPause.textContent = state.bulk.isPaused ? 'Resume' : 'Pause';
+        els.bulkPause.textContent = state.bulk.isPaused ? 'Resume' : (state.bulk.pauseRequested ? 'Cancel pause' : 'Pause');
         els.bulkPause.disabled = !state.bulk.isRunning;
     }
     renderBulkDetailsSummary();
@@ -4558,6 +4567,14 @@ async function addReviewQueueItems(items, { refreshView = true } = {}) {
     if (skippedDup) toast(`Skipped ${skippedDup} duplicates`, 'info');
     if (filtered.length === 0) return [];
     items = filtered;
+
+    const applyReviewTotalUpdate = (nextTotal, { syncPosition = false } = {}) => {
+        state.review.total = nextTotal;
+        state.review.hasMore = (state.review.pageOffset + state.review.queue.length) < nextTotal;
+        updateReviewBadge();
+        if (syncPosition) syncReviewPositionUI();
+    };
+
     try {
         const prevTotal = state.review.total || 0;
         const res = await fetch('/api/review-queue', {
@@ -4573,18 +4590,13 @@ async function addReviewQueueItems(items, { refreshView = true } = {}) {
         if (shouldRefreshView) {
             if (state.currentTab === 'review' && state.review.queue.length > 0) {
                 // Preserve the current review item; only update totals so the UI can continue where it is.
-                state.review.total = total;
-                state.review.hasMore = (state.review.pageOffset + state.review.queue.length) < total;
-                updateReviewBadge();
-                syncReviewPositionUI();
+                applyReviewTotalUpdate(total, { syncPosition: true });
             } else {
                 const startIndex = Math.max(0, total - added.length);
                 await loadReviewQueue({ reset: true, targetAbsoluteIndex: startIndex });
             }
         } else {
-            state.review.total = total;
-            state.review.hasMore = (state.review.pageOffset + state.review.queue.length) < total;
-            updateReviewBadge();
+            applyReviewTotalUpdate(total, { syncPosition: false });
         }
         await refreshReviewBrowserIfOpen({ reset: true });
         return added;
@@ -4601,17 +4613,12 @@ async function addReviewQueueItems(items, { refreshView = true } = {}) {
         if (shouldRefreshView) {
             if (state.currentTab === 'review' && state.review.queue.length > 0) {
                 const nextTotal = prevTotal + localEntries.length;
-                state.review.total = nextTotal;
-                state.review.hasMore = (state.review.pageOffset + state.review.queue.length) < nextTotal;
-                updateReviewBadge();
-                syncReviewPositionUI();
+                applyReviewTotalUpdate(nextTotal, { syncPosition: true });
             } else {
                 await loadReviewQueue({ reset: true, targetAbsoluteIndex: startIndex });
             }
         } else {
-            state.review.total = prevTotal + localEntries.length;
-            state.review.hasMore = (state.review.pageOffset + state.review.queue.length) < state.review.total;
-            updateReviewBadge();
+            applyReviewTotalUpdate(prevTotal + localEntries.length, { syncPosition: false });
         }
         await refreshReviewBrowserIfOpen({ reset: true });
         return localEntries;
@@ -5415,6 +5422,8 @@ function renderReviewBrowserRowHtml(item) {
 
 async function loadReviewBrowser({ reset = false, signal = null, preserveState = false } = {}) {
     const pageSize = getModalPageSize();
+    const activeSearch = String(els.reviewBrowserSearchInput?.value || '').trim();
+    const activeSearchLower = activeSearch.toLowerCase();
     const requestSeq = (state.reviewBrowser.requestSeq || 0) + 1;
     state.reviewBrowser.requestSeq = requestSeq;
     if (reset) {
@@ -5428,20 +5437,30 @@ async function loadReviewBrowser({ reset = false, signal = null, preserveState =
         if (preserveState && prevPreviewId) {
             try {
                 if (!String(prevPreviewId).startsWith('local-')) {
-                    const res = await fetch(`/api/review-queue-position/${encodeURIComponent(prevPreviewId)}`);
+                    const url = activeSearch
+                        ? `/api/review-queue-position/${encodeURIComponent(prevPreviewId)}?search=${encodeURIComponent(activeSearch)}`
+                        : `/api/review-queue-position/${encodeURIComponent(prevPreviewId)}`;
+                    const res = await fetch(url);
                     if (res.ok) {
                         const data = await res.json().catch(() => ({}));
                         const pos = Number(data.position);
                         if (Number.isFinite(pos) && pos >= 0) preservedOffset = Math.floor(pos / pageSize) * pageSize;
                     }
                 }
-            } catch (_e) { }
+            } catch (e) {
+                console.warn('Failed to get review queue position from API:', e);
+            }
             if (!preservedOffset) {
                 try {
                     const localItems = await dbGetAll('reviewQueue').catch(() => []);
-                    const idx = (localItems || []).findIndex(it => String(it?.id) === prevPreviewId);
+                    const filteredLocalItems = !activeSearchLower
+                        ? (localItems || [])
+                        : (localItems || []).filter(item => String(item?.rawText || '').toLowerCase().includes(activeSearchLower));
+                    const idx = filteredLocalItems.findIndex(it => String(it?.id) === prevPreviewId);
                     if (idx >= 0) preservedOffset = Math.floor(idx / pageSize) * pageSize;
-                } catch (_e) { }
+                } catch (e) {
+                    console.warn('Failed to get review queue position from IndexedDB:', e);
+                }
             }
         }
         if (state.reviewBrowser.requestSeq !== requestSeq) return;
@@ -5472,7 +5491,7 @@ async function loadReviewBrowser({ reset = false, signal = null, preserveState =
         updateReviewBrowserPaginationUI();
     }
     try {
-        const search = els.reviewBrowserSearchInput?.value?.trim() || '';
+        const search = activeSearch;
         const data = await fetchReviewQueueWindowFromServer({
             offset: state.reviewBrowser.offset,
             limit: pageSize,
@@ -7686,10 +7705,6 @@ function setupEventListeners() {
     els.regenerateBtn.addEventListener('click', generate);
     els.bulkCancel?.addEventListener('click', () => {
         if (state.bulk.abortController) state.bulk.abortController.abort();
-        if (typeof state.bulk.pauseResolver === 'function') {
-            try { state.bulk.pauseResolver(); } catch (_e) { }
-        }
-        state.bulk.pauseResolver = null;
         state.bulk.pauseRequested = false;
         state.bulk.isPaused = false;
         updateBulkProgress();

@@ -2310,7 +2310,8 @@ def get_review_queue():
 @app.route('/api/review-queue-position/<item_id>', methods=['GET'])
 def get_review_queue_position(item_id: str):
     """Get 0-based absolute position of an item in the review queue."""
-    pos = db.get_review_queue_position(item_id)
+    search = request.args.get('search', '').strip()
+    pos = db.get_review_queue_position(item_id, search=search)
     if pos is None:
         return jsonify({'error': 'Item not found'}), 404
     position, total = pos
