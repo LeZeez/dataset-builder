@@ -659,6 +659,9 @@ const state = {
     },
     bulk: {
         isRunning: false,
+        pauseRequested: false,
+        isPaused: false,
+        pauseResolver: null,
         total: 0,
         completed: 0,
         abortController: null,
@@ -1214,6 +1217,7 @@ async function init() {
         bulkProgressFill: $('#bulk-progress-fill'),
         bulkProgressText: $('#bulk-progress-text'),
         bulkDetails: $('#bulk-details'),
+        bulkPause: $('#bulk-pause'),
         bulkDetailsModal: $('#bulk-details-modal'),
         closeBulkDetailsModal: $('#close-bulk-details-modal'),
         bulkDetailsList: $('#bulk-details-list'),
@@ -3624,6 +3628,45 @@ async function generate() {
     }
 }
 
+function requestBulkPauseAfterCurrentRun() {
+    if (!state.bulk.isRunning) return;
+    if (state.bulk.isPaused) return;
+    if (state.bulk.pauseRequested) return;
+    state.bulk.pauseRequested = true;
+    updateBulkProgress();
+    toast('Will pause after the current run finishes', 'info');
+}
+
+function resumeBulkGeneration() {
+    if (!state.bulk.isRunning) return;
+    state.bulk.pauseRequested = false;
+    state.bulk.isPaused = false;
+    const resolver = state.bulk.pauseResolver;
+    state.bulk.pauseResolver = null;
+    if (typeof resolver === 'function') {
+        try { resolver(); } catch (_e) { }
+    }
+    updateBulkProgress();
+}
+
+function toggleBulkPause() {
+    if (!state.bulk.isRunning) return;
+    if (state.bulk.isPaused) {
+        state.bulk.pauseRequested = false;
+        resumeBulkGeneration();
+        toast('Bulk resumed', 'success');
+    } else {
+        // Toggle the pending pause request on/off (do not affect the in-flight request).
+        if (state.bulk.pauseRequested) {
+            state.bulk.pauseRequested = false;
+            updateBulkProgress();
+            toast('Pause request canceled', 'info');
+        } else {
+            requestBulkPauseAfterCurrentRun();
+        }
+    }
+}
+
 async function bulkGenerate(count) {
     if (state.bulk.isRunning) {
         if (state.bulk.abortController) { state.bulk.abortController.abort(); }
@@ -3639,6 +3682,9 @@ async function bulkGenerate(count) {
     if (!okToSend) return;
 
     state.bulk.isRunning = true;
+    state.bulk.pauseRequested = false;
+    state.bulk.isPaused = false;
+    state.bulk.pauseResolver = null;
     state.bulk.total = count;
     state.bulk.completed = 0;
     state.bulk.abortController = new AbortController();
@@ -3654,6 +3700,28 @@ async function bulkGenerate(count) {
     renderBulkDetailsPreview();
 
     let queuedCount = 0;
+    const maybePauseBetweenRuns = async () => {
+        const signal = state.bulk.abortController?.signal || null;
+        if (!state.bulk.pauseRequested || signal?.aborted) return;
+        state.bulk.pauseRequested = false;
+        state.bulk.isPaused = true;
+        updateBulkProgress();
+
+        let abortListener = null;
+        const resumePromise = new Promise(resolve => { state.bulk.pauseResolver = resolve; });
+        const abortPromise = new Promise(resolve => {
+            if (!signal) return;
+            if (signal.aborted) return resolve();
+            abortListener = () => resolve();
+            signal.addEventListener('abort', abortListener, { once: true });
+        });
+
+        await Promise.race([resumePromise, abortPromise]);
+        if (abortListener && signal) signal.removeEventListener('abort', abortListener);
+        state.bulk.pauseResolver = null;
+        state.bulk.isPaused = false;
+        updateBulkProgress();
+    };
     for (let i = 0; i < count; i++) {
         if (state.bulk.abortController.signal.aborted) break;
         state.bulk.activeIndex = i;
@@ -3763,10 +3831,16 @@ async function bulkGenerate(count) {
         }
         state.bulk.completed++;
         updateBulkProgress();
+        if (i < count - 1) {
+            await maybePauseBetweenRuns();
+        }
     }
 
     const wasCanceled = !!state.bulk.abortController?.signal?.aborted;
     state.bulk.isRunning = false;
+    state.bulk.pauseRequested = false;
+    state.bulk.isPaused = false;
+    state.bulk.pauseResolver = null;
     state.bulk.abortController = null;
     state.bulk.activeIndex = null;
     els.bulkProgress.classList.add('hidden');
@@ -3791,8 +3865,13 @@ function updateBulkProgress() {
         } else {
             const status = String(active.status || 'running');
             const meta = [formatProviderLabel(active.provider), active.model || '—'].filter(Boolean).join(' · ');
-            els.bulkProgressText.textContent = `${base} · #${idx + 1} ${status} · ${meta}`;
+            const paused = state.bulk.isPaused ? ' · paused' : (state.bulk.pauseRequested ? ' · pause requested' : '');
+            els.bulkProgressText.textContent = `${base} · #${idx + 1} ${status}${paused} · ${meta}`;
         }
+    }
+    if (els.bulkPause) {
+        els.bulkPause.textContent = state.bulk.isPaused ? 'Resume' : (state.bulk.pauseRequested ? 'Cancel pause' : 'Pause');
+        els.bulkPause.disabled = !state.bulk.isRunning;
     }
     renderBulkDetailsSummary();
 }
@@ -3831,7 +3910,7 @@ function renderBulkDetailsSummary() {
         queued ? `Queued: ${queued}` : '',
         errs ? `Errors: ${errs}` : '',
         canceled ? `Canceled: ${canceled}` : '',
-        state.bulk.isRunning ? `Running: ${completed + 1}` : ''
+        state.bulk.isRunning ? (state.bulk.isPaused ? 'Paused' : `Running: ${completed + 1}`) : ''
     ].filter(Boolean);
     els.bulkDetailsSummary.textContent = parts.join(' · ');
 }
@@ -4490,6 +4569,14 @@ async function addReviewQueueItems(items, { refreshView = true } = {}) {
     if (skippedDup) toast(`Skipped ${skippedDup} duplicates`, 'info');
     if (filtered.length === 0) return [];
     items = filtered;
+
+    const applyReviewTotalUpdate = (nextTotal, { syncPosition = false } = {}) => {
+        state.review.total = nextTotal;
+        state.review.hasMore = (state.review.pageOffset + state.review.queue.length) < nextTotal;
+        updateReviewBadge();
+        if (syncPosition) syncReviewPositionUI();
+    };
+
     try {
         const prevTotal = state.review.total || 0;
         const res = await fetch('/api/review-queue', {
@@ -4503,11 +4590,15 @@ async function addReviewQueueItems(items, { refreshView = true } = {}) {
         const total = (typeof data.count === 'number') ? data.count : (prevTotal + added.length);
         const shouldRefreshView = refreshView || state.currentTab === 'review' || state.review.queue.length === 0;
         if (shouldRefreshView) {
-            const startIndex = Math.max(0, total - added.length);
-            await loadReviewQueue({ reset: true, targetAbsoluteIndex: startIndex });
+            if (state.currentTab === 'review' && state.review.queue.length > 0) {
+                // Preserve the current review item; only update totals so the UI can continue where it is.
+                applyReviewTotalUpdate(total, { syncPosition: true });
+            } else {
+                const startIndex = Math.max(0, total - added.length);
+                await loadReviewQueue({ reset: true, targetAbsoluteIndex: startIndex });
+            }
         } else {
-            state.review.total = total;
-            updateReviewBadge();
+            applyReviewTotalUpdate(total, { syncPosition: false });
         }
         await refreshReviewBrowserIfOpen({ reset: true });
         return added;
@@ -4522,10 +4613,14 @@ async function addReviewQueueItems(items, { refreshView = true } = {}) {
         toast('Server unreachable: saved review items locally', 'warning');
         const shouldRefreshView = refreshView || state.currentTab === 'review' || state.review.queue.length === 0;
         if (shouldRefreshView) {
-            await loadReviewQueue({ reset: true, targetAbsoluteIndex: startIndex });
+            if (state.currentTab === 'review' && state.review.queue.length > 0) {
+                const nextTotal = prevTotal + localEntries.length;
+                applyReviewTotalUpdate(nextTotal, { syncPosition: true });
+            } else {
+                await loadReviewQueue({ reset: true, targetAbsoluteIndex: startIndex });
+            }
         } else {
-            state.review.total = prevTotal + localEntries.length;
-            updateReviewBadge();
+            applyReviewTotalUpdate(prevTotal + localEntries.length, { syncPosition: false });
         }
         await refreshReviewBrowserIfOpen({ reset: true });
         return localEntries;
@@ -4679,11 +4774,16 @@ async function fetchReviewQueueWindowFromServer({ offset = 0, limit = 0, search 
     return { items: collected, total: total || collected.length, iterationCapped };
 }
 
-function syncReviewBrowserPreviewState() {
+function syncReviewBrowserPreviewState({ allowFallback = true } = {}) {
     const previewId = String(state.reviewBrowser.previewId || '');
     const loadedPreview = state.reviewBrowser.items.find(item => String(item?.id || '') === previewId) || null;
     if (loadedPreview) {
         state.reviewBrowser.previewConversation = loadedPreview;
+        return;
+    }
+
+    if (previewId && !allowFallback) {
+        state.reviewBrowser.previewConversation = null;
         return;
     }
 
@@ -4702,7 +4802,18 @@ function syncReviewBrowserPreviewState() {
 async function refreshReviewBrowserIfOpen({ reset = true } = {}) {
     if (els.reviewBrowserModal?.classList.contains('hidden')) return;
     cancelSliceLoadAll(state.reviewBrowser, 'Refreshing');
-    await loadReviewBrowser({ reset });
+    await loadReviewBrowser({ reset, preserveState: true });
+}
+
+function syncReviewPositionUI() {
+    if (!els.reviewPosition || !els.reviewPrev || !els.reviewNext) return;
+    const queue = state.review.queue || [];
+    if (!queue.length) return;
+    const total = state.review.total || queue.length;
+    const absolute = state.review.pageOffset + state.review.currentIndex;
+    els.reviewPrev.disabled = absolute <= 0;
+    els.reviewNext.disabled = absolute >= (total - 1);
+    els.reviewPosition.textContent = `${absolute + 1}/${total}`;
 }
 
 async function loadReviewQueue({ reset = true, targetAbsoluteIndex = null } = {}) {
@@ -5311,14 +5422,60 @@ function renderReviewBrowserRowHtml(item) {
     `;
 }
 
-async function loadReviewBrowser({ reset = false, signal = null } = {}) {
+async function loadReviewBrowser({ reset = false, signal = null, preserveState = false } = {}) {
     const pageSize = getModalPageSize();
+    const activeSearch = String(els.reviewBrowserSearchInput?.value || '').trim();
+    const activeSearchLower = activeSearch.toLowerCase();
     const requestSeq = (state.reviewBrowser.requestSeq || 0) + 1;
     state.reviewBrowser.requestSeq = requestSeq;
     if (reset) {
+        const prevSelectedIds = preserveState ? new Set(Array.from(state.reviewBrowser.selectedIds || []).map(id => String(id || '')).filter(Boolean)) : null;
+        const prevAnchorId = preserveState ? String(state.reviewBrowser.anchorId || '') : '';
+        const prevPreviewId = preserveState ? String(state.reviewBrowser.previewId || '') : '';
+        let preservedOffset = null;
+
+        // When refreshing while the user is browsing, keep the page window that contains
+        // the currently previewed item (otherwise we jump back to the first page).
+        if (preserveState && prevPreviewId) {
+            try {
+                if (!String(prevPreviewId).startsWith('local-')) {
+                    const url = activeSearch
+                        ? `/api/review-queue-position/${encodeURIComponent(prevPreviewId)}?search=${encodeURIComponent(activeSearch)}`
+                        : `/api/review-queue-position/${encodeURIComponent(prevPreviewId)}`;
+                    const res = await fetch(url);
+                    if (res.ok) {
+                        const data = await res.json().catch(() => ({}));
+                        const pos = Number(data.position);
+                        if (Number.isFinite(pos) && pos >= 0) preservedOffset = Math.floor(pos / pageSize) * pageSize;
+                    }
+                }
+            } catch (e) {
+                console.warn('Failed to get review queue position from API:', e);
+            }
+            if (preservedOffset == null) {
+                try {
+                    const localItems = await dbGetAll('reviewQueue').catch(() => []);
+                    const filteredLocalItems = !activeSearchLower
+                        ? (localItems || [])
+                        : (localItems || []).filter(item => String(item?.rawText || '').toLowerCase().includes(activeSearchLower));
+                    const idx = filteredLocalItems.findIndex(it => String(it?.id) === prevPreviewId);
+                    if (idx >= 0) preservedOffset = Math.floor(idx / pageSize) * pageSize;
+                } catch (e) {
+                    console.warn('Failed to get review queue position from IndexedDB:', e);
+                }
+            }
+        }
+        if (state.reviewBrowser.requestSeq !== requestSeq) return;
+
         state.reviewBrowser.items = [];
-        clearSelectableSelection(state.reviewBrowser);
-        state.reviewBrowser.offset = 0;
+        if (!preserveState) {
+            clearSelectableSelection(state.reviewBrowser);
+        } else if (prevSelectedIds) {
+            state.reviewBrowser.selectedIds = prevSelectedIds;
+            state.reviewBrowser.anchorId = prevAnchorId || null;
+            state.reviewBrowser.previewId = prevPreviewId || null;
+        }
+        state.reviewBrowser.offset = preservedOffset ?? 0;
         state.reviewBrowser.total = 0;
         state.reviewBrowser.hasMore = false;
         state.reviewBrowser.renderedCount = 0;
@@ -5328,7 +5485,7 @@ async function loadReviewBrowser({ reset = false, signal = null } = {}) {
     }
 
     state.reviewBrowser.isLoading = true;
-    if (reset) syncReviewBrowserPreviewState();
+    if (reset) syncReviewBrowserPreviewState({ allowFallback: !preserveState });
     if (!els.reviewBrowserModal?.classList.contains('hidden')) {
         // Show immediate feedback (spinner / "Loading...") and ensure virtual loading row state is correct.
         renderReviewBrowserList();
@@ -5336,7 +5493,7 @@ async function loadReviewBrowser({ reset = false, signal = null } = {}) {
         updateReviewBrowserPaginationUI();
     }
     try {
-        const search = els.reviewBrowserSearchInput?.value?.trim() || '';
+        const search = activeSearch;
         const data = await fetchReviewQueueWindowFromServer({
             offset: state.reviewBrowser.offset,
             limit: pageSize,
@@ -5401,7 +5558,7 @@ async function loadReviewBrowser({ reset = false, signal = null } = {}) {
     }
     if (state.reviewBrowser.requestSeq !== requestSeq) return;
     state.reviewBrowser.isLoading = false;
-    syncReviewBrowserPreviewState();
+    syncReviewBrowserPreviewState({ allowFallback: true });
     if (!els.reviewBrowserModal?.classList.contains('hidden')) {
         renderReviewBrowserPreview();
         updateReviewBrowserPaginationUI();
@@ -7548,8 +7705,14 @@ function setupEventListeners() {
     // Generate
     els.generateBtn.addEventListener('click', generate);
     els.regenerateBtn.addEventListener('click', generate);
-    els.bulkCancel?.addEventListener('click', () => { if (state.bulk.abortController) state.bulk.abortController.abort(); });
+    els.bulkCancel?.addEventListener('click', () => {
+        if (state.bulk.abortController) state.bulk.abortController.abort();
+        state.bulk.pauseRequested = false;
+        state.bulk.isPaused = false;
+        updateBulkProgress();
+    });
     els.bulkDetails?.addEventListener('click', openBulkDetailsModal);
+    els.bulkPause?.addEventListener('click', toggleBulkPause);
     els.closeBulkDetailsModal?.addEventListener('click', closeBulkDetailsModal);
     $('#bulk-details-modal .modal-backdrop')?.addEventListener('click', closeBulkDetailsModal);
     els.bulkDetailsClear?.addEventListener('click', async () => {

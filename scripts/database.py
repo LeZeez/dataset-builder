@@ -717,8 +717,8 @@ def get_review_queue_ids(limit: int = 0, offset: int = 0, search: str = '') -> t
     return [row['id'] for row in rows], total
 
 
-def get_review_queue_position(item_id: str) -> tuple[int, int] | None:
-    """Return (0-based position, total_count) for a review queue item id."""
+def get_review_queue_position(item_id: str, search: str = '') -> tuple[int, int] | None:
+    """Return (0-based position, total_count) for a review queue item id (optionally filtered by search)."""
     if not item_id:
         return None
     with get_db() as conn:
@@ -730,15 +730,44 @@ def get_review_queue_position(item_id: str) -> tuple[int, int] | None:
             return None
         created_at = row['created_at']
         rowid = row['rowid']
-        pos_row = conn.execute(
-            """
-            SELECT COUNT(*) as c FROM review_queue
-            WHERE (created_at < ?) OR (created_at = ? AND rowid < ?)
-            """,
-            (created_at, created_at, rowid)
-        ).fetchone()
-        position = int(pos_row['c']) if pos_row else 0
-        total = _get_review_queue_count(conn, search='')
+        if search:
+            safe_search = search.replace('"', '""')
+            match = f'"{safe_search}"*'
+            # If the requested item isn't in the filtered queue, treat it as not found
+            # under this search so callers don't compute an invalid "position".
+            included = conn.execute(
+                """
+                SELECT 1 FROM review_queue r
+                JOIN review_queue_fts f ON r.rowid = f.rowid
+                WHERE review_queue_fts MATCH ?
+                  AND r.rowid = ?
+                LIMIT 1
+                """,
+                (match, rowid)
+            ).fetchone()
+            if not included:
+                return None
+            pos_row = conn.execute(
+                """
+                SELECT COUNT(*) as c FROM review_queue r
+                JOIN review_queue_fts f ON r.rowid = f.rowid
+                WHERE review_queue_fts MATCH ?
+                  AND ((r.created_at < ?) OR (r.created_at = ? AND r.rowid < ?))
+                """,
+                (match, created_at, created_at, rowid)
+            ).fetchone()
+            position = int(pos_row['c']) if pos_row else 0
+            total = _get_review_queue_count(conn, search=search)
+        else:
+            pos_row = conn.execute(
+                """
+                SELECT COUNT(*) as c FROM review_queue
+                WHERE (created_at < ?) OR (created_at = ? AND rowid < ?)
+                """,
+                (created_at, created_at, rowid)
+            ).fetchone()
+            position = int(pos_row['c']) if pos_row else 0
+            total = _get_review_queue_count(conn, search='')
         return position, total
 
 
