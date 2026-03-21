@@ -160,6 +160,24 @@ def _cap_paginated_response(item_key: str, items: list, total: int, limit: int, 
     return bounded_items, (fields_truncated or response_truncated), oversized_single_item
 
 
+def _cap_single_response(item_key: str, item: dict):
+    """Keep single-item JSON responses below the server-side byte ceiling."""
+    bounded_item, item_truncated = _truncate_large_fields(item)
+    item_bytes = len(json.dumps(bounded_item, ensure_ascii=False).encode('utf-8'))
+    oversized = item_bytes > MAX_RESPONSE_BYTES
+
+    if item_truncated or oversized:
+        LOGGER.warning(
+            "Capped single response for %s item_truncated=%s oversized=%s bytes=%s",
+            item_key,
+            item_truncated,
+            oversized,
+            item_bytes,
+        )
+
+    return bounded_item, item_truncated, oversized
+
+
 def is_safe_id(id_str: str) -> bool:
     """Checks for path traversal characters in an ID."""
     if not isinstance(id_str, str):
@@ -2320,6 +2338,9 @@ def get_review_queue_item_endpoint(item_id: str):
     item = db.get_review_queue_item(item_id)
     if not item:
         return jsonify({'error': 'Review queue item not found'}), 404
+    item, _, oversized = _cap_single_response('review_queue_item', item)
+    if oversized:
+        return jsonify({'error': 'Response page too large; reduce limit'}), 413
     return jsonify(item)
 
 

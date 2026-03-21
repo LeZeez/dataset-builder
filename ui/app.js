@@ -1455,6 +1455,7 @@ async function init() {
         loadCredentialPresets(els.provider.value),
         loadPrompts(),
         loadStats(),
+        ensureModelsLoaded(),
         loadPresets(),
         loadChatPresets(),
         loadExportPresets()
@@ -4861,7 +4862,8 @@ function syncReviewPositionUI() {
 }
 
 async function hydrateCurrentReviewItem({ requestSeq = state.review.requestSeq } = {}) {
-    const item = state.review.queue[state.review.currentIndex];
+    const currentIndex = state.review.currentIndex;
+    const item = state.review.queue[currentIndex];
     if (!item?.id) return;
     if (Array.isArray(item.conversations) && item.conversations.length) return;
 
@@ -4870,14 +4872,20 @@ async function hydrateCurrentReviewItem({ requestSeq = state.review.requestSeq }
     try {
         let fullItem = null;
         if (String(item.id).startsWith('local-')) {
-            fullItem = await dbGet('reviewQueue', item.id).catch(() => null);
+            fullItem = await dbGet('reviewQueue', item.id).catch(err => {
+                console.warn('Failed to get review item from local DB:', err);
+                return null;
+            });
         } else {
             fullItem = await fetchReviewQueueItem(item.id);
         }
         if (state.review.requestSeq !== requestSeq) return;
+        if (state.review.currentIndex !== currentIndex) return;
+        const currentItem = state.review.queue[currentIndex];
+        if (!currentItem?.id || String(currentItem.id) !== String(item.id)) return;
         if (fullItem) {
-            state.review.queue[state.review.currentIndex] = {
-                ...item,
+            state.review.queue[currentIndex] = {
+                ...currentItem,
                 ...fullItem,
                 id: item.id,
             };
@@ -4885,7 +4893,7 @@ async function hydrateCurrentReviewItem({ requestSeq = state.review.requestSeq }
     } catch (e) {
         console.warn('Failed to hydrate review item:', e);
     } finally {
-        if (state.review.requestSeq === requestSeq) {
+        if (state.review.requestSeq === requestSeq && state.review.currentIndex === currentIndex) {
             state.review.currentItemLoading = false;
             if (state.currentTab === 'review') renderReviewItem();
         }
@@ -5559,8 +5567,8 @@ async function loadReviewBrowserPreviewItem(itemId) {
             state.reviewBrowser.previewConversation = null;
             state.reviewBrowser.previewLoading = false;
             renderReviewBrowserPreview();
+            toast('Failed to preview queue item', 'error');
         }
-        toast('Failed to preview queue item', 'error');
     }
 }
 
@@ -6678,6 +6686,30 @@ async function saveDraftToLocal() {
 async function buildDraftObject() {
     const currentReviewItem = state.review.queue[state.review.currentIndex];
     const reviewEditBuffer = state.review.isEditing ? String(els.reviewEditInput?.value || '') : '';
+    const reviewQueuePage = (state.review.queue || [])
+        .map(item => ({
+            id: String(item?.id || ''),
+            rawText: String(item?.rawText || ''),
+            preview: String(item?.preview || item?.rawText || ''),
+            createdAt: item?.createdAt || ''
+        }))
+        .filter(item => item.id);
+    const reviewCurrentItem = currentReviewItem?.id
+        ? {
+            id: String(currentReviewItem.id),
+            conversations: Array.isArray(currentReviewItem.conversations) ? currentReviewItem.conversations : [],
+            rawText: String(currentReviewItem.rawText || ''),
+            metadata: currentReviewItem.metadata || {},
+            createdAt: currentReviewItem.createdAt || ''
+        }
+        : null;
+    const reviewBrowserItems = (state.reviewBrowser.items || [])
+        .map(item => ({
+            id: String(item?.id || ''),
+            preview: String(item?.preview || item?.rawText || ''),
+            createdAt: item?.createdAt || ''
+        }))
+        .filter(item => item.id);
 
     return {
         _sessionId: SESSION_ID,
@@ -6709,6 +6741,8 @@ async function buildDraftObject() {
             isEditing: !!state.review.isEditing,
             editBuffer: reviewEditBuffer,
             currentItemId: String(currentReviewItem?.id || ''),
+            queuePage: reviewQueuePage,
+            currentItem: reviewCurrentItem,
         },
         filesModal: {
             currentFolder: state.filesModal.currentFolder,
@@ -6717,6 +6751,7 @@ async function buildDraftObject() {
             search: els.filesSearchInput?.value || '',
         },
         reviewBrowser: {
+            items: reviewBrowserItems,
             total: state.reviewBrowser.total,
             offset: state.reviewBrowser.offset,
             hasMore: state.reviewBrowser.hasMore,
@@ -6810,6 +6845,45 @@ function applyDraft(draft) {
         state.export.presetName = draft.export.presetName;
         els.exportPresetSelect.value = draft.export.presetName;
     }
+    if (draft.review) {
+        const restoredQueuePage = Array.isArray(draft.review.queuePage)
+            ? draft.review.queuePage
+                .map(item => ({
+                    id: String(item?.id || ''),
+                    rawText: String(item?.rawText || ''),
+                    preview: String(item?.preview || item?.rawText || ''),
+                    createdAt: item?.createdAt || ''
+                }))
+                .filter(item => item.id)
+            : [];
+        state.review.queue = restoredQueuePage;
+        state.review.pageOffset = Number.isFinite(Number(draft.review.pageOffset))
+            ? Math.max(0, Number(draft.review.pageOffset))
+            : state.review.pageOffset;
+        state.review.total = Number.isFinite(Number(draft.review.total))
+            ? Math.max(restoredQueuePage.length, Number(draft.review.total))
+            : restoredQueuePage.length;
+        const restoredAbsoluteIndex = Number.isFinite(Number(draft.review.currentIndex))
+            ? Math.max(0, Number(draft.review.currentIndex))
+            : state.review.pageOffset;
+        state.review.currentIndex = restoredQueuePage.length
+            ? Math.max(0, Math.min(restoredAbsoluteIndex - state.review.pageOffset, restoredQueuePage.length - 1))
+            : 0;
+        const restoredCurrentItem = draft.review.currentItem;
+        if (restoredCurrentItem?.id) {
+            const currentItemIndex = state.review.queue.findIndex(item => item.id === String(restoredCurrentItem.id));
+            if (currentItemIndex !== -1) {
+                state.review.queue[currentItemIndex] = {
+                    ...state.review.queue[currentItemIndex],
+                    id: String(restoredCurrentItem.id),
+                    conversations: Array.isArray(restoredCurrentItem.conversations) ? restoredCurrentItem.conversations : [],
+                    rawText: String(restoredCurrentItem.rawText || state.review.queue[currentItemIndex].rawText || ''),
+                    metadata: restoredCurrentItem.metadata || {},
+                    createdAt: restoredCurrentItem.createdAt || state.review.queue[currentItemIndex].createdAt || ''
+                };
+            }
+        }
+    }
     if (draft.filesModal) {
         state.filesModal.currentFolder = String(draft.filesModal.currentFolder || state.filesModal.currentFolder || 'wanted');
         const restoredSelectedIds = (draft.filesModal.selectedIds || []).map(id => String(id || '')).filter(Boolean);
@@ -6822,12 +6896,21 @@ function applyDraft(draft) {
         }
     }
     if (draft.reviewBrowser) {
-        state.reviewBrowser.items = [];
+        const restoredItems = Array.isArray(draft.reviewBrowser.items)
+            ? draft.reviewBrowser.items
+                .map(item => ({
+                    id: String(item?.id || ''),
+                    preview: String(item?.preview || item?.rawText || ''),
+                    createdAt: item?.createdAt || ''
+                }))
+                .filter(item => item.id)
+            : [];
+        state.reviewBrowser.items = restoredItems;
         state.reviewBrowser.total = draft.reviewBrowser.total ?? 0;
         state.reviewBrowser.offset = draft.reviewBrowser.offset ?? 0;
         state.reviewBrowser.hasMore = draft.reviewBrowser.hasMore ?? false;
-        state.reviewBrowser.seenIds = new Set();
-        state.reviewBrowser.idToIndex = new Map();
+        state.reviewBrowser.seenIds = new Set(restoredItems.map(item => item.id));
+        state.reviewBrowser.idToIndex = new Map(restoredItems.map((item, index) => [item.id, index]));
         state.reviewBrowser.selectedIds = new Set((draft.reviewBrowser.selectedIds || []).map(id => String(id || '')).filter(Boolean));
         state.reviewBrowser.previewId = String(draft.reviewBrowser.previewId || '');
         state.reviewBrowser.previewConversation = null;
