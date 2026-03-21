@@ -688,6 +688,57 @@ def get_review_queue(limit: int = 0, offset: int = 0, search: str = '') -> tuple
     return items, total
 
 
+def _build_review_queue_preview(raw_text: str, limit: int = 160) -> str:
+    """Build a compact one-line preview for lightweight review queue listings."""
+    collapsed = re.sub(r'\s+', ' ', str(raw_text or '')).strip()
+    if not collapsed:
+        return 'Empty conversation'
+    if len(collapsed) <= limit:
+        return collapsed
+    return collapsed[:max(1, limit - 1)].rstrip() + '…'
+
+
+def get_review_queue_summaries(limit: int = 0, offset: int = 0, search: str = '') -> tuple[list, int]:
+    """Get lightweight review queue rows for list/browse UIs."""
+    params: list = []
+    with get_db() as conn:
+        total = _get_review_queue_count(conn, search=search)
+
+        if search:
+            query = """
+                SELECT r.id, r.raw_text, r.created_at
+                FROM review_queue r
+                JOIN review_queue_fts f ON r.rowid = f.rowid
+                WHERE review_queue_fts MATCH ?
+                ORDER BY r.created_at ASC, r.rowid ASC
+            """
+            safe_search = search.replace('"', '""')
+            params.append(f'"{safe_search}"*')
+            if limit > 0:
+                query += " LIMIT ? OFFSET ?"
+                params.extend([limit, offset])
+            rows = conn.execute(query, params).fetchall()
+        else:
+            query = """
+                SELECT id, raw_text, created_at
+                FROM review_queue
+                ORDER BY created_at ASC, rowid ASC
+            """
+            if limit > 0:
+                query += " LIMIT ? OFFSET ?"
+                params.extend([limit, offset])
+            rows = conn.execute(query, params).fetchall()
+
+    items = []
+    for row in rows:
+        items.append({
+            'id': row['id'],
+            'preview': _build_review_queue_preview(row['raw_text']),
+            'createdAt': row['created_at'],
+        })
+    return items, total
+
+
 def get_review_queue_ids(limit: int = 0, offset: int = 0, search: str = '') -> tuple[list[str], int]:
     """Get review queue IDs only. Returns (ids, total_count)."""
     params: list = []
@@ -715,6 +766,26 @@ def get_review_queue_ids(limit: int = 0, offset: int = 0, search: str = '') -> t
             rows = conn.execute(query, params).fetchall()
 
     return [row['id'] for row in rows], total
+
+
+def get_review_queue_item(item_id: str) -> dict | None:
+    """Get a single full review queue item by ID."""
+    if not item_id:
+        return None
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT * FROM review_queue WHERE id = ?",
+            (item_id,),
+        ).fetchone()
+    if not row:
+        return None
+    return {
+        'id': row['id'],
+        'conversations': json.loads(row['conversations']),
+        'rawText': row['raw_text'],
+        'metadata': json.loads(row['metadata']),
+        'createdAt': row['created_at'],
+    }
 
 
 def get_review_queue_position(item_id: str, search: str = '') -> tuple[int, int] | None:

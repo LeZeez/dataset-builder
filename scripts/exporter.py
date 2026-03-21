@@ -270,11 +270,9 @@ def export_dataset(
     output_file = output_path / filename
 
     db.init_db()
-    conversations = db.get_conversations_for_export(folder=folder, ids=selected_ids)
-
     count = 0
     with open(output_file, "w", encoding="utf-8") as out:
-        for conv in conversations:
+        for conv in db.iter_conversations_for_export(folder=folder, ids=selected_ids):
             conv_data = {
                 "id": conv.get("id"),
                 "conversations": [dict(message) for message in conv.get("conversations", [])],
