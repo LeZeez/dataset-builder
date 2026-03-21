@@ -3855,7 +3855,9 @@ async function bulkGenerate(count) {
         }
         state.bulk.completed++;
         updateBulkProgress();
-        await maybePauseBetweenRuns();
+        if (i < count - 1) {
+            await maybePauseBetweenRuns();
+        }
     }
 
     const wasCanceled = !!state.bulk.abortController?.signal?.aborted;
