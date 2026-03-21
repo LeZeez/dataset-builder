@@ -305,10 +305,12 @@ def export_dataset(
             out.flush()
             os.fsync(out.fileno())
         temp_file.replace(output_file)
-    except Exception:
+    finally:
         if temp_file and temp_file.exists():
-            temp_file.unlink()
-        raise
+            try:
+                temp_file.unlink()
+            except Exception:
+                pass
 
     print(f"Exported {count} entries to {output_file}")
     return output_file

@@ -2321,7 +2321,10 @@ def get_review_queue():
 
     if summary_only:
         queue, total = db.get_review_queue_summaries(limit=limit, offset=offset, search=search)
-        return jsonify({'queue': queue, 'count': total, 'limit': limit, 'offset': offset, 'response_truncated': False})
+        queue, response_truncated, oversized_single_item = _cap_paginated_response('queue', queue, total, limit, offset)
+        if oversized_single_item:
+            return jsonify({'error': 'Response page too large; reduce limit'}), 413
+        return jsonify({'queue': queue, 'count': total, 'limit': limit, 'offset': offset, 'response_truncated': response_truncated})
 
     queue, total = db.get_review_queue(limit=limit, offset=offset, search=search)
     queue, response_truncated, oversized_single_item = _cap_paginated_response('queue', queue, total, limit, offset)
@@ -2338,8 +2341,8 @@ def get_review_queue_item_endpoint(item_id: str):
     item = db.get_review_queue_item(item_id)
     if not item:
         return jsonify({'error': 'Review queue item not found'}), 404
-    item, _, oversized = _cap_single_response('review_queue_item', item)
-    if oversized:
+    _, item_truncated, oversized = _cap_single_response('review_queue_item', item)
+    if item_truncated or oversized:
         return jsonify({'error': 'Response page too large; reduce limit'}), 413
     return jsonify(item)
 

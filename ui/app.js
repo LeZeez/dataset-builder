@@ -600,7 +600,8 @@ const state = {
 	        virtualRafPending: false,
         autoLoadOnScroll: true,
         loadAllTaskId: null,
-        loadAllController: null
+        loadAllController: null,
+        requestSeq: 0
     },
     export: {
 	        selectedIds: new Set(),
@@ -626,7 +627,8 @@ const state = {
 	        virtualRafPending: false,
         autoLoadOnScroll: true,
         loadAllTaskId: null,
-        loadAllController: null
+        loadAllController: null,
+        requestSeq: 0
     },
     exportedDatasets: [],
     review: {
@@ -663,7 +665,8 @@ const state = {
         autoLoadOnScroll: true,
         loadAllTaskId: null,
         loadAllController: null,
-        requestSeq: 0
+        requestSeq: 0,
+        currentRequest: null
     },
     bulk: {
         isRunning: false,
@@ -1136,6 +1139,16 @@ function cancelSliceLoadAll(slice, reason = 'Canceled') {
     slice.loadAllTaskId = null;
     slice.loadAllController = null;
     slice.isLoadAllRunning = false;
+}
+
+function beginSliceRequest(slice) {
+    const requestSeq = (slice.requestSeq || 0) + 1;
+    slice.requestSeq = requestSeq;
+    return requestSeq;
+}
+
+function isSliceRequestStale(slice, requestSeq, signal = null) {
+    return slice.requestSeq !== requestSeq || !!signal?.aborted;
 }
 
 // ============ INITIALIZATION ============
@@ -1628,8 +1641,8 @@ function updateProviderUI() {
 }
 
 // ============ MODELS ============
-async function loadModels() {
-    const provider = els.provider.value;
+async function loadModels(provider = String(els.provider?.value || '')) {
+    if (!provider) return;
     try {
         const override = getCredentialOverride(provider);
         const res = await fetch('/api/models', {
@@ -1640,7 +1653,7 @@ async function loadModels() {
         if (res.ok) {
             const data = await res.json();
             if (data.error) console.warn('Model fetch warning:', data.error);
-            populateModelSelect(data.models);
+            populateModelSelect(data.models, provider);
             return;
         }
         if (res.status === 404 || res.status === 405) {
@@ -1649,7 +1662,7 @@ async function loadModels() {
             if (fallback.ok) {
                 const data = await fallback.json();
                 if (data.error) console.warn('Model fetch warning:', data.error);
-                populateModelSelect(data.models);
+                populateModelSelect(data.models, provider);
             }
             return;
         }
@@ -1669,10 +1682,13 @@ async function ensureModelsLoaded({ force = false } = {}) {
     if (!force && modelsLoadedForProvider === provider && ((els.model?.options?.length || 0) > 0 || (els.modelDatalist?.children?.length || 0) > 0)) {
         return;
     }
-    await loadModels();
+    await loadModels(provider);
 }
 
-function populateModelSelect(models) {
+function populateModelSelect(models, provider = String(els.provider?.value || '')) {
+    const providerToken = String(provider || '');
+    const liveProvider = String(els.provider?.value || '');
+    if (providerToken && liveProvider && providerToken !== liveProvider) return;
     const current = els.modelInput?.value || els.model.value;
     const defaultModel = state.config?.model;
     els.model.innerHTML = '';
@@ -1705,7 +1721,9 @@ function populateModelSelect(models) {
             els.model.value = preferredModel;
         }
     }
-    modelsLoadedForProvider = String(els.provider?.value || '');
+    if (!providerToken || providerToken === liveProvider) {
+        modelsLoadedForProvider = providerToken;
+    }
 }
 
 function getModelValue() {
@@ -2804,7 +2822,9 @@ function updateFilesPaginationUI() {
     }
 }
 
-async function loadFilesModal(folder = 'wanted', { reset = false, signal = null } = {}) {
+async function loadFilesModal(folder = 'wanted', { reset = false, signal = null, requestSeq = null } = {}) {
+    if (requestSeq != null && state.filesModal.requestSeq !== requestSeq) return;
+    const activeRequestSeq = requestSeq ?? beginSliceRequest(state.filesModal);
     state.filesModal.currentFolder = folder;
     updateFilesBulkActionsVisibility(folder);
     const search = els.filesSearchInput?.value?.trim() || '';
@@ -2842,8 +2862,10 @@ async function loadFilesModal(folder = 'wanted', { reset = false, signal = null 
         if (search) params.set('search', search);
         const url = `/api/conversations?${params.toString()}`;
         const res = await fetch(url, signal ? { signal } : undefined);
+        if (isSliceRequestStale(state.filesModal, activeRequestSeq, signal)) return;
         if (res.ok) {
             const data = await res.json();
+            if (isSliceRequestStale(state.filesModal, activeRequestSeq, signal)) return;
             const items = Array.isArray(data) ? data : (data.conversations || []);
             for (const item of items) {
                 const itemId = item?.id;
@@ -2862,6 +2884,7 @@ async function loadFilesModal(folder = 'wanted', { reset = false, signal = null 
             }
         }
 
+        if (isSliceRequestStale(state.filesModal, activeRequestSeq, signal)) return;
         if (!els.filesModal?.classList.contains('hidden')) {
             updateFilesModalCount();
             if (reset) renderFilesPreview();
@@ -2869,8 +2892,9 @@ async function loadFilesModal(folder = 'wanted', { reset = false, signal = null 
         }
     } catch (e) {
         if (e?.name === 'AbortError') aborted = true;
-        else console.error('Failed to load files:', e);
+        else if (!isSliceRequestStale(state.filesModal, activeRequestSeq, signal)) console.error('Failed to load files:', e);
     } finally {
+        if (isSliceRequestStale(state.filesModal, activeRequestSeq, signal)) return;
         state.filesModal.isLoading = false;
         if (!aborted) updateFilesPaginationUI();
         if (!els.filesModal?.classList.contains('hidden')) {
@@ -4816,6 +4840,7 @@ async function fetchReviewQueueItem(id, signal = null) {
 }
 
 function syncReviewBrowserPreviewState({ allowFallback = true } = {}) {
+    state.reviewBrowser.currentRequest = null;
     const previewId = String(state.reviewBrowser.previewId || '');
     const loadedPreview = state.reviewBrowser.items.find(item => String(item?.id || '') === previewId) || null;
     if (loadedPreview?.conversations?.length) {
@@ -5451,7 +5476,9 @@ function openReviewBrowserModal() {
 function closeReviewBrowserModal() {
     cancelSliceLoadAll(state.reviewBrowser, 'Closed');
     state.reviewBrowser.requestSeq = (state.reviewBrowser.requestSeq || 0) + 1;
+    state.reviewBrowser.currentRequest = null;
     state.reviewBrowser.isLoading = false;
+    state.reviewBrowser.previewLoading = false;
     els.reviewBrowserModal.classList.add('hidden');
 }
 
@@ -5544,6 +5571,8 @@ function renderReviewBrowserRowHtml(item) {
 async function loadReviewBrowserPreviewItem(itemId) {
     const requestedId = String(itemId || '');
     if (!requestedId) return;
+    const requestToken = Symbol('review-browser-preview');
+    state.reviewBrowser.currentRequest = requestToken;
     state.reviewBrowser.previewId = requestedId;
     state.reviewBrowser.previewConversation = null;
     state.reviewBrowser.previewLoading = true;
@@ -5558,17 +5587,17 @@ async function loadReviewBrowserPreviewItem(itemId) {
         } else {
             preview = await fetchReviewQueueItem(requestedId);
         }
-        if (state.reviewBrowser.previewId !== requestedId) return;
+        if (state.reviewBrowser.currentRequest !== requestToken) return;
         state.reviewBrowser.previewConversation = preview;
+    } catch (_e) {
+        if (state.reviewBrowser.currentRequest !== requestToken) return;
+        state.reviewBrowser.previewConversation = null;
+        toast('Failed to preview queue item', 'error');
+    } finally {
+        if (state.reviewBrowser.currentRequest !== requestToken) return;
+        state.reviewBrowser.currentRequest = null;
         state.reviewBrowser.previewLoading = false;
         renderReviewBrowserPreview();
-    } catch (_e) {
-        if (state.reviewBrowser.previewId === requestedId) {
-            state.reviewBrowser.previewConversation = null;
-            state.reviewBrowser.previewLoading = false;
-            renderReviewBrowserPreview();
-            toast('Failed to preview queue item', 'error');
-        }
     }
 }
 
@@ -6439,7 +6468,9 @@ function updateExportPaginationUI() {
     }
 }
 
-async function loadExportFiles({ reset = false, signal = null } = {}) {
+async function loadExportFiles({ reset = false, signal = null, requestSeq = null } = {}) {
+    if (requestSeq != null && state.export.requestSeq !== requestSeq) return;
+    const activeRequestSeq = requestSeq ?? beginSliceRequest(state.export);
     const pageSize = getModalPageSize();
     if (reset) {
         state.export.files = [];
@@ -6470,8 +6501,10 @@ async function loadExportFiles({ reset = false, signal = null } = {}) {
         const search = els.exportSearchInput?.value?.trim() || '';
         if (search) params.set('search', search);
         const res = await fetch(`/api/conversations?${params.toString()}`, signal ? { signal } : undefined);
+        if (isSliceRequestStale(state.export, activeRequestSeq, signal)) return;
         if (res.ok) {
             const data = await res.json();
+            if (isSliceRequestStale(state.export, activeRequestSeq, signal)) return;
             const items = Array.isArray(data) ? data : (data.conversations || []);
             for (const item of items) {
                 const itemId = item?.id;
@@ -6493,8 +6526,9 @@ async function loadExportFiles({ reset = false, signal = null } = {}) {
         }
     } catch (e) {
         if (e?.name === 'AbortError') aborted = true;
-        else { state.export.files = []; renderExportFileList(); renderExportPreview(); }
+        else if (!isSliceRequestStale(state.export, activeRequestSeq, signal)) { state.export.files = []; renderExportFileList(); renderExportPreview(); }
     } finally {
+        if (isSliceRequestStale(state.export, activeRequestSeq, signal)) return;
         state.export.isLoading = false;
         if (!aborted) updateExportPaginationUI();
         if (!els.exportModal?.classList.contains('hidden')) {
@@ -7652,7 +7686,8 @@ function setupEventListeners() {
     els.filesSearchInput?.addEventListener('input', () => {
         cancelSliceLoadAll(state.filesModal, 'Canceled');
         if (filesSearchTimer) clearTimeout(filesSearchTimer);
-        filesSearchTimer = setTimeout(() => loadFilesModal(state.filesModal.currentFolder, { reset: true }), LIST_SEARCH_DEBOUNCE_MS);
+        const requestSeq = beginSliceRequest(state.filesModal);
+        filesSearchTimer = setTimeout(() => loadFilesModal(state.filesModal.currentFolder, { reset: true, requestSeq }), LIST_SEARCH_DEBOUNCE_MS);
     });
 
     // Files Modal Tabs
@@ -7832,7 +7867,8 @@ function setupEventListeners() {
     els.exportSearchInput?.addEventListener('input', () => {
         cancelSliceLoadAll(state.export, 'Canceled');
         if (exportSearchTimer) clearTimeout(exportSearchTimer);
-        exportSearchTimer = setTimeout(() => loadExportFiles({ reset: true }), LIST_SEARCH_DEBOUNCE_MS);
+        const requestSeq = beginSliceRequest(state.export);
+        exportSearchTimer = setTimeout(() => loadExportFiles({ reset: true, requestSeq }), LIST_SEARCH_DEBOUNCE_MS);
     });
     els.exportSelectToggle?.addEventListener('click', toggleAllExportFiles);
     els.exportClearSelection?.addEventListener('click', () => {
