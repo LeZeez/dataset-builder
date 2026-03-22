@@ -688,6 +688,108 @@ def get_review_queue(limit: int = 0, offset: int = 0, search: str = '') -> tuple
     return items, total
 
 
+def _collapse_review_queue_preview_text(value: str, limit: int = 160) -> str:
+    collapsed = re.sub(r'\s+', ' ', str(value or '')).strip()
+    if not collapsed:
+        return ''
+    if len(collapsed) <= limit:
+        return collapsed
+    return collapsed[:max(1, limit - 1)].rstrip() + '…'
+
+
+def _coerce_review_queue_message_text(value) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        parts = []
+        for item in value:
+            text = _coerce_review_queue_message_text(item)
+            if text:
+                parts.append(text)
+        return ' '.join(parts)
+    if isinstance(value, dict):
+        for key in ('text', 'value', 'content'):
+            text = _coerce_review_queue_message_text(value.get(key))
+            if text:
+                return text
+    return ''
+
+
+def _build_review_queue_preview(raw_text: str, conversations_payload: str = '', limit: int = 160) -> str:
+    """Build a compact one-line preview for lightweight review queue listings."""
+    collapsed = _collapse_review_queue_preview_text(raw_text, limit=limit)
+    if collapsed:
+        return collapsed
+
+    try:
+        messages = json.loads(conversations_payload or '[]')
+    except (TypeError, ValueError, json.JSONDecodeError):
+        messages = []
+    if isinstance(messages, list):
+        preview_parts = []
+        for message in reversed(messages):
+            if not isinstance(message, dict):
+                continue
+            role = str(message.get('from') or message.get('role') or '').strip().lower()
+            if role not in ('human', 'gpt', 'user', 'assistant'):
+                continue
+            text = _collapse_review_queue_preview_text(
+                _coerce_review_queue_message_text(message.get('value') if 'value' in message else message.get('content')),
+                limit=limit,
+            )
+            if not text:
+                text = _collapse_review_queue_preview_text(_coerce_review_queue_message_text(message), limit=limit)
+            if not text:
+                continue
+            preview_parts.append(text)
+            if len(preview_parts) >= 2:
+                break
+        if preview_parts:
+            return _collapse_review_queue_preview_text(' · '.join(reversed(preview_parts)), limit=limit) or 'Empty conversation'
+    return 'Empty conversation'
+
+
+def get_review_queue_summaries(limit: int = 0, offset: int = 0, search: str = '') -> tuple[list, int]:
+    """Get lightweight review queue rows for list/browse UIs."""
+    params: list = []
+    with get_db() as conn:
+        total = _get_review_queue_count(conn, search=search)
+
+        if search:
+            query = """
+                SELECT r.id, r.raw_text, r.conversations, r.created_at
+                FROM review_queue r
+                JOIN review_queue_fts f ON r.rowid = f.rowid
+                WHERE review_queue_fts MATCH ?
+                ORDER BY r.created_at ASC, r.rowid ASC
+            """
+            safe_search = search.replace('"', '""')
+            params.append(f'"{safe_search}"*')
+            if limit > 0:
+                query += " LIMIT ? OFFSET ?"
+                params.extend([limit, offset])
+            rows = conn.execute(query, params).fetchall()
+        else:
+            query = """
+                SELECT id, raw_text, conversations, created_at
+                FROM review_queue
+                ORDER BY created_at ASC, rowid ASC
+            """
+            if limit > 0:
+                query += " LIMIT ? OFFSET ?"
+                params.extend([limit, offset])
+            rows = conn.execute(query, params).fetchall()
+
+    items = []
+    for row in rows:
+        items.append({
+            'id': row['id'],
+            'preview': _build_review_queue_preview(row['raw_text'], row['conversations']),
+            'createdAt': row['created_at'],
+        })
+    return items, total
+
+
 def get_review_queue_ids(limit: int = 0, offset: int = 0, search: str = '') -> tuple[list[str], int]:
     """Get review queue IDs only. Returns (ids, total_count)."""
     params: list = []
@@ -715,6 +817,26 @@ def get_review_queue_ids(limit: int = 0, offset: int = 0, search: str = '') -> t
             rows = conn.execute(query, params).fetchall()
 
     return [row['id'] for row in rows], total
+
+
+def get_review_queue_item(item_id: str) -> dict | None:
+    """Get a single full review queue item by ID."""
+    if not item_id:
+        return None
+    with get_db() as conn:
+        row = conn.execute(
+            "SELECT * FROM review_queue WHERE id = ?",
+            (item_id,),
+        ).fetchone()
+    if not row:
+        return None
+    return {
+        'id': row['id'],
+        'conversations': json.loads(row['conversations']),
+        'rawText': row['raw_text'],
+        'metadata': json.loads(row['metadata']),
+        'createdAt': row['created_at'],
+    }
 
 
 def get_review_queue_position(item_id: str, search: str = '') -> tuple[int, int] | None:

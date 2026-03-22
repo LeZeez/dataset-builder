@@ -5,7 +5,9 @@ The SQLite database is the single source of truth for conversations.
 """
 
 import json
+import os
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Iterable, Literal
@@ -270,28 +272,45 @@ def export_dataset(
     output_file = output_path / filename
 
     db.init_db()
-    conversations = db.get_conversations_for_export(folder=folder, ids=selected_ids)
-
     count = 0
-    with open(output_file, "w", encoding="utf-8") as out:
-        for conv in conversations:
-            conv_data = {
-                "id": conv.get("id"),
-                "conversations": [dict(message) for message in conv.get("conversations", [])],
-                "metadata": dict(conv.get("metadata", {}))
-            }
+    temp_file = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=output_file.parent,
+            prefix=f".{output_file.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as out:
+            temp_file = Path(out.name)
+            for conv in db.iter_conversations_for_export(folder=folder, ids=selected_ids):
+                conv_data = {
+                    "id": conv.get("id"),
+                    "conversations": [dict(message) for message in conv.get("conversations", [])],
+                    "metadata": dict(conv.get("metadata", {}))
+                }
 
-            _apply_system_prompt_mode(conv_data, system_prompt, system_prompt_mode)
+                _apply_system_prompt_mode(conv_data, system_prompt, system_prompt_mode)
 
-            converted = converter(conv_data)
+                converted = converter(conv_data)
 
-            if isinstance(converted, list):
-                for item in converted:
-                    out.write(json.dumps(item, ensure_ascii=False) + "\n")
+                if isinstance(converted, list):
+                    for item in converted:
+                        out.write(json.dumps(item, ensure_ascii=False) + "\n")
+                        count += 1
+                else:
+                    out.write(json.dumps(converted, ensure_ascii=False) + "\n")
                     count += 1
-            else:
-                out.write(json.dumps(converted, ensure_ascii=False) + "\n")
-                count += 1
+            out.flush()
+            os.fsync(out.fileno())
+        temp_file.replace(output_file)
+    finally:
+        if temp_file and temp_file.exists():
+            try:
+                temp_file.unlink()
+            except Exception:
+                pass
 
     print(f"Exported {count} entries to {output_file}")
     return output_file

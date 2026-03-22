@@ -160,6 +160,26 @@ def _cap_paginated_response(item_key: str, items: list, total: int, limit: int, 
     return bounded_items, (fields_truncated or response_truncated), oversized_single_item
 
 
+def _cap_single_response(item_key: str, item: dict):
+    """Keep single-item JSON responses below the server-side byte ceiling."""
+    original_item_bytes = len(json.dumps(item, ensure_ascii=False).encode('utf-8'))
+    oversized = original_item_bytes > MAX_RESPONSE_BYTES
+    bounded_item, item_truncated = _truncate_large_fields(item)
+    bounded_item_bytes = len(json.dumps(bounded_item, ensure_ascii=False).encode('utf-8'))
+
+    if item_truncated or oversized:
+        LOGGER.warning(
+            "Capped single response for %s item_truncated=%s oversized=%s original_bytes=%s bounded_bytes=%s",
+            item_key,
+            item_truncated,
+            oversized,
+            original_item_bytes,
+            bounded_item_bytes,
+        )
+
+    return bounded_item, item_truncated, oversized
+
+
 def is_safe_id(id_str: str) -> bool:
     """Checks for path traversal characters in an ID."""
     if not isinstance(id_str, str):
@@ -2290,6 +2310,7 @@ def get_review_queue():
     """Get all items in the review queue."""
     search = request.args.get('search', '').strip()
     ids_only = request.args.get('ids_only', '').strip().lower() in ('1', 'true', 'yes')
+    summary_only = request.args.get('summary', '').strip().lower() in ('1', 'true', 'yes')
     try:
         limit = max(1, min(int(request.args.get('limit', 500)), 2000))
         offset = max(0, int(request.args.get('offset', 0)))
@@ -2300,11 +2321,32 @@ def get_review_queue():
         ids, total = db.get_review_queue_ids(limit=limit, offset=offset, search=search)
         return jsonify({'ids': ids, 'count': total, 'limit': limit, 'offset': offset})
 
+    if summary_only:
+        queue, total = db.get_review_queue_summaries(limit=limit, offset=offset, search=search)
+        queue, response_truncated, oversized_single_item = _cap_paginated_response('queue', queue, total, limit, offset)
+        if oversized_single_item:
+            return jsonify({'error': 'Response page too large; reduce limit'}), 413
+        return jsonify({'queue': queue, 'count': total, 'limit': limit, 'offset': offset, 'response_truncated': response_truncated})
+
     queue, total = db.get_review_queue(limit=limit, offset=offset, search=search)
     queue, response_truncated, oversized_single_item = _cap_paginated_response('queue', queue, total, limit, offset)
     if oversized_single_item:
         return jsonify({'error': 'Response page too large; reduce limit'}), 413
     return jsonify({'queue': queue, 'count': total, 'limit': limit, 'offset': offset, 'response_truncated': response_truncated})
+
+
+@app.route('/api/review-queue/<item_id>', methods=['GET'])
+def get_review_queue_item_endpoint(item_id: str):
+    """Get one full review queue item."""
+    if not is_safe_id(item_id):
+        return jsonify({'error': 'Invalid review queue ID'}), 400
+    item = db.get_review_queue_item(item_id)
+    if not item:
+        return jsonify({'error': 'Review queue item not found'}), 404
+    bounded_item, _, oversized = _cap_single_response('review_queue_item', item)
+    if oversized:
+        return jsonify({'error': 'Response too large to return for this item'}), 413
+    return jsonify(bounded_item)
 
 
 @app.route('/api/review-queue-position/<item_id>', methods=['GET'])

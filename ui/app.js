@@ -14,10 +14,14 @@ const ICON_EMPTY_QUEUE = '<svg width="32" height="32" viewBox="0 0 24 24" fill="
 const CHAT_ZOOM_MIN = 0.5;
 const CHAT_ZOOM_MAX = 2;
 const CHAT_ZOOM_STEP = 0.1;
-const MODAL_PAGE_SIZE = 500;
+const MODAL_PAGE_SIZE = 100;
 const UI_PREFS_KEY = 'uiPrefs';
 const RAW_CONVERSATION_SEPARATOR_RE = /^\s*\+\+\+\s*$/m;
 const hydratedFields = { model: false, temperature: false };
+const LIST_SEARCH_DEBOUNCE_MS = 300;
+let lastLocalDraftHash = null;
+let modelsLoadedForProvider = '';
+let promptHistoryLoaded = false;
 
 function applyChatZoom() {
     if (els.chatMessages) els.chatMessages.style.setProperty('--chat-zoom', state.chat.zoomLevel);
@@ -295,6 +299,7 @@ async function loadSyncSettings() {
         const saved = await dbGet('settings', 'syncSettings');
         if (saved) syncSettings = { ...syncSettings, ...saved };
     } catch (e) { }
+    syncSettings.saveInterval = Math.max(30, parseInt(syncSettings.saveInterval, 10) || 2000);
     applySyncSettingsToUI();
 }
 
@@ -303,7 +308,7 @@ async function saveSyncSettings() {
     syncSettings.autoSyncEnabled = el('auto-sync-enabled')?.checked ?? true;
     syncSettings.syncInterval = parseInt(el('sync-interval')?.value) || 30;
     syncSettings.autoSaveEnabled = el('auto-save-enabled')?.checked ?? true;
-    syncSettings.saveInterval = parseInt(el('save-interval')?.value) || 2000;
+    syncSettings.saveInterval = Math.max(30, parseInt(el('save-interval')?.value, 10) || 2000);
     syncSettings.askRejectReason = el('ask-reject-reason')?.checked ?? false;
     syncSettings.bulkRetryAttempts = Math.max(0, Math.min(5, parseInt(el('bulk-retry-attempts')?.value, 10) || 0));
     await dbSet('settings', 'syncSettings', syncSettings);
@@ -595,7 +600,8 @@ const state = {
 	        virtualRafPending: false,
         autoLoadOnScroll: true,
         loadAllTaskId: null,
-        loadAllController: null
+        loadAllController: null,
+        requestSeq: 0
     },
     export: {
 	        selectedIds: new Set(),
@@ -621,7 +627,8 @@ const state = {
 	        virtualRafPending: false,
         autoLoadOnScroll: true,
         loadAllTaskId: null,
-        loadAllController: null
+        loadAllController: null,
+        requestSeq: 0
     },
     exportedDatasets: [],
     review: {
@@ -632,6 +639,8 @@ const state = {
         total: 0,
         hasMore: false,
         isLoading: false,
+        currentItemLoading: false,
+        deferredRestoreApplied: false,
         requestSeq: 0
     },
 	    reviewBrowser: {
@@ -640,6 +649,7 @@ const state = {
         anchorId: null,
         previewId: null,
         previewConversation: null,
+        previewLoading: false,
         offset: 0,
         total: 0,
         hasMore: false,
@@ -655,7 +665,8 @@ const state = {
         autoLoadOnScroll: true,
         loadAllTaskId: null,
         loadAllController: null,
-        requestSeq: 0
+        requestSeq: 0,
+        currentRequest: null
     },
     bulk: {
         isRunning: false,
@@ -697,7 +708,7 @@ const state = {
 	        exportFolder: 'wanted',
 	        exportSystemMode: 'add_if_missing',
 	        exportPromptSource: 'custom',
-	        modalPageSize: 500,
+	        modalPageSize: 100,
 	        warnOnLoadAll: true,
 	        skipLoadAllWarning: false, // legacy (migrated to warnOnLoadAll)
 	        virtualListEnabled: true,
@@ -1130,6 +1141,16 @@ function cancelSliceLoadAll(slice, reason = 'Canceled') {
     slice.isLoadAllRunning = false;
 }
 
+function beginSliceRequest(slice) {
+    const requestSeq = (slice.requestSeq || 0) + 1;
+    slice.requestSeq = requestSeq;
+    return requestSeq;
+}
+
+function isSliceRequestStale(slice, requestSeq, signal = null) {
+    return slice.requestSeq !== requestSeq || !!signal?.aborted;
+}
+
 // ============ INITIALIZATION ============
 async function init() {
     els = {
@@ -1439,25 +1460,32 @@ async function init() {
     state._restoredDraft = await restoreDraft();
 
     // Load data
-    await loadServerConfig();
-    await loadConfig();
-    await loadCredentialPresets(els.provider.value);
-    await loadPrompts();
-    await loadStats();
-    await loadModels();
-    await loadPresets();
-    await loadChatPresets();
-    await loadExportPresets();
+    await Promise.all([
+        loadServerConfig(),
+        loadConfig()
+    ]);
+    await Promise.all([
+        loadCredentialPresets(els.provider.value),
+        loadPrompts(),
+        loadStats(),
+        ensureModelsLoaded(),
+        loadPresets(),
+        loadChatPresets(),
+        loadExportPresets()
+    ]);
     applyFirstRunDefaults();
-    await loadReviewQueue();
-    await applyDeferredDraftState(state._restoredDraft);
-    await loadPromptHistory();
+    const initialTab = state.uiPrefs.currentTab || state.currentTab;
+    if (initialTab === 'review') {
+        state.review.deferredRestoreApplied = true;
+        await loadReviewQueue();
+        await applyDeferredDraftState(state._restoredDraft);
+    }
 
     setupEventListeners();
     applyHotkeysToUI();
     setupAutoSaveTimer();
     syncEngine.startAutoSync();
-    switchTab(state.uiPrefs.currentTab || state.currentTab);
+    switchTab(initialTab);
 
     // Initial renders
     if (getGenerateRawText().trim()) parseAndRender();
@@ -1613,8 +1641,8 @@ function updateProviderUI() {
 }
 
 // ============ MODELS ============
-async function loadModels() {
-    const provider = els.provider.value;
+async function loadModels(provider = String(els.provider?.value || '')) {
+    if (!provider) return;
     try {
         const override = getCredentialOverride(provider);
         const res = await fetch('/api/models', {
@@ -1625,7 +1653,7 @@ async function loadModels() {
         if (res.ok) {
             const data = await res.json();
             if (data.error) console.warn('Model fetch warning:', data.error);
-            populateModelSelect(data.models);
+            populateModelSelect(data.models, provider);
             return;
         }
         if (res.status === 404 || res.status === 405) {
@@ -1634,7 +1662,7 @@ async function loadModels() {
             if (fallback.ok) {
                 const data = await fallback.json();
                 if (data.error) console.warn('Model fetch warning:', data.error);
-                populateModelSelect(data.models);
+                populateModelSelect(data.models, provider);
             }
             return;
         }
@@ -1648,7 +1676,19 @@ async function loadModels() {
     } catch (e) { console.error('Failed to load models:', e); }
 }
 
-function populateModelSelect(models) {
+async function ensureModelsLoaded({ force = false } = {}) {
+    const provider = String(els.provider?.value || '');
+    if (!provider) return;
+    if (!force && modelsLoadedForProvider === provider && ((els.model?.options?.length || 0) > 0 || (els.modelDatalist?.children?.length || 0) > 0)) {
+        return;
+    }
+    await loadModels(provider);
+}
+
+function populateModelSelect(models, provider = String(els.provider?.value || '')) {
+    const providerToken = String(provider || '');
+    const liveProvider = String(els.provider?.value || '');
+    if (providerToken && liveProvider && providerToken !== liveProvider) return;
     const current = els.modelInput?.value || els.model.value;
     const defaultModel = state.config?.model;
     els.model.innerHTML = '';
@@ -1681,6 +1721,9 @@ function populateModelSelect(models) {
             els.model.value = preferredModel;
         }
     }
+    if (!providerToken || providerToken === liveProvider) {
+        modelsLoadedForProvider = providerToken;
+    }
 }
 
 function getModelValue() {
@@ -1689,7 +1732,7 @@ function getModelValue() {
 
 async function refreshModels() {
     els.refreshModels.classList.add('spinning');
-    await loadModels();
+    await ensureModelsLoaded({ force: true });
     setTimeout(() => els.refreshModels.classList.remove('spinning'), 500);
 }
 
@@ -2779,7 +2822,9 @@ function updateFilesPaginationUI() {
     }
 }
 
-async function loadFilesModal(folder = 'wanted', { reset = false, signal = null } = {}) {
+async function loadFilesModal(folder = 'wanted', { reset = false, signal = null, requestSeq = null } = {}) {
+    if (requestSeq != null && state.filesModal.requestSeq !== requestSeq) return;
+    const activeRequestSeq = requestSeq ?? beginSliceRequest(state.filesModal);
     state.filesModal.currentFolder = folder;
     updateFilesBulkActionsVisibility(folder);
     const search = els.filesSearchInput?.value?.trim() || '';
@@ -2817,8 +2862,10 @@ async function loadFilesModal(folder = 'wanted', { reset = false, signal = null 
         if (search) params.set('search', search);
         const url = `/api/conversations?${params.toString()}`;
         const res = await fetch(url, signal ? { signal } : undefined);
+        if (isSliceRequestStale(state.filesModal, activeRequestSeq, signal)) return;
         if (res.ok) {
             const data = await res.json();
+            if (isSliceRequestStale(state.filesModal, activeRequestSeq, signal)) return;
             const items = Array.isArray(data) ? data : (data.conversations || []);
             for (const item of items) {
                 const itemId = item?.id;
@@ -2837,6 +2884,7 @@ async function loadFilesModal(folder = 'wanted', { reset = false, signal = null 
             }
         }
 
+        if (isSliceRequestStale(state.filesModal, activeRequestSeq, signal)) return;
         if (!els.filesModal?.classList.contains('hidden')) {
             updateFilesModalCount();
             if (reset) renderFilesPreview();
@@ -2844,9 +2892,12 @@ async function loadFilesModal(folder = 'wanted', { reset = false, signal = null 
         }
     } catch (e) {
         if (e?.name === 'AbortError') aborted = true;
-        else console.error('Failed to load files:', e);
+        else if (!isSliceRequestStale(state.filesModal, activeRequestSeq, signal)) console.error('Failed to load files:', e);
     } finally {
+        const requestIsStale = state.filesModal.requestSeq !== activeRequestSeq;
+        if (requestIsStale) return;
         state.filesModal.isLoading = false;
+        if (aborted || signal?.aborted) return;
         if (!aborted) updateFilesPaginationUI();
         if (!els.filesModal?.classList.contains('hidden')) {
             // Ensure the "Loading more..." row is hidden after paging completes.
@@ -4682,18 +4733,27 @@ async function syncReviewQueueItemsToServer(ids = null) {
     const requestedIds = ids ? new Set(ids.map(String).filter(id => id.startsWith('local-'))) : null;
     if (requestedIds && requestedIds.size === 0) return new Map();
 
-    const localItems = await dbGetAll('reviewQueue');
-    const mergedLocalItems = new Map((localItems || []).map(item => [String(item.id), item]));
-    [...state.review.queue, ...state.reviewBrowser.items].forEach(item => {
-        if (item?.id && String(item.id).startsWith('local-') && !mergedLocalItems.has(String(item.id))) {
-            mergedLocalItems.set(String(item.id), item);
-        }
-    });
-
-    const pendingItems = Array.from(mergedLocalItems.values()).filter(item =>
-        String(item.id).startsWith('local-') &&
-        (!requestedIds || requestedIds.has(String(item.id)))
-    );
+    let pendingItems = [];
+    if (requestedIds) {
+        const localItems = await Promise.all(Array.from(requestedIds).map(id => dbGet('reviewQueue', id).catch(() => null)));
+        const fallbackById = new Map(
+            [...state.review.queue, ...state.reviewBrowser.items]
+                .filter(item => item?.id && String(item.id).startsWith('local-'))
+                .map(item => [String(item.id), item])
+        );
+        pendingItems = Array.from(requestedIds)
+            .map(id => localItems.find(item => String(item?.id || '') === id) || fallbackById.get(id) || null)
+            .filter(Boolean);
+    } else {
+        const localItems = await dbGetAll('reviewQueue');
+        const mergedLocalItems = new Map((localItems || []).map(item => [String(item.id), item]));
+        [...state.review.queue, ...state.reviewBrowser.items].forEach(item => {
+            if (item?.id && String(item.id).startsWith('local-') && !mergedLocalItems.has(String(item.id))) {
+                mergedLocalItems.set(String(item.id), item);
+            }
+        });
+        pendingItems = Array.from(mergedLocalItems.values()).filter(item => String(item.id).startsWith('local-'));
+    }
 
     if (pendingItems.length === 0) return new Map();
 
@@ -4722,7 +4782,7 @@ async function ensureReviewQueueIdsSynced(ids) {
     return ids.map(id => idMap.get(id) || id);
 }
 
-async function fetchReviewQueueWindowFromServer({ offset = 0, limit = 0, search = '', signal = null } = {}) {
+async function fetchReviewQueueWindowFromServer({ offset = 0, limit = 0, search = '', signal = null, summary = false } = {}) {
     const safeOffset = Math.max(0, Math.floor(Number(offset) || 0));
     const safeLimit = Math.max(1, Math.floor(Number(limit) || getModalPageSize()));
     const MAX_FETCH_ITERATIONS = 10;
@@ -4742,6 +4802,7 @@ async function fetchReviewQueueWindowFromServer({ offset = 0, limit = 0, search 
             offset: String(nextOffset)
         });
         if (search) params.set('search', search);
+        if (summary) params.set('summary', '1');
         const res = await fetch(`/api/review-queue?${params.toString()}`, signal ? { signal } : undefined);
         if (!res.ok) throw new Error('Failed to load review queue');
 
@@ -4774,29 +4835,52 @@ async function fetchReviewQueueWindowFromServer({ offset = 0, limit = 0, search 
     return { items: collected, total: total || collected.length, iterationCapped };
 }
 
+async function fetchReviewQueueItem(id, signal = null) {
+    const res = await fetch(`/api/review-queue/${encodeURIComponent(id)}`, signal ? { signal } : undefined);
+    if (!res.ok) throw new Error('Failed to load review item');
+    return res.json();
+}
+
 function syncReviewBrowserPreviewState({ allowFallback = true } = {}) {
+    state.reviewBrowser.currentRequest = null;
     const previewId = String(state.reviewBrowser.previewId || '');
     const loadedPreview = state.reviewBrowser.items.find(item => String(item?.id || '') === previewId) || null;
-    if (loadedPreview) {
+    const existingPreview = String(state.reviewBrowser.previewConversation?.id || '') === previewId
+        ? state.reviewBrowser.previewConversation
+        : null;
+    if (loadedPreview?.conversations?.length) {
         state.reviewBrowser.previewConversation = loadedPreview;
+        state.reviewBrowser.previewLoading = false;
         return;
     }
 
-    if (previewId && !allowFallback) {
+    if (previewId) {
+        const matchingReviewItem = state.review.queue.find(item => String(item?.id || '') === previewId) || null;
+        state.reviewBrowser.previewConversation = matchingReviewItem?.conversations?.length
+            ? matchingReviewItem
+            : (existingPreview?.conversations?.length ? existingPreview : null);
+        state.reviewBrowser.previewLoading = false;
+        return;
+    }
+
+    if (!allowFallback) {
         state.reviewBrowser.previewConversation = null;
+        state.reviewBrowser.previewLoading = false;
         return;
     }
 
     const currentReviewItem = state.review.queue[state.review.currentIndex] || null;
-    if (currentReviewItem?.id) {
+    if (currentReviewItem?.id && currentReviewItem?.conversations?.length) {
         state.reviewBrowser.previewId = String(currentReviewItem.id);
         state.reviewBrowser.previewConversation = currentReviewItem;
+        state.reviewBrowser.previewLoading = false;
         return;
     }
 
     const firstItem = state.reviewBrowser.items[0] || null;
     state.reviewBrowser.previewId = String(firstItem?.id || '');
-    state.reviewBrowser.previewConversation = firstItem;
+    state.reviewBrowser.previewConversation = null;
+    state.reviewBrowser.previewLoading = false;
 }
 
 async function refreshReviewBrowserIfOpen({ reset = true } = {}) {
@@ -4816,6 +4900,45 @@ function syncReviewPositionUI() {
     els.reviewPosition.textContent = `${absolute + 1}/${total}`;
 }
 
+async function hydrateCurrentReviewItem({ requestSeq = state.review.requestSeq } = {}) {
+    const currentIndex = state.review.currentIndex;
+    const item = state.review.queue[currentIndex];
+    if (!item?.id) return;
+    if (Array.isArray(item.conversations) && item.conversations.length) return;
+
+    state.review.currentItemLoading = true;
+    if (state.currentTab === 'review') renderReviewItem();
+    try {
+        let fullItem = null;
+        if (String(item.id).startsWith('local-')) {
+            fullItem = await dbGet('reviewQueue', item.id).catch(err => {
+                console.warn('Failed to get review item from local DB:', err);
+                return null;
+            });
+        } else {
+            fullItem = await fetchReviewQueueItem(item.id);
+        }
+        if (state.review.requestSeq !== requestSeq) return;
+        if (state.review.currentIndex !== currentIndex) return;
+        const currentItem = state.review.queue[currentIndex];
+        if (!currentItem?.id || String(currentItem.id) !== String(item.id)) return;
+        if (fullItem) {
+            state.review.queue[currentIndex] = {
+                ...currentItem,
+                ...fullItem,
+                id: item.id,
+            };
+        }
+    } catch (e) {
+        console.warn('Failed to hydrate review item:', e);
+    } finally {
+        if (state.review.requestSeq === requestSeq && state.review.currentIndex === currentIndex) {
+            state.review.currentItemLoading = false;
+            if (state.currentTab === 'review') renderReviewItem();
+        }
+    }
+}
+
 async function loadReviewQueue({ reset = true, targetAbsoluteIndex = null } = {}) {
     const pageSize = getModalPageSize();
     const currentAbsolute = state.review.pageOffset + state.review.currentIndex;
@@ -4831,6 +4954,7 @@ async function loadReviewQueue({ reset = true, targetAbsoluteIndex = null } = {}
         state.review.pageOffset = desiredPageOffset;
         state.review.total = 0;
         state.review.hasMore = false;
+        state.review.currentItemLoading = false;
     }
 
     state.review.isLoading = true;
@@ -4838,11 +4962,10 @@ async function loadReviewQueue({ reset = true, targetAbsoluteIndex = null } = {}
         renderReviewItem();
     }
     try {
-        await syncReviewQueueItemsToServer();
-        if (state.review.requestSeq !== requestSeq) return;
         const data = await fetchReviewQueueWindowFromServer({
             offset: state.review.pageOffset,
-            limit: pageSize
+            limit: pageSize,
+            summary: true
         });
         if (state.review.requestSeq !== requestSeq) return;
         const items = data.items || [];
@@ -4854,6 +4977,7 @@ async function loadReviewQueue({ reset = true, targetAbsoluteIndex = null } = {}
         state.review.currentIndex = Math.max(0, Math.min(nextAbsolute - state.review.pageOffset, Math.max(0, state.review.queue.length - 1)));
         updateReviewBadge();
         renderReviewItem();
+        await hydrateCurrentReviewItem({ requestSeq });
     } catch (e) {
         console.warn('Server unreachable, loading review queue from IndexedDB');
         try {
@@ -4875,6 +4999,7 @@ async function loadReviewQueue({ reset = true, targetAbsoluteIndex = null } = {}
     } finally {
         if (state.review.requestSeq === requestSeq) {
             state.review.isLoading = false;
+            state.review.currentItemLoading = false;
             if (state.currentTab === 'review' && state.review.queue.length === 0) {
                 renderReviewItem();
             }
@@ -4892,6 +5017,7 @@ async function navigateReviewToAbsolute(targetAbsoluteIndex) {
     if (target >= pageStart && target <= pageEnd) {
         state.review.currentIndex = target - pageStart;
         renderReviewItem();
+        await hydrateCurrentReviewItem();
         return;
     }
 
@@ -4938,6 +5064,37 @@ function renderReviewItem() {
     }
 
     const item = queue[idx];
+    if (!item?.id) return;
+    if ((!Array.isArray(item.conversations) || item.conversations.length === 0) && state.review.currentItemLoading) {
+        els.reviewConversation.innerHTML = '<div class="empty-state"><div class="empty-icon"><span class="inline-spinner"></span></div><p>Loading review item...</p></div>';
+        els.reviewEditInput.classList.add('hidden');
+        els.reviewConversation.classList.remove('hidden');
+        els.reviewKeepBtn.disabled = true;
+        els.reviewRejectBtn.disabled = true;
+        els.reviewEditBtn.disabled = true;
+        els.reviewEditCancelBtn.classList.add('hidden');
+        const total = state.review.total || queue.length;
+        const absolute = state.review.pageOffset + idx;
+        els.reviewPrev.disabled = absolute <= 0;
+        els.reviewNext.disabled = absolute >= (total - 1);
+        els.reviewPosition.textContent = `${absolute + 1}/${total}`;
+        return;
+    }
+    if (!Array.isArray(item.conversations) || item.conversations.length === 0) {
+        els.reviewConversation.innerHTML = '<div class="empty-state"><div class="empty-icon">⚠️</div><p>Failed to load review item</p><p class="small">Try navigating again or reopening Review.</p></div>';
+        els.reviewEditInput.classList.add('hidden');
+        els.reviewConversation.classList.remove('hidden');
+        els.reviewKeepBtn.disabled = true;
+        els.reviewRejectBtn.disabled = true;
+        els.reviewEditBtn.disabled = true;
+        els.reviewEditCancelBtn.classList.add('hidden');
+        const total = state.review.total || queue.length;
+        const absolute = state.review.pageOffset + idx;
+        els.reviewPrev.disabled = absolute <= 0;
+        els.reviewNext.disabled = absolute >= (total - 1);
+        els.reviewPosition.textContent = `${absolute + 1}/${total}`;
+        return;
+    }
     els.reviewConversation.innerHTML = renderConversationMarkup(item.conversations || []);
     els.reviewConversation.scrollTop = 0;
     els.reviewEditInput.value = item.rawText || conversationToRaw(item.conversations || []);
@@ -5333,7 +5490,9 @@ function openReviewBrowserModal() {
 function closeReviewBrowserModal() {
     cancelSliceLoadAll(state.reviewBrowser, 'Closed');
     state.reviewBrowser.requestSeq = (state.reviewBrowser.requestSeq || 0) + 1;
+    state.reviewBrowser.currentRequest = null;
     state.reviewBrowser.isLoading = false;
+    state.reviewBrowser.previewLoading = false;
     els.reviewBrowserModal.classList.add('hidden');
 }
 
@@ -5387,7 +5546,9 @@ function renderReviewBrowserPreview() {
     if (!els.reviewBrowserPreview) return;
     const item = state.reviewBrowser.previewConversation;
     if (!item?.conversations?.length) {
-        els.reviewBrowserPreview.innerHTML = '<div class="empty-files">Click a queue item to load it into the review tab</div>';
+        els.reviewBrowserPreview.innerHTML = state.reviewBrowser.previewLoading
+            ? '<div class="empty-files"><span class="inline-spinner"></span> Loading preview...</div>'
+            : '<div class="empty-files">Click a queue item to load it into the review tab</div>';
         return;
     }
     els.reviewBrowserPreview.innerHTML = renderConversationMarkup(item.conversations);
@@ -5408,8 +5569,7 @@ function renderReviewBrowserList() {
 function renderReviewBrowserRowHtml(item) {
     const isSelected = state.reviewBrowser.selectedIds.has(item.id);
     const isPreviewing = state.reviewBrowser.previewId === item.id;
-    const firstMsg = item.conversations?.find(msg => msg.from === 'human') || item.conversations?.[0];
-    const preview = firstMsg?.value || 'Empty conversation';
+    const preview = item.preview || item.rawText || 'Empty conversation';
     const meta = item.createdAt ? formatDate(item.createdAt) : '';
     return `
         <div class="export-file-item ${isSelected ? 'selected' : ''} ${isPreviewing ? 'active-preview' : ''}" data-id="${escapeHtml(item.id)}">
@@ -5420,6 +5580,40 @@ function renderReviewBrowserRowHtml(item) {
             </div>
         </div>
     `;
+}
+
+async function loadReviewBrowserPreviewItem(itemId) {
+    const requestedId = String(itemId || '');
+    if (!requestedId) return;
+    const requestToken = Symbol('review-browser-preview');
+    state.reviewBrowser.currentRequest = requestToken;
+    state.reviewBrowser.previewId = requestedId;
+    state.reviewBrowser.previewConversation = null;
+    state.reviewBrowser.previewLoading = true;
+    renderReviewBrowserPreview();
+    try {
+        let preview = null;
+        const currentReviewItem = state.review.queue[state.review.currentIndex];
+        if (currentReviewItem?.id && String(currentReviewItem.id) === requestedId && currentReviewItem?.conversations?.length) {
+            preview = currentReviewItem;
+        } else if (requestedId.startsWith('local-')) {
+            preview = await dbGet('reviewQueue', requestedId).catch(() => null);
+        } else {
+            preview = await fetchReviewQueueItem(requestedId);
+        }
+        if (state.reviewBrowser.currentRequest !== requestToken) return;
+        state.reviewBrowser.previewConversation = preview;
+    } catch (_e) {
+        if (state.reviewBrowser.currentRequest !== requestToken) return;
+        state.reviewBrowser.previewConversation = null;
+        toast('Failed to preview queue item', 'error');
+    } finally {
+        if (state.reviewBrowser.currentRequest === requestToken) {
+            state.reviewBrowser.currentRequest = null;
+            state.reviewBrowser.previewLoading = false;
+            renderReviewBrowserPreview();
+        }
+    }
 }
 
 async function loadReviewBrowser({ reset = false, signal = null, preserveState = false } = {}) {
@@ -5498,7 +5692,8 @@ async function loadReviewBrowser({ reset = false, signal = null, preserveState =
             offset: state.reviewBrowser.offset,
             limit: pageSize,
             search,
-            signal
+            signal,
+            summary: true
         });
         if (state.reviewBrowser.requestSeq !== requestSeq) return;
         const items = data.items || [];
@@ -5667,7 +5862,14 @@ function switchTab(tabName) {
     els.generateTab.classList.toggle('active', tabName === 'generate');
     els.chatTab.classList.toggle('active', tabName === 'chat');
     els.reviewTab.classList.toggle('active', tabName === 'review');
-    if (tabName === 'review') loadReviewQueue();
+    if (tabName === 'review' && !state.review.isLoading) {
+        if (!state.review.deferredRestoreApplied && state._restoredDraft?.review) {
+            state.review.deferredRestoreApplied = true;
+            applyDeferredDraftState(state._restoredDraft);
+        } else if (state.review.queue.length === 0) {
+            loadReviewQueue();
+        }
+    }
     saveUiPrefs();
     debouncedSaveDraft();
 }
@@ -6281,7 +6483,9 @@ function updateExportPaginationUI() {
     }
 }
 
-async function loadExportFiles({ reset = false, signal = null } = {}) {
+async function loadExportFiles({ reset = false, signal = null, requestSeq = null } = {}) {
+    if (requestSeq != null && state.export.requestSeq !== requestSeq) return;
+    const activeRequestSeq = requestSeq ?? beginSliceRequest(state.export);
     const pageSize = getModalPageSize();
     if (reset) {
         state.export.files = [];
@@ -6312,8 +6516,10 @@ async function loadExportFiles({ reset = false, signal = null } = {}) {
         const search = els.exportSearchInput?.value?.trim() || '';
         if (search) params.set('search', search);
         const res = await fetch(`/api/conversations?${params.toString()}`, signal ? { signal } : undefined);
+        if (isSliceRequestStale(state.export, activeRequestSeq, signal)) return;
         if (res.ok) {
             const data = await res.json();
+            if (isSliceRequestStale(state.export, activeRequestSeq, signal)) return;
             const items = Array.isArray(data) ? data : (data.conversations || []);
             for (const item of items) {
                 const itemId = item?.id;
@@ -6335,9 +6541,12 @@ async function loadExportFiles({ reset = false, signal = null } = {}) {
         }
     } catch (e) {
         if (e?.name === 'AbortError') aborted = true;
-        else { state.export.files = []; renderExportFileList(); renderExportPreview(); }
+        else if (!isSliceRequestStale(state.export, activeRequestSeq, signal)) { state.export.files = []; renderExportFileList(); renderExportPreview(); }
     } finally {
+        const requestIsStale = state.export.requestSeq !== activeRequestSeq;
+        if (requestIsStale) return;
         state.export.isLoading = false;
+        if (aborted || signal?.aborted) return;
         if (!aborted) updateExportPaginationUI();
         if (!els.exportModal?.classList.contains('hidden')) {
             // Ensure the "Loading more..." row is hidden after paging completes.
@@ -6502,47 +6711,56 @@ function debouncedSaveDraft() {
     if (saveDraftTimer) clearTimeout(saveDraftTimer);
     const delay = syncSettings.saveInterval || 2000;
     saveDraftTimer = setTimeout(async () => {
-        await saveDraftToLocal();
-        syncEngine.markDirty();
-        // Auto-push if enabled and online
-        if (syncSettings.autoSyncEnabled && syncEngine.status === 'online') {
-            syncEngine.push();
-        }
+        const changed = await saveDraftToLocal();
+        if (changed) syncEngine.markDirty();
     }, delay);
 }
 
 async function saveDraftToLocal() {
-    showSaveIndicator('Saving locally...');
     try {
         const draft = await buildDraftObject();
+        const draftJson = JSON.stringify(draft);
+        const hash = syncEngine._simpleHash(draftJson);
+        if (hash === lastLocalDraftHash) return false;
+        showSaveIndicator('Saving locally...');
         await dbSet('drafts', SESSION_ID, draft);
+        lastLocalDraftHash = hash;
         hideSaveIndicator('Saved ✓');
+        return true;
     } catch (e) {
         console.error('Failed to save draft locally:', e);
         hideSaveIndicator('Save failed');
+        return false;
     }
-}
-
-function mergeRecoveredQueueItems(...collections) {
-    const byId = new Map();
-    collections.flat().forEach(item => {
-        const itemId = String(item?.id || '');
-        if (!itemId) return;
-        byId.set(itemId, safeJsonClone(item, item));
-    });
-    return Array.from(byId.values());
 }
 
 async function buildDraftObject() {
-    const localReviewQueue = await dbGetAll('reviewQueue').catch(() => []);
-    const reviewQueueItems = mergeRecoveredQueueItems(localReviewQueue || [], state.review.queue || [], state.reviewBrowser.items || []);
     const currentReviewItem = state.review.queue[state.review.currentIndex];
     const reviewEditBuffer = state.review.isEditing ? String(els.reviewEditInput?.value || '') : '';
-    if (state.review.isEditing && currentReviewItem?.id) {
-        const currentId = String(currentReviewItem.id);
-        const existing = reviewQueueItems.find(item => String(item?.id || '') === currentId);
-        if (existing) existing.rawText = reviewEditBuffer;
-    }
+    const reviewQueuePage = (state.review.queue || [])
+        .map(item => ({
+            id: String(item?.id || ''),
+            rawText: String(item?.rawText || ''),
+            preview: String(item?.preview || item?.rawText || ''),
+            createdAt: item?.createdAt || ''
+        }))
+        .filter(item => item.id);
+    const reviewCurrentItem = currentReviewItem?.id
+        ? {
+            id: String(currentReviewItem.id),
+            conversations: Array.isArray(currentReviewItem.conversations) ? currentReviewItem.conversations : [],
+            rawText: String(currentReviewItem.rawText || ''),
+            metadata: currentReviewItem.metadata || {},
+            createdAt: currentReviewItem.createdAt || ''
+        }
+        : null;
+    const reviewBrowserItems = (state.reviewBrowser.items || [])
+        .map(item => ({
+            id: String(item?.id || ''),
+            preview: String(item?.preview || item?.rawText || ''),
+            createdAt: item?.createdAt || ''
+        }))
+        .filter(item => item.id);
 
     return {
         _sessionId: SESSION_ID,
@@ -6568,12 +6786,14 @@ async function buildDraftObject() {
             presetName: state.export.presetName || els.exportPresetSelect?.value || ''
         },
         review: {
-            queueItems: reviewQueueItems,
             currentIndex: state.review.pageOffset + state.review.currentIndex,
             pageOffset: state.review.pageOffset,
-            total: state.review.total || reviewQueueItems.length,
+            total: state.review.total || state.review.queue.length,
             isEditing: !!state.review.isEditing,
             editBuffer: reviewEditBuffer,
+            currentItemId: String(currentReviewItem?.id || ''),
+            queuePage: reviewQueuePage,
+            currentItem: reviewCurrentItem,
         },
         filesModal: {
             currentFolder: state.filesModal.currentFolder,
@@ -6582,7 +6802,7 @@ async function buildDraftObject() {
             search: els.filesSearchInput?.value || '',
         },
         reviewBrowser: {
-            items: safeJsonClone(state.reviewBrowser.items || [], []),
+            items: reviewBrowserItems,
             total: state.reviewBrowser.total,
             offset: state.reviewBrowser.offset,
             hasMore: state.reviewBrowser.hasMore,
@@ -6597,7 +6817,11 @@ async function buildDraftObject() {
 async function restoreDraft() {
     try {
         const sessionDraft = await dbGet('drafts', SESSION_ID);
-        if (sessionDraft) { applyDraft(sessionDraft); return sessionDraft; }
+        if (sessionDraft) {
+            lastLocalDraftHash = syncEngine._simpleHash(JSON.stringify(sessionDraft));
+            applyDraft(sessionDraft);
+            return sessionDraft;
+        }
     } catch (e) { }
     try {
         const serverDraft = await syncEngine.pull();
@@ -6672,6 +6896,45 @@ function applyDraft(draft) {
         state.export.presetName = draft.export.presetName;
         els.exportPresetSelect.value = draft.export.presetName;
     }
+    if (draft.review) {
+        const restoredQueuePage = Array.isArray(draft.review.queuePage)
+            ? draft.review.queuePage
+                .map(item => ({
+                    id: String(item?.id || ''),
+                    rawText: String(item?.rawText || ''),
+                    preview: String(item?.preview || item?.rawText || ''),
+                    createdAt: item?.createdAt || ''
+                }))
+                .filter(item => item.id)
+            : [];
+        state.review.queue = restoredQueuePage;
+        state.review.pageOffset = Number.isFinite(Number(draft.review.pageOffset))
+            ? Math.max(0, Number(draft.review.pageOffset))
+            : state.review.pageOffset;
+        state.review.total = Number.isFinite(Number(draft.review.total))
+            ? Math.max(restoredQueuePage.length, Number(draft.review.total))
+            : restoredQueuePage.length;
+        const restoredAbsoluteIndex = Number.isFinite(Number(draft.review.currentIndex))
+            ? Math.max(0, Number(draft.review.currentIndex))
+            : state.review.pageOffset;
+        state.review.currentIndex = restoredQueuePage.length
+            ? Math.max(0, Math.min(restoredAbsoluteIndex - state.review.pageOffset, restoredQueuePage.length - 1))
+            : 0;
+        const restoredCurrentItem = draft.review.currentItem;
+        if (restoredCurrentItem?.id) {
+            const currentItemIndex = state.review.queue.findIndex(item => item.id === String(restoredCurrentItem.id));
+            if (currentItemIndex !== -1) {
+                state.review.queue[currentItemIndex] = {
+                    ...state.review.queue[currentItemIndex],
+                    id: String(restoredCurrentItem.id),
+                    conversations: Array.isArray(restoredCurrentItem.conversations) ? restoredCurrentItem.conversations : [],
+                    rawText: String(restoredCurrentItem.rawText || state.review.queue[currentItemIndex].rawText || ''),
+                    metadata: restoredCurrentItem.metadata || {},
+                    createdAt: restoredCurrentItem.createdAt || state.review.queue[currentItemIndex].createdAt || ''
+                };
+            }
+        }
+    }
     if (draft.filesModal) {
         state.filesModal.currentFolder = String(draft.filesModal.currentFolder || state.filesModal.currentFolder || 'wanted');
         const restoredSelectedIds = (draft.filesModal.selectedIds || []).map(id => String(id || '')).filter(Boolean);
@@ -6684,22 +6947,25 @@ function applyDraft(draft) {
         }
     }
     if (draft.reviewBrowser) {
-        const items = safeJsonClone(draft.reviewBrowser.items || [], []);
-        state.reviewBrowser.items = items;
-        state.reviewBrowser.total = draft.reviewBrowser.total ?? items.length;
+        const restoredItems = Array.isArray(draft.reviewBrowser.items)
+            ? draft.reviewBrowser.items
+                .map(item => ({
+                    id: String(item?.id || ''),
+                    preview: String(item?.preview || item?.rawText || ''),
+                    createdAt: item?.createdAt || ''
+                }))
+                .filter(item => item.id)
+            : [];
+        state.reviewBrowser.items = restoredItems;
+        state.reviewBrowser.total = draft.reviewBrowser.total ?? 0;
         state.reviewBrowser.offset = draft.reviewBrowser.offset ?? 0;
-        state.reviewBrowser.hasMore = draft.reviewBrowser.hasMore ?? (draft.reviewBrowser.total ? draft.reviewBrowser.total > items.length : false);
-        state.reviewBrowser.seenIds = new Set();
-        state.reviewBrowser.idToIndex = new Map();
-        items.forEach((item, index) => {
-            const itemId = String(item?.id || '');
-            if (!itemId) return;
-            state.reviewBrowser.seenIds.add(itemId);
-            state.reviewBrowser.idToIndex.set(itemId, index);
-        });
+        state.reviewBrowser.hasMore = draft.reviewBrowser.hasMore ?? false;
+        state.reviewBrowser.seenIds = new Set(restoredItems.map(item => item.id));
+        state.reviewBrowser.idToIndex = new Map(restoredItems.map((item, index) => [item.id, index]));
         state.reviewBrowser.selectedIds = new Set((draft.reviewBrowser.selectedIds || []).map(id => String(id || '')).filter(Boolean));
         state.reviewBrowser.previewId = String(draft.reviewBrowser.previewId || '');
-        state.reviewBrowser.previewConversation = items.find(item => String(item?.id || '') === state.reviewBrowser.previewId) || null;
+        state.reviewBrowser.previewConversation = null;
+        state.reviewBrowser.previewLoading = false;
         if (els.reviewBrowserSearchInput && typeof draft.reviewBrowser.search === 'string') {
             els.reviewBrowserSearchInput.value = draft.reviewBrowser.search;
         }
@@ -6708,17 +6974,6 @@ function applyDraft(draft) {
 
 async function applyDeferredDraftState(draft) {
     if (!draft?.review) return;
-
-    const draftQueueItems = safeJsonClone(draft.review.queueItems || [], []);
-    if (draftQueueItems.length) {
-        const byId = new Map(draftQueueItems.map(item => [String(item?.id || ''), item]));
-        if (state.review.queue.length) {
-            state.review.queue = state.review.queue.map(item => byId.get(String(item?.id || '')) || item);
-        } else {
-            state.review.queue = draftQueueItems;
-        }
-        state.review.total = Math.max(state.review.total || 0, draftQueueItems.length);
-    }
 
     const reviewPageSize = getModalPageSize();
     if (Number.isFinite(Number(draft.review.currentIndex))) {
@@ -7050,7 +7305,7 @@ function switchMacrosTab(tabName) {
     // On switching to variables, re-render so values are fresh
     if (tabName === 'variables') renderVariableInputs(state.generate.variableNames || []);
     if (tabName === 'state') renderMacroState();
-    if (tabName === 'history') renderPromptHistory();
+    if (tabName === 'history') ensurePromptHistoryLoaded().then(() => renderPromptHistory());
 }
 
 function _renderMacroStateGroup(title, entries) {
@@ -7178,7 +7433,13 @@ async function loadPromptHistory() {
     try {
         const saved = await dbGet('settings', 'promptHistory');
         if (Array.isArray(saved)) state.promptHistory = saved;
+        promptHistoryLoaded = true;
     } catch (e) { }
+}
+
+async function ensurePromptHistoryLoaded() {
+    if (promptHistoryLoaded) return;
+    await loadPromptHistory();
 }
 
 function renderPromptHistory() {
@@ -7339,7 +7600,7 @@ function setupEventListeners() {
     els.provider.addEventListener('change', () => {
         updateProviderUI();
         loadCredentialPresets(els.provider.value);
-        loadModels();
+        ensureModelsLoaded({ force: true });
         // Save provider choice to DB
         fetch('/api/config', {
             method: 'POST',
@@ -7348,6 +7609,8 @@ function setupEventListeners() {
         }).catch(() => {});
     });
     els.refreshModels.addEventListener('click', refreshModels);
+    els.model?.addEventListener('focus', () => { ensureModelsLoaded(); });
+    els.modelInput?.addEventListener('focus', () => { ensureModelsLoaded(); });
     els.modelInput?.addEventListener('change', saveDefaultModel);
     els.modelInput?.addEventListener('input', () => { debouncedSaveDraft(); });
 
@@ -7440,7 +7703,8 @@ function setupEventListeners() {
     els.filesSearchInput?.addEventListener('input', () => {
         cancelSliceLoadAll(state.filesModal, 'Canceled');
         if (filesSearchTimer) clearTimeout(filesSearchTimer);
-        filesSearchTimer = setTimeout(() => loadFilesModal(state.filesModal.currentFolder, { reset: true }), 300);
+        const requestSeq = beginSliceRequest(state.filesModal);
+        filesSearchTimer = setTimeout(() => loadFilesModal(state.filesModal.currentFolder, { reset: true, requestSeq }), LIST_SEARCH_DEBOUNCE_MS);
     });
 
     // Files Modal Tabs
@@ -7616,7 +7880,13 @@ function setupEventListeners() {
     els.newExportPreset?.addEventListener('click', newExportPreset);
     els.deleteExportPreset?.addEventListener('click', deleteExportPreset);
 
-    els.exportSearchInput?.addEventListener('input', () => { cancelSliceLoadAll(state.export, 'Canceled'); loadExportFiles({ reset: true }); });
+    let exportSearchTimer = null;
+    els.exportSearchInput?.addEventListener('input', () => {
+        cancelSliceLoadAll(state.export, 'Canceled');
+        if (exportSearchTimer) clearTimeout(exportSearchTimer);
+        const requestSeq = beginSliceRequest(state.export);
+        exportSearchTimer = setTimeout(() => loadExportFiles({ reset: true, requestSeq }), LIST_SEARCH_DEBOUNCE_MS);
+    });
     els.exportSelectToggle?.addEventListener('click', toggleAllExportFiles);
     els.exportClearSelection?.addEventListener('click', () => {
         clearSelectableSelection(state.export);
@@ -7794,7 +8064,12 @@ function setupEventListeners() {
     // Review browser modal
     els.closeReviewBrowserModal?.addEventListener('click', closeReviewBrowserModal);
     $('#review-browser-modal .modal-backdrop')?.addEventListener('click', closeReviewBrowserModal);
-    els.reviewBrowserSearchInput?.addEventListener('input', () => { cancelSliceLoadAll(state.reviewBrowser, 'Canceled'); loadReviewBrowser({ reset: true }); });
+    let reviewBrowserSearchTimer = null;
+    els.reviewBrowserSearchInput?.addEventListener('input', () => {
+        cancelSliceLoadAll(state.reviewBrowser, 'Canceled');
+        if (reviewBrowserSearchTimer) clearTimeout(reviewBrowserSearchTimer);
+        reviewBrowserSearchTimer = setTimeout(() => loadReviewBrowser({ reset: true }), LIST_SEARCH_DEBOUNCE_MS);
+    });
     els.reviewBrowserSelectToggle?.addEventListener('click', toggleAllReviewBrowser);
     els.reviewBrowserClearSelection?.addEventListener('click', () => {
         clearSelectableSelection(state.reviewBrowser);
@@ -7821,9 +8096,7 @@ function setupEventListeners() {
         const id = String(item.dataset.id || '');
         const diff = handleSelectableInteraction(state.reviewBrowser, state.reviewBrowser.items, id, e, (previewId) => {
             const pid = String(previewId || '');
-            state.reviewBrowser.previewId = pid;
-            state.reviewBrowser.previewConversation = state.reviewBrowser.items.find(entry => String(entry?.id || '') === pid) || null;
-            renderReviewBrowserPreview();
+            loadReviewBrowserPreviewItem(pid);
             jumpReviewToItemId(pid);
         });
         if (diff?.needsFullRefresh) {
